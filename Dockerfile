@@ -21,8 +21,29 @@ COPY src ./src
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+# torch is installed **CPU-only, first, from PyTorch's own index**, and only
+# then the project.
+#
+# `docling-ibm-models` requires torch and torchvision unconditionally (the
+# layout and TableFormer models behind PDF parsing), and torch's default PyPI
+# wheel drags in the entire CUDA stack -- nvidia-cudnn, nccl, cublas, cusparse,
+# cusolver, cufft, nvrtc, triton. That is roughly 3 GB of GPU libraries in an
+# image with no GPU, on a workload this Dockerfile already pins to eager CPU
+# execution via TORCH_COMPILE_DISABLE. Measured on the build this replaced:
+# 1.4 GB downloaded in the first 62 minutes and still going, most of it CUDA.
+#
+# Installing torch first means the resolver sees the requirement already
+# satisfied when `pip install .` runs, so it never reaches for the PyPI build.
+# Versions are pinned to exactly what the 522-test suite was verified against
+# rather than floating, so the image and the tested tree cannot drift apart.
+#
+# If a worker is ever moved to a GPU host to speed up docling parsing, this is
+# the line to revisit -- the CUDA wheels stop being dead weight at that point.
 # No [dev] extra -- pytest/ruff/mypy have no business in a runtime image.
 RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch==2.13.0 torchvision==0.28.0 \
     && pip install --no-cache-dir .
 
 # ---------- runtime stage ----------
