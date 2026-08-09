@@ -1,0 +1,45 @@
+# Line endings are normalised to LF everywhere -- in the repository *and* in
+# the working tree.
+#
+# Without this, Git on Windows (`core.autocrlf=true`, the default) stores LF
+# but checks out CRLF, so the same file is byte-different depending on who
+# cloned it. That is invisible until it isn't: a whole-file diff the first
+# time a Linux contributor touches anything, and a class of failure where a
+# shell script or Dockerfile with CRLF endings dies with an unhelpful message
+# about a command not being found -- the `\r` is part of the argument.
+#
+# Added at the first commit deliberately. The working tree is already LF, so
+# this pins the current state rather than rewriting anything; doing it later,
+# after a checkout has introduced CRLF, means a renormalisation commit that
+# touches every file.
+* text=auto eol=lf
+
+# Fatal if they ever get CRLF, so stated explicitly rather than relying on the
+# wildcard above surviving future edits to this file.
+*.sh            text eol=lf
+*.bash          text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+docker/**       text eol=lf
+
+# Never touched. `favicon.ico` is the only one in the tree today; the rest are
+# here so a future image or font cannot be silently corrupted by newline
+# translation. (SVG is deliberately absent -- it is XML, and benefits from
+# being diffable text.)
+*.ico           binary
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.webp          binary
+*.pdf           binary
+*.woff          binary
+*.woff2         binary
+*.ttf           binary
+*.otf           binary
+
+# Generated dependency graphs. Still diffable when you need it, but collapsed
+# in review by default -- a lockfile churn of several thousand lines otherwise
+# buries the change that caused it.
+uv.lock                     linguist-generated=true
+frontend/package-lock.json  linguist-generated=true
