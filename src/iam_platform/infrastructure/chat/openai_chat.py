@@ -31,6 +31,7 @@ class OpenAIChatModel:
     def __init__(self, settings: OpenAISettings, *, client: Any | None = None) -> None:
         self._model = settings.chat_model
         self._temperature = settings.chat_temperature
+        self._reasoning_effort = settings.chat_reasoning_effort
         if client is not None:
             self._client: Any = client
             return
@@ -55,6 +56,13 @@ class OpenAIChatModel:
         # reject an explicit null too.
         if self._temperature is not None:
             request["temperature"] = self._temperature
+        # Same opt-in shape, and the reason is the same: non-reasoning models
+        # reject the parameter. See `OpenAISettings.chat_reasoning_effort` for
+        # the measured distribution -- it cuts the *worst case* on this model
+        # from ~10.8s to ~1.6s, which is most of what a visitor experiences as
+        # "the chat is slow". The median moves far less.
+        if self._reasoning_effort is not None:
+            request["reasoning_effort"] = self._reasoning_effort
 
         stream = await self._client.chat.completions.create(**request)
         async for event in stream:

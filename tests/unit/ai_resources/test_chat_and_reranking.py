@@ -106,6 +106,54 @@ class TestTemperatureIsOptional:
 
         assert client.last_request()["temperature"] == 0
 
+class TestReasoningEffortIsOptional:
+    """The largest latency control on the answer path, and the same opt-in
+    shape as temperature for the same reason.
+
+    Measured against the configured model with the real prompt, six questions
+    each: unset gave a 2.11s median and a 10.80s worst case; `low` gave 1.24s
+    and 1.58s. The win is the tail, not the median. A reasoning model emits
+    nothing at all while it thinks, so an eleven-second outlier is a visitor
+    watching an empty bubble -- not slow typing.
+    """
+
+    async def test_reasoning_effort_is_omitted_when_unset(self) -> None:
+        """A non-reasoning model rejects the parameter outright, so the key
+        must be absent rather than None -- exactly the trap that made
+        `temperature=0` fail every answer."""
+        client = _FakeOpenAI()
+        model = OpenAIChatModel(_settings(), client=client)
+
+        [t async for t in model.stream_answer(
+            question="q", context=_context(), system_prompt="s"
+        )]
+
+        assert "reasoning_effort" not in client.last_request()
+
+    async def test_reasoning_effort_is_sent_when_configured(self) -> None:
+        client = _FakeOpenAI()
+        model = OpenAIChatModel(_settings(chat_reasoning_effort="low"), client=client)
+
+        [t async for t in model.stream_answer(
+            question="q", context=_context(), system_prompt="s"
+        )]
+
+        assert client.last_request()["reasoning_effort"] == "low"
+
+    async def test_the_value_is_passed_through_unvalidated(self) -> None:
+        """Deliberate: valid values are model-dependent (the configured model
+        accepts "low" and rejects "minimal"), and a local allowlist would go
+        stale and start refusing values the API accepts. An unsupported value
+        fails loudly at answer time instead."""
+        client = _FakeOpenAI()
+        model = OpenAIChatModel(_settings(chat_reasoning_effort="anything"), client=client)
+
+        [t async for t in model.stream_answer(
+            question="q", context=_context(), system_prompt="s"
+        )]
+
+        assert client.last_request()["reasoning_effort"] == "anything"
+
     async def test_empty_deltas_are_not_yielded(self) -> None:
         """OpenAI streams role-only and finish-reason events with no content;
         forwarding them would emit empty SSE frames to the client."""

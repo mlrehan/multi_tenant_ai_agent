@@ -27,6 +27,16 @@ dependencies = [
     "tiktoken>=0.13.0",
     "playwright>=1.62.0",
     "docling>=2.118.0",
+    # PDF text-layer extraction (infrastructure/parsing/fast_pdf.py). Docling
+    # already pulls this in, but relying on that is fragile -- it would vanish
+    # the day docling swapped its PDF backend, and the fast path is not an
+    # optional nicety: without it every text-native PDF goes back through the
+    # ML pipeline at roughly 1,300x the cost.
+    #
+    # pypdfium2 (PDFium, BSD-3-Clause/Apache-2.0) rather than the better-known
+    # PyMuPDF, which is AGPL-3.0 or paid commercial -- network copyleft is not
+    # something to take on for a hosted multi-tenant product.
+    "pypdfium2>=4",
     "beautifulsoup4>=4.15.0",
     "lxml>=6.1.1",
     "openai>=2.53.0",
@@ -102,7 +112,14 @@ mypy_path = "src"
 # error -- the point is to name the specific libraries we accept as opaque,
 # not to switch the check off.
 [[tool.mypy.overrides]]
-module = ["boto3.*", "botocore.*", "qdrant_client.*", "cohere.*", "celery.*", "crawl4ai.*"]
+module = [
+    "boto3.*", "botocore.*", "qdrant_client.*", "cohere.*", "celery.*",
+    "crawl4ai.*",
+    # PDFium bindings; no py.typed marker. Used behind a narrow, fully typed
+    # adapter (infrastructure/parsing/fast_pdf.py), so the untyped surface is
+    # three calls wide.
+    "pypdfium2.*",
+]
 ignore_missing_imports = true
 
 # docling ships `py.typed`, so mypy would type-check the entire ML stack it

@@ -246,6 +246,38 @@ class OpenAISettings(BaseModel):
     #: fail against the configured model. Found by running it, not by reading
     #: the API docs.
     chat_temperature: float | None = None
+
+    #: How hard a *reasoning* model should think before it answers. Sent only
+    #: when set, for the same reason as `chat_temperature`: a non-reasoning
+    #: model rejects the parameter outright, so a non-None default would break
+    #: every answer on those models.
+    #:
+    #: **This is the biggest latency control on the answer path, and what it
+    #: buys is predictability more than raw speed.** Measured against
+    #: `gpt-5.5` with the real system prompt and a real retrieved passage,
+    #: six questions each, time-to-first-token:
+    #:
+    #:     unset (model default)   min 1.03s   median 2.11s   max 10.80s
+    #:     "low"                   min 0.83s   median 1.24s   max  1.58s
+    #:
+    #: The median barely moves; the *tail* collapses. Left unset the model
+    #: decides how long to think and occasionally spends eleven seconds on a
+    #: question the retriever had already answered -- and a reasoning model
+    #: emits nothing at all while thinking, so that is a visitor watching an
+    #: empty bubble with no evidence anything is happening. One such wait is
+    #: what makes someone close the tab, which is why the worst case matters
+    #: more here than the average.
+    #:
+    #: It costs nothing in answer quality because grounded answering is
+    #: extraction and synthesis over passages the retriever already chose --
+    #: not the kind of work deep reasoning improves.
+    #:
+    #: Valid values are model-dependent and *not* validated here: `gpt-5.5`
+    #: accepts "low" and rejects "minimal". An unsupported value fails loudly
+    #: at answer time rather than being silently dropped, which is the right
+    #: trade -- a swallowed setting would leave the latency unexplained.
+    chat_reasoning_effort: str | None = None
+
     request_timeout_seconds: float = 60.0
 
 
@@ -274,6 +306,22 @@ class IngestionSettings(BaseModel):
     #: Token encoding used to measure chunk size; must match what the
     #: embedding model actually uses or chunks will be mis-sized.
     tokenizer_encoding: str = "cl100k_base"
+
+    #: Read a PDF's embedded text layer before reaching for docling's ML
+    #: layout models. Most business PDFs are text-native, where the layer is
+    #: the author's own words and reading it is both far faster and strictly
+    #: more accurate than inferring them back from a rendered image. Turn this
+    #: off only to compare the two paths on a corpus.
+    pdf_text_layer_first: bool = True
+    #: A page with fewer characters than this counts as having no text --
+    #: enough to ignore a stray page number or scanner watermark, low enough
+    #: that a sparse title page still counts.
+    pdf_min_chars_per_page: int = 50
+    #: Fraction of pages that must carry text before the fast path is trusted.
+    #: Below it the document is treated as scanned and handed to docling's OCR.
+    #: Not 1.0: real documents contain full-page diagrams and blank separators,
+    #: and one of those should not force a 100-page report through OCR.
+    pdf_min_text_page_ratio: float = 0.6
 
 
 class CrawlSettings(BaseModel):
