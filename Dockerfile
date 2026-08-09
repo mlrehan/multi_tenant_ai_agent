@@ -73,6 +73,12 @@ ENV PATH="/opt/venv/bin:$PATH" \
     # huggingface.co could never parse one at all. Baked into the image below
     # instead, at a path the runtime only ever reads.
     HF_HOME=/opt/models/huggingface \
+    # Same reasoning as HF_HOME, for the browser Playwright drives. The default
+    # is `~/.cache/ms-playwright`, and the `app` user has no home directory --
+    # so without this the browser would be installed somewhere the runtime user
+    # cannot read, or not found at all. A fixed path under /opt is baked in
+    # below and only ever read at runtime.
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
     # TorchInductor generates and compiles C++ at *parse* time. This image
     # deliberately carries no compiler (that's the point of the builder-stage
     # split), so the compiled path cannot work here and would fail every
@@ -107,6 +113,29 @@ c = DocumentConverter(); \
 c.initialize_pipeline(InputFormat.PDF); \
 c.initialize_pipeline(InputFormat.IMAGE)\
 " && chmod -R a+rX "$HF_HOME"
+
+# Install the browser Playwright drives, and the shared libraries it dlopens.
+#
+# **`pip install playwright` does not install a browser.** It installs the
+# Python client; the Chromium binary is a separate download. Without this step
+# `crawl4ai` raises at crawl time, so website ingestion would fail in
+# production while file uploads kept working -- the same partial failure the
+# OpenCV and TorchInductor problems above produced, and one that reads like
+# "that site can't be crawled" rather than "this deployment is broken". It went
+# unnoticed because the development machine has browsers in
+# `~/.cache/ms-playwright` from an earlier manual install, so crawling worked
+# everywhere it was actually tried.
+#
+# `--with-deps` rather than a hand-written apt list: Chromium's shared-library
+# set is long, version-dependent, and exactly the kind of thing that rots. The
+# OpenCV list above had to be discovered empirically one missing `.so` at a
+# time; there is no reason to repeat that when the vendor ships the answer.
+#
+# Runs as root before `USER app` so the browser is root-owned and read-only to
+# the runtime user, matching the model cache.
+RUN playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH"
 
 WORKDIR /app
 COPY --chown=root:root alembic.ini ./
