@@ -1,0 +1,60 @@
+# Keep the build context small and, more importantly, keep secrets out of it.
+# Anything copied into a layer is recoverable from the image even if a later
+# layer deletes it.
+
+# Secrets and local config -- the single most important entries here.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+jwt_private.pem
+jwt_public.pem
+
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Local virtualenv -- would otherwise be copied in and shadow the image's own
+.venv
+venv
+env
+
+# Python build/cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# Tests and docs aren't needed at runtime
+tests/
+docs/
+*.md
+!README.md
+
+# Local development tooling
+docker-compose*.yml
+Dockerfile
+.dockerignore
+.claude/
+
+# NOT ignored: `scripts/`. The Dockerfile copies it deliberately (production
+# bootstrap is `docker compose run --rm migrate python scripts/...`, see
+# DEPLOYMENT.md), and excluding it here made `COPY scripts ./scripts` fail
+# with "/scripts: not found" -- i.e. the production image could not be built
+# at all. The COPY was added in a later session than the last image build, so
+# nothing caught it until the image was rebuilt.
+
+# Editor/OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

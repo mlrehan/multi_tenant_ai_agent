@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+
+class AiResourceError(Exception):
+    pass
+
+
+class AssistantNotFoundError(AiResourceError):
+    pass
+
+
+class KnowledgeBaseNotFoundError(AiResourceError):
+    pass
+
+
+class DocumentNotFoundError(AiResourceError):
+    pass
+
+
+class ConversationNotFoundError(AiResourceError):
+    pass
+
+
+class ModelConfigurationNotFoundError(AiResourceError):
+    pass
+
+
+class ProviderCredentialNotFoundError(AiResourceError):
+    pass
+
+
+class DocumentContentNotFoundError(AiResourceError):
+    """A ``documents`` row exists but its bytes are missing from object storage.
+
+    Distinct from ``DocumentNotFoundError``, which means "no such row, or you
+    can't see it". This one is an *internal inconsistency*: the database says
+    the content is there and storage disagrees. It maps to 500, not 404,
+    because 404 would tell the caller their document doesn't exist when in
+    fact the platform lost it -- a materially different thing to be told, and
+    one that should page an operator rather than be quietly absorbed.
+    """
+
+
+class DocumentParseError(AiResourceError):
+    """A document's bytes could not be read -- corrupt, encrypted, or not the
+    format its content type declared.
+
+    A tenant-fixable problem, not a platform fault: the message is recorded on
+    ``documents.failure_reason`` and shown in the console so the person who
+    uploaded a password-protected PDF learns that, instead of seeing an opaque
+    red badge and opening a support ticket.
+    """
+
+
+class DocumentTooLargeError(AiResourceError):
+    """The upload exceeds the per-file size cap.
+
+    Raised while *reading* the body, not after -- materialising an arbitrarily
+    large upload before deciding to reject it is the denial-of-service the cap
+    exists to prevent.
+    """
+
+
+class UnsupportedDocumentTypeError(AiResourceError):
+    """No parser handles this content type.
+
+    Distinct from ``DocumentParseError``: the file may be perfectly valid, the
+    platform simply cannot read that format. Different message, different fix.
+    """
+
+
+class PermissionDeniedError(AiResourceError):
+    def __init__(self, required_permission: str) -> None:
+        super().__init__(f"missing required permission: {required_permission}")
+        self.required_permission = required_permission
+
+
+class ResourceAccessDeniedError(AiResourceError):
+    """The caller may not see or modify this specific resource, even though
+    they hold the generic tenant permission for its type -- the per-resource
+    visibility/ownership check in ``domain.ai_resources.policies`` said no.
+
+    Raised (rather than returning a 404-shaped "not found") only where the
+    caller has already proven they can see the resource; discovery-time
+    denials surface as *NotFound* instead, so a caller can never use the error
+    shape to infer that a resource they can't see exists.
+    """
+
+
+class TooManyUrlsError(AiResourceError):
+    """More URLs in one data source than this platform will accept."""
+
+
+class UnsafeCrawlTargetError(AiResourceError):
+    """A URL this platform refuses to fetch -- see infrastructure/crawling/url_safety.py.
+
+    Declared here, deriving from `AiResourceError`, rather than left as the
+    infrastructure module's own `ValueError`. A bare `ValueError` reaching the
+    API surfaces as an unhandled 500, which is both wrong (the tenant supplied
+    something invalid -- that is a 400) and unhelpful (it hides the one message
+    that would tell them what to change). This project has shipped that exact
+    bug three times; `tests/unit/test_exception_mapping_is_exhaustive.py`
+    exists because of it, and it can only see exceptions rooted in a module
+    base class like this one.
+    """
+
+
+class QuestionTooLongError(AiResourceError):
+    """An empty question, or one long enough to be a paste rather than a query.
+
+    Under `AiResourceError` so the exhaustive-mapping guard can see it -- a
+    bare `ValueError` here would surface as a 500 (see the Phase 12 note in
+    docs/24).
+    """
+
+
+class WidgetUnavailableError(AiResourceError):
+    """No such widget, or it is disabled, or the session no longer matches it.
+
+    One error for several causes on purpose: telling an anonymous caller
+    whether a guessed public key exists turns this endpoint into a probing
+    oracle.
+    """
+
+
+class WidgetOriginNotAllowedError(AiResourceError):
+    """The requesting site is not on this widget's allowlist."""
+
+
+class WidgetQuotaExceededError(AiResourceError):
+    """This widget has used its daily question allowance."""
+
+
+class ChatWidgetNotFoundError(AiResourceError):
+    """No widget with that id in this tenant.
+
+    Distinct from `WidgetUnavailableError`: this one answers an *authenticated*
+    tenant admin who already holds the manage permission, so a 404 tells them
+    only about their own tenant and is no oracle. The anonymous surface keeps
+    its single opaque error.
+    """

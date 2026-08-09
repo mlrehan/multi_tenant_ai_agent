@@ -1,0 +1,124 @@
+# Production-*shaped* compose -- docs/22-deployment-and-operations.md.
+#
+# This is a reference topology and a local rehearsal of the production wiring
+# (separate migration job, non-root app, three DB roles, no port exposure for
+# datastores). It is NOT a production deployment target: a real one runs on an
+# orchestrator with managed Postgres/Redis, secrets injected from a secret
+# manager, and horizontal scaling. What it *does* prove is that the image
+# boots with production settings and that migrations work as a separate step.
+#
+# Every secret below is read from the host environment with no default, so
+# `docker compose -f docker-compose.prod.yml up` fails loudly rather than
+# silently starting with a weak credential.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD}
+      POSTGRES_DB: iam_platform
+    volumes:
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    # Deliberately no `ports:` -- the database is reachable only on the
+    # compose network. Exposing 5432 to the host is a dev-only convenience.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d iam_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # Persistence off on purpose: Redis holds only cache and rate-limit state
+    # (docs/06-authorization-model.md -- "never authoritative"), so durability
+    # buys nothing and an RDB dump on disk is one more place session-adjacent
+    # data could linger.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    # Runs as the migrator (table-owning) role and exits. The app service
+    # waits for it to complete successfully, so a failed migration blocks the
+    # rollout instead of leaving the app running against a stale schema.
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      ENVIRONMENT: production
+      SECRET_PROVIDER: ${SECRET_PROVIDER:-env}
+      DATABASE__HOST: postgres
+      DATABASE__PORT: "5432"
+      DATABASE__NAME: iam_platform
+      DATABASE__MIGRATOR_USER: postgres
+      DATABASE__MIGRATOR_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?}
+      DATABASE__USER: app_tenant
+      DATABASE__PASSWORD: ${APP_TENANT_PASSWORD:?set APP_TENANT_PASSWORD}
+      DATABASE__PLATFORM_USER: app_platform
+      DATABASE__PLATFORM_PASSWORD: ${APP_PLATFORM_PASSWORD:?set APP_PLATFORM_PASSWORD}
+      REDIS__URL: redis://redis:6379/0
+      JWT__PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:?}
+      JWT__PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:?}
+      ENCRYPTION__DATA_KEY: ${ENCRYPTION_DATA_KEY:?}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    environment:
+      ENVIRONMENT: production
+      # NOTE: `env` is rejected at startup when ENVIRONMENT=production
+      # (core/config.py) -- a real deploy sets this to aws_secrets_manager (or
+      # another implemented provider) and passes `secret://` references below.
+      SECRET_PROVIDER: ${SECRET_PROVIDER:?production requires a real secret provider}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      # Only needed when the host isn't an EC2 instance with an IAM role
+      # attached (boto3's default credential chain finds the role
+      # automatically and these can be left blank). Left empty, they are
+      # ignored -- boto3 treats an empty-string env var as "not set" and
+      # falls through to the next credential source.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      DATABASE__HOST: postgres
+      DATABASE__PORT: "5432"
+      DATABASE__NAME: iam_platform
+      DATABASE__USER: app_tenant
+      DATABASE__PASSWORD: ${APP_TENANT_PASSWORD:?}
+      DATABASE__PLATFORM_USER: app_platform
+      DATABASE__PLATFORM_PASSWORD: ${APP_PLATFORM_PASSWORD:?}
+      # The app never needs DDL rights; migrator credentials are intentionally
+      # absent from this service's environment.
+      REDIS__URL: redis://redis:6379/0
+      JWT__PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:?}
+      JWT__PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:?}
+      ENCRYPTION__DATA_KEY: ${ENCRYPTION_DATA_KEY:?}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-[]}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # Give the app time to finish in-flight requests; must exceed uvicorn's
+    # timeout_graceful_shutdown (20s) in asgi.py.
+    stop_grace_period: 30s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pgdata:

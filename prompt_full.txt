@@ -1,0 +1,1432 @@
+# ROLE
+
+	You are a Principal Python Engineer, AI Systems Architect, Database Architect, SaaS Architect, and Application Security Engineer specializing in enterprise-grade, multi-tenant platforms.
+
+	Your areas of expertise include:
+
+		* Python 3.13+
+		* FastAPI
+		* PostgreSQL
+		* SQLAlchemy 2.0 Async
+		* Alembic
+		* Redis
+		* OAuth 2.0
+		* OpenID Connect
+		* JWT authentication
+		* Multi-tenant SaaS architecture
+		* Enterprise RBAC
+		* Attribute-Based Access Control
+		* Policy-based authorization
+		* AI assistant platforms
+		* Secure API design
+		* Clean Architecture
+		* Domain-Driven Design
+		* Repository Pattern
+		* Unit of Work
+		* Dependency Injection
+		* Event-driven systems
+		* OWASP security standards
+
+	You design production-ready systems that are secure, scalable, maintainable, testable, observable, and suitable for large enterprise environments.
+
+	Use current stable and recommended technologies. Do not use outdated patterns merely for familiarity.
+
+	For every important architectural decision, explain:
+
+		* why it was selected;
+		* which alternatives were considered;
+		* what trade-offs it introduces;
+		* how it supports future growth.
+
+---
+
+# PROJECT CONTEXT
+
+	Develop a production-ready, multi-tenant identity, authentication, and authorization system for an enterprise AI Assistant platform.
+
+	The AI Assistant platform will serve multiple independent organizations.
+
+	Each organization must operate inside its own isolated tenant boundary.
+
+	The system must clearly distinguish between:
+
+	1. Platform-level users
+	2. Tenant-level users
+
+	The authorization model must prevent accidental cross-tenant access while still allowing authorized platform operators to manage the complete platform.
+
+---
+
+# USER CATEGORIES
+
+	## 1. Platform Users
+
+		Platform users are the trusted users who develop, operate, secure, support, and maintain the AI Assistant platform.
+
+		Examples include:
+
+			* Platform Owner
+			* Platform Super Administrator
+			* Platform Administrator
+			* Platform Developer
+			* Platform Security Administrator
+			* Platform Support Engineer
+			* Platform Auditor
+			* Billing Administrator
+
+		Platform users may perform cross-tenant operations based on their assigned platform roles and permissions.
+
+		A Platform Super Administrator may have complete authority across:
+
+			* all tenants;
+			* all tenant users;
+			* global configurations;
+			* AI models and providers;
+			* system integrations;
+			* billing and subscription plans;
+			* usage limits;
+			* audit logs;
+			* security policies;
+			* platform monitoring;
+			* feature flags;
+			* support tools;
+			* platform-level roles and permissions.
+
+		Do not grant every platform user unrestricted access by default.
+
+		Platform privileges must follow least-privilege principles.
+
+		All sensitive cross-tenant actions must be logged.
+
+	---
+
+	## 2. Tenant Users
+
+		Tenant users belong to a specific organization or tenant.
+
+		Examples include:
+
+			* Tenant Owner
+			* Tenant Administrator
+			* AI Assistant Administrator
+			* Knowledge Base Manager
+			* Integration Manager
+			* Department Manager
+			* Team Manager
+			* Agent Builder
+			* Analyst
+			* Auditor
+			* Standard User
+			* Read-Only User
+
+		Tenant users must only access data, configurations, AI assistants, files, conversations, knowledge bases, integrations, users, teams, and resources belonging to their tenant.
+
+		Tenant users must never gain cross-tenant access through:
+
+			* manipulated identifiers;
+			* API parameters;
+			* URL changes;
+			* database queries;
+			* token modification;
+			* role assignment;
+			* cache keys;
+			* background jobs;
+			* file paths;
+			* search indexes;
+			* object storage;
+			* vector database queries;
+			* WebSocket connections.
+
+---
+
+# CORE TASK
+
+	Design and develop a complete enterprise-grade, multi-tenant RBAC system using FastAPI and PostgreSQL.
+
+	The system must support:
+
+		* platform-level authorization;
+		* tenant-level authorization;
+		* tenant isolation;
+		* organization-based access;
+		* tenant-specific roles;
+		* platform-wide roles;
+		* user membership in one or more tenants;
+		* multiple roles per tenant membership;
+		* permission inheritance;
+		* resource ownership;
+		* team and department access;
+		* tenant-specific policies;
+		* future ABAC and policy-engine integration.
+
+	The architecture should be suitable for an enterprise AI Assistant SaaS platform that may eventually support millions of users and thousands of tenants.
+
+---
+
+# AUTHORIZATION BOUNDARIES
+
+	The system must implement two separate authorization scopes.
+
+	## Platform Scope
+
+		Platform-scoped permissions apply across the complete application.
+
+		Examples:
+
+			* platform.tenants.create
+			* platform.tenants.view
+			* platform.tenants.update
+			* platform.tenants.suspend
+			* platform.tenants.delete
+			* platform.users.manage
+			* platform.roles.manage
+			* platform.audit.view
+			* platform.security.manage
+			* platform.billing.manage
+			* platform.features.manage
+			* platform.ai_providers.manage
+			* platform.system_settings.manage
+
+		Platform permissions must not be assignable to ordinary tenant roles.
+
+	---
+
+	## Tenant Scope
+
+	Tenant-scoped permissions apply only inside a specific tenant.
+
+	Examples:
+
+		* tenant.users.invite
+		* tenant.users.view
+		* tenant.users.update
+		* tenant.users.remove
+		* tenant.roles.manage
+		* tenant.teams.manage
+		* tenant.assistants.create
+		* tenant.assistants.view
+		* tenant.assistants.update
+		* tenant.assistants.delete
+		* tenant.knowledge_bases.manage
+		* tenant.files.manage
+		* tenant.integrations.manage
+		* tenant.conversations.view
+		* tenant.audit.view
+		* tenant.usage.view
+		* tenant.settings.manage
+
+	A tenant permission must always be evaluated together with the active tenant context.
+
+---
+
+# TENANT MEMBERSHIP MODEL
+
+	A user account may belong to:
+
+		* no tenant;
+		* one tenant;
+		* multiple tenants.
+
+	A separate tenant membership must exist for each user-tenant relationship.
+
+	The membership should include:
+
+		* user ID;
+		* tenant ID;
+		* membership status;
+		* invitation status;
+		* joined date;
+		* invited by;
+		* default tenant indicator;
+		* department;
+		* team;
+		* job title;
+		* tenant-specific metadata;
+		* assigned tenant roles;
+		* last activity;
+		* suspension information.
+
+	The same user may have different roles in different tenants.
+
+	Example:
+
+	A user may be:
+
+		* Tenant Administrator in Tenant A;
+		* Analyst in Tenant B;
+		* Read-Only User in Tenant C.
+
+	Roles must never leak between tenant memberships.
+
+---
+
+# ACTIVE TENANT CONTEXT
+
+	Every tenant-specific request must resolve an active tenant context.
+
+	The tenant may be resolved through a secure and documented strategy such as:
+
+		* tenant subdomain;
+		* custom domain;
+		* verified request header;
+		* URL path;
+		* authenticated tenant selection;
+		* token claim combined with server-side membership validation.
+
+	Do not trust a tenant ID merely because it is included in a JWT or request parameter.
+
+	For every tenant request, validate:
+
+		1. The user is authenticated.
+		2. The tenant exists.
+		3. The tenant is active.
+		4. The user has an active membership in that tenant.
+		5. The membership is not suspended or revoked.
+		6. The requested resource belongs to the same tenant.
+		7. The membership has the required role or permission.
+		8. Additional ownership, team, department, or policy rules are satisfied.
+
+---
+
+# PLATFORM IMPERSONATION AND SUPPORT ACCESS
+
+	Design a secure support-access or impersonation mechanism for authorized platform users.
+
+	It must include:
+
+		* explicit permission requirement;
+		* reason for access;
+		* optional approval workflow;
+		* limited duration;
+		* tenant-visible audit records where appropriate;
+		* platform audit records;
+		* original platform user identity;
+		* impersonated tenant user identity;
+		* start and end timestamps;
+		* IP address;
+		* device and session information;
+		* revocation capability;
+		* visible impersonation indicator;
+		* prohibition against silent identity replacement.
+
+	Platform administrators should not directly use tenant accounts without an auditable support-access mechanism.
+
+---
+
+# TECHNOLOGY STACK
+
+	Use modern, stable, production-ready technologies.
+
+	## Backend
+
+		* Python 3.13+
+		* FastAPI
+		* Pydantic 2
+		* SQLAlchemy 2.0 Async
+		* Alembic
+		* PostgreSQL
+		* Redis
+		* Uvicorn or an appropriate production ASGI deployment configuration
+
+	## Authentication
+
+		* OAuth 2.0
+		* OpenID Connect
+		* JWT access tokens
+		* Rotating refresh tokens
+		* Secure session support where required
+		* Password authentication
+		* Google login
+		* Facebook login
+		* Extensible social login architecture
+
+	## Authorization
+
+		* Platform RBAC
+		* Tenant RBAC
+		* Resource ownership
+		* Hierarchical roles
+		* Permission inheritance
+		* Permission overrides
+		* Team-based access
+		* Department-based access
+		* Future ABAC support
+		* Future policy engine integration
+
+---
+
+# THIRD-PARTY LOGIN
+
+	Support:
+
+		* Google OpenID Connect
+		* Facebook Login
+
+	The provider architecture must allow future providers such as:
+
+		* Microsoft Entra ID
+		* Apple
+		* GitHub
+		* LinkedIn
+		* Okta
+		* Auth0
+		* Keycloak
+		* Generic enterprise OIDC providers
+		* SAML-based enterprise identity providers
+
+	Use a provider interface or strategy pattern so a new provider can be added without modifying existing provider implementations.
+
+	A social identity must be linked to an internal user account.
+
+	Do not use an email address alone as unquestioned proof that two identities belong to the same person.
+
+	Include safe account-linking and conflict-resolution flows.
+
+---
+
+# ENTERPRISE SSO
+
+	Keep the architecture ready for tenant-specific enterprise authentication.
+
+	Future tenant-level SSO may include:
+
+		* tenant-specific OIDC provider;
+		* Microsoft Entra ID;
+		* Okta;
+		* Google Workspace;
+		* Keycloak;
+		* SAML 2.0;
+		* domain-based login discovery;
+		* tenant-enforced SSO;
+		* just-in-time user provisioning;
+		* SCIM user provisioning;
+		* tenant-specific MFA policies.
+
+---
+
+# DATABASE DESIGN
+
+	Design a normalized PostgreSQL schema.
+
+	At minimum, consider the following entities:
+
+	## Global Identity
+
+		* users
+		* user_profiles
+		* identities
+		* oauth_accounts
+		* credentials
+		* email_verifications
+		* password_reset_tokens
+		* mfa_methods
+		* trusted_devices
+		* sessions
+		* refresh_tokens
+		* api_keys
+
+	## Platform Authorization
+
+		* platform_roles
+		* platform_permissions
+		* platform_role_permissions
+		* platform_user_roles
+
+	## Tenant Management
+
+		* tenants
+		* tenant_domains
+		* tenant_settings
+		* tenant_subscriptions
+		* tenant_features
+		* tenant_usage_limits
+		* tenant_invitations
+		* tenant_memberships
+
+	## Tenant Authorization
+
+		* tenant_roles
+		* tenant_permissions
+		* tenant_role_permissions
+		* tenant_membership_roles
+		* role_hierarchy
+		* permission_groups
+		* role_groups
+		* authorization_overrides
+
+	## Organizational Structure
+
+		* departments
+		* teams
+		* team_memberships
+		* groups
+		* group_memberships
+
+	## AI Assistant Resources
+
+		* ai_assistants
+		* assistant_members
+		* assistant_permissions
+		* knowledge_bases
+		* documents
+		* conversations
+		* integrations
+		* data_sources
+		* model_configurations
+		* provider_credentials
+
+	## Security and Audit
+
+		* audit_logs
+		* security_events
+		* login_attempts
+		* account_lockouts
+		* access_reviews
+		* impersonation_sessions
+		* policy_decisions
+
+	For each table provide:
+
+		* purpose;
+		* columns;
+		* primary key;
+		* foreign keys;
+		* unique constraints;
+		* check constraints;
+		* indexes;
+		* tenant-scoping rules;
+		* deletion behavior;
+		* audit requirements;
+		* data retention considerations.
+
+---
+
+# TENANT DATA ISOLATION
+
+	Use defense-in-depth tenant isolation.
+
+	Tenant isolation must not depend on a single application check.
+
+	Evaluate and explain the use of:
+
+		* mandatory tenant_id columns;
+		* composite foreign keys;
+		* composite unique constraints;
+		* PostgreSQL Row-Level Security;
+		* tenant-aware repositories;
+		* tenant-aware query services;
+		* tenant-aware cache keys;
+		* tenant-aware background jobs;
+		* tenant-aware object storage paths;
+		* tenant-aware vector database namespaces;
+		* tenant-aware search indexes;
+		* request-scoped tenant context;
+		* automated cross-tenant security tests.
+
+	Every tenant-owned record must contain a tenant identifier unless there is a clearly documented reason not to.
+
+	Example composite uniqueness:
+
+		* unique tenant role name per tenant;
+		* unique assistant name per tenant where required;
+		* unique tenant membership per user and tenant;
+		* unique permission assignment per role;
+		* unique external identity per provider.
+
+---
+
+# POSTGRESQL ROW-LEVEL SECURITY
+
+	Evaluate PostgreSQL Row-Level Security as an additional protection layer.
+
+	Explain:
+
+		* how the active tenant is passed to the database session;
+		* how pooled connections are safely reset;
+		* how platform operations bypass or use separate policies;
+		* how background workers establish tenant context;
+		* how migrations and maintenance jobs operate;
+		* how tests verify that RLS cannot leak data.
+
+	Do not present RLS as a replacement for application-layer authorization.
+
+	Use it as defense in depth.
+
+---
+
+# ROLE MODEL
+
+	Support both system-defined and custom roles.
+
+	## Platform Roles
+
+	Platform roles are global and controlled by the platform.
+
+	Examples:
+
+		* Platform Owner
+		* Platform Super Administrator
+		* Platform Administrator
+		* Platform Developer
+		* Platform Security Administrator
+		* Platform Support Engineer
+		* Platform Auditor
+		* Platform Billing Administrator
+
+	## Tenant Roles
+
+	Tenant roles belong to one tenant.
+
+	Examples:
+
+		* Tenant Owner
+		* Tenant Administrator
+		* AI Administrator
+		* Security Administrator
+		* Knowledge Manager
+		* Integration Manager
+		* Team Manager
+		* Agent Builder
+		* Analyst
+		* Auditor
+		* Member
+		* Read-Only User
+
+	A tenant may create custom roles based on permissions allowed by its plan and policies.
+
+	A tenant administrator must never be able to create a role with platform-scoped permissions.
+
+---
+
+# ROLE HIERARCHY
+
+	Support role inheritance without creating uncontrolled privilege escalation.
+
+	Examples:
+
+		* Tenant Owner inherits Tenant Administrator privileges.
+		* Tenant Administrator inherits selected Manager privileges.
+		* Manager inherits selected Member privileges.
+
+	The design must address:
+
+		* circular hierarchy detection;
+		* maximum inheritance depth;
+		* permission conflict resolution;
+		* explicit deny rules;
+		* inherited permission caching;
+		* cache invalidation;
+		* audit logging;
+		* prevention of self-escalation.
+
+---
+
+# PERMISSION MODEL
+
+	Use structured permission names.
+
+	Recommended format:
+
+	scope.resource.action
+
+	Examples:
+
+		* platform.tenants.create
+		* platform.tenants.suspend
+		* platform.audit.view
+		* tenant.users.invite
+		* tenant.users.remove
+		* tenant.assistants.create
+		* tenant.assistants.publish
+		* tenant.knowledge_bases.update
+		* tenant.integrations.configure
+		* tenant.conversations.export
+
+	Each permission should include:
+
+		* identifier;
+		* scope;
+		* resource;
+		* action;
+		* description;
+		* risk level;
+		* assignability;
+		* system-managed indicator;
+		* tenant-customizable indicator;
+		* required plan or feature;
+		* optional conditions.
+
+---
+
+# RESOURCE-LEVEL AUTHORIZATION
+
+	RBAC alone may be too broad for an enterprise AI Assistant.
+
+	Support resource-level rules such as:
+
+		* owner can update;
+		* team members can view;
+		* department managers can approve;
+		* assistant administrators can configure;
+		* auditors can view but not modify;
+		* knowledge managers can manage selected knowledge bases;
+		* conversation access may depend on department or team;
+		* sensitive assistants may require explicit assignment.
+
+	Authorization should be able to evaluate:
+
+		* user;
+		* platform role;
+		* tenant membership;
+		* tenant role;
+		* permission;
+		* tenant;
+		* resource;
+		* resource owner;
+		* team;
+		* department;
+		* request action;
+		* subscription plan;
+		* feature flag;
+		* authentication strength;
+		* device trust;
+		* IP restrictions;
+		* time-based restrictions.
+
+---
+
+# SECURITY REQUIREMENTS
+
+	Implement enterprise-grade security.
+
+	Include:
+
+		* Argon2id password hashing;
+		* access token expiration;
+		* rotating refresh tokens;
+		* refresh token reuse detection;
+		* token revocation;
+		* session management;
+		* device management;
+		* secure cookie strategy;
+		* CSRF protection where applicable;
+		* email verification;
+		* password reset;
+		* account recovery;
+		* MFA-ready architecture;
+		* WebAuthn-ready architecture;
+		* login throttling;
+		* rate limiting;
+		* account lockout;
+		* IP and device logging;
+		* audit logging;
+		* security event logging;
+		* API key hashing;
+		* secret rotation;
+		* secure HTTP headers;
+		* CORS restrictions;
+		* SQL injection prevention;
+		* XSS prevention;
+		* IDOR prevention;
+		* SSRF prevention;
+		* mass-assignment prevention;
+		* privilege-escalation prevention;
+		* cross-tenant access prevention;
+		* OAuth state and nonce validation;
+		* PKCE where applicable;
+		* redirect URI validation;
+		* sensitive-data masking;
+		* encryption for sensitive provider credentials;
+		* OWASP Top 10 mitigation.
+
+---
+
+# TOKEN DESIGN
+
+	Design access and refresh token claims carefully.
+
+	Possible access-token claims include:
+
+		* subject;
+		* session ID;
+		* token ID;
+		* authentication time;
+		* issuer;
+		* audience;
+		* issued-at time;
+		* expiration time;
+		* authentication method;
+		* active tenant context where appropriate.
+
+	Avoid placing large or rapidly changing permission lists directly inside long-lived tokens.
+
+	Explain how permission changes, role revocations, tenant suspension, user suspension, and session revocation take effect promptly.
+
+	The server must validate current membership and security state where required.
+
+---
+
+# API DESIGN
+
+	Design versioned REST APIs following OpenAPI standards.
+
+	## Authentication
+
+		* register
+		* login
+		* logout
+		* refresh token
+		* revoke session
+		* logout from all devices
+		* verify email
+		* resend verification
+		* forgot password
+		* reset password
+		* link social account
+		* unlink social account
+		* list active sessions
+
+	## Tenant Management
+
+		* create tenant
+		* view tenant
+		* update tenant
+		* suspend tenant
+		* reactivate tenant
+		* delete or archive tenant
+		* list tenant memberships
+		* switch active tenant
+		* invite tenant user
+		* accept invitation
+		* remove tenant user
+		* suspend membership
+		* transfer tenant ownership
+
+	## Platform Administration
+
+		* list all tenants
+		* inspect tenant status
+		* manage platform users
+		* manage global roles
+		* manage global permissions
+		* review security events
+		* manage subscriptions
+		* manage global AI providers
+		* manage feature flags
+		* initiate support access
+		* terminate impersonation session
+
+	## Tenant Authorization
+
+		* create tenant role
+		* update tenant role
+		* delete tenant role
+		* assign permissions
+		* assign roles to membership
+		* remove role assignment
+		* inspect effective permissions
+		* review role hierarchy
+		* review access history
+
+	## AI Assistant Resources
+
+		* create assistant
+		* update assistant
+		* publish assistant
+		* archive assistant
+		* assign assistant members
+		* manage knowledge bases
+		* manage integrations
+		* manage model configurations
+		* review usage
+		* review conversations based on authorization
+
+	## Audit and Security
+
+		* tenant audit logs
+		* platform audit logs
+		* security events
+		* access decisions
+		* impersonation history
+		* login history
+		* API key usage
+
+	## Operations
+
+		* health check
+		* readiness check
+		* liveness check
+		* metrics
+		* dependency status
+
+---
+
+# API REQUEST CONTEXT
+
+	Create a secure request context containing appropriate values such as:
+
+		* current user;
+		* current session;
+		* active tenant;
+		* tenant membership;
+		* platform roles;
+		* tenant roles;
+		* authentication method;
+		* request ID;
+		* correlation ID;
+		* source IP;
+		* user agent;
+		* impersonation context;
+		* security attributes.
+
+	Do not pass raw tenant IDs manually through every service when a safe request-scoped tenant context is more appropriate.
+
+	Do not use hidden global mutable state.
+
+---
+
+# PROJECT STRUCTURE
+
+	Use a scalable, modular structure similar to:
+
+		app/
+		api/
+		v1/
+		auth/
+		platform/
+		tenants/
+		users/
+		roles/
+		permissions/
+		assistants/
+		audit/
+		application/
+		commands/
+		queries/
+		services/
+		dto/
+		domain/
+		identity/
+		platform/
+		tenants/
+		authorization/
+		assistants/
+		audit/
+		infrastructure/
+		database/
+		repositories/
+		cache/
+		oauth/
+		security/
+		messaging/
+		storage/
+		vector_store/
+		core/
+		config/
+		exceptions/
+		logging/
+		middleware/
+		context/
+		policies/
+		workers/
+		tests/
+
+	Explain why each layer and module exists.
+
+	Avoid unnecessary abstraction and over-engineering.
+
+	The project structure should support gradual growth rather than forcing every enterprise pattern into the first implementation.
+
+---
+
+# DATABASE CONNECTION AND TRANSACTION MANAGEMENT
+
+	Use SQLAlchemy 2.0 asynchronous APIs.
+
+	Include:
+
+		* async engine;
+		* async session factory;
+		* connection pooling;
+		* session-per-request pattern;
+		* explicit transaction boundaries;
+		* rollback behavior;
+		* connection health checks;
+		* pool configuration;
+		* safe shutdown;
+		* retry strategy for transient failures;
+		* migration management;
+		* read and write separation readiness;
+		* tenant context setup;
+		* RLS context cleanup.
+
+	Explain why a session should not be shared across concurrent tasks.
+
+---
+
+# CACHE DESIGN
+
+	Use Redis where appropriate.
+
+	Possible cached values include:
+
+		* effective permissions;
+		* role-permission mappings;
+		* tenant settings;
+		* feature flags;
+		* session metadata;
+		* rate-limit counters;
+		* token revocation metadata.
+
+	Every tenant-related cache key must include a verified tenant identifier.
+
+	The design must explain:
+
+		* invalidation;
+		* expiration;
+		* stampede prevention;
+		* permission versioning;
+		* stale authorization risk;
+		* failure behavior when Redis is unavailable.
+
+	Never allow cached authorization data to produce cross-tenant leakage.
+
+---
+
+# AUDIT LOGGING
+
+	Audit all security-sensitive actions.
+
+	Examples:
+
+		* login success or failure;
+		* password reset;
+		* MFA changes;
+		* tenant creation;
+		* tenant suspension;
+		* user invitation;
+		* membership removal;
+		* role creation;
+		* role assignment;
+		* permission change;
+		* API key creation;
+		* AI provider credential change;
+		* assistant access change;
+		* impersonation start and end;
+		* cross-tenant administrative action;
+		* data export;
+		* sensitive configuration change.
+
+	Audit records should include:
+
+	* actor user;
+		* effective user;
+		* tenant;
+		* platform context;
+		* action;
+		* resource type;
+		* resource ID;
+		* before state where appropriate;
+		* after state where appropriate;
+		* timestamp;
+		* IP;
+		* user agent;
+		* request ID;
+		* result;
+		* failure reason;
+		* impersonation session;
+		* metadata.
+
+	Audit logs must be protected against unauthorized modification.
+
+---
+
+# AI ASSISTANT-SPECIFIC AUTHORIZATION
+
+	The authorization architecture must support AI Assistant resources such as:
+
+		* assistants;
+		* agents;
+		* prompts;
+		* workflows;
+		* tools;
+		* data sources;
+		* knowledge bases;
+		* documents;
+		* embeddings;
+		* vector indexes;
+		* conversations;
+		* message histories;
+		* model providers;
+		* model credentials;
+		* usage limits;
+		* token budgets;
+		* billing records.
+
+	Examples of authorization policies:
+
+		* only assigned users can use a restricted assistant;
+		* only knowledge managers can upload documents;
+		* tenant administrators can configure provider credentials;
+		* standard users cannot view provider secrets;
+		* auditors can inspect metadata but not private conversation content;
+		* department members can access department-owned assistants;
+		* platform support access requires explicit audited authorization;
+		* vector searches must always be filtered by verified tenant and resource scope.
+
+---
+
+# MULTI-TENANT BACKGROUND JOBS
+
+	Background workers must preserve tenant isolation.
+
+	Every job should include verified context such as:
+
+		* tenant ID;
+		* actor ID;
+		* resource ID;
+		* request or correlation ID;
+		* required authorization snapshot or validation strategy.
+
+	Workers must revalidate relevant tenant and resource state before sensitive processing.
+
+	Tenant context must never remain attached to a reused worker connection after a job finishes.
+
+---
+
+# FILE, OBJECT STORAGE, AND VECTOR DATABASE ISOLATION
+
+	Use tenant-aware namespaces.
+
+	Examples:
+
+		* tenants/{tenant_id}/documents/{document_id}
+		* tenants/{tenant_id}/assistants/{assistant_id}
+		* vector namespace by tenant and knowledge base
+		* search index filters by tenant
+		* tenant-specific encryption or key references where required
+
+	Do not rely only on user-provided metadata filters.
+
+	The application must construct tenant filters from verified server-side context.
+
+---
+
+# PERFORMANCE AND SCALABILITY
+
+	Optimize for:
+
+		* asynchronous I/O;
+		* efficient SQL queries;
+		* suitable indexes;
+		* connection pooling;
+		* bounded concurrency;
+		* Redis caching;
+		* cursor pagination;
+		* batch operations;
+		* background processing;
+		* horizontal scaling;
+		* stateless API instances;
+		* read replicas;
+		* partitioning readiness;
+		* observability;
+		* rate limiting;
+		* tenant-level quotas.
+
+	Avoid premature optimization.
+
+	Identify which optimizations are required initially and which should be introduced only after measurement.
+
+---
+
+# TESTING REQUIREMENTS
+
+	Include:
+
+		* unit tests;
+		* integration tests;
+		* API tests;
+		* database tests;
+		* authentication tests;
+		* refresh-token tests;
+		* OAuth tests;
+		* platform-role tests;
+		* tenant-role tests;
+		* permission-inheritance tests;
+		* resource-ownership tests;
+		* impersonation tests;
+		* audit-log tests;
+		* RLS tests;
+		* cache-isolation tests;
+		* background-job isolation tests;
+		* concurrency tests;
+		* security tests.
+
+	Mandatory cross-tenant tests should verify that:
+
+		* Tenant A cannot read Tenant B data.
+		* Tenant A cannot update Tenant B data.
+		* Tenant A cannot delete Tenant B data.
+		* Tenant A cannot assign Tenant B roles.
+		* Tenant A cannot access Tenant B assistants.
+		* Tenant A cannot search Tenant B vectors.
+		* Tenant A cannot retrieve Tenant B files.
+		* Tenant A cannot infer Tenant B resource existence.
+		* manipulated tenant IDs are rejected;
+		* stale permissions are invalidated;
+		* unauthorized platform access is rejected.
+
+---
+
+# OBSERVABILITY
+
+	Include:
+
+		* structured logging;
+		* request IDs;
+		* correlation IDs;
+		* metrics;
+		* tracing;
+		* error reporting;
+		* authentication metrics;
+		* authorization-denial metrics;
+		* tenant usage metrics;
+		* suspicious access alerts;
+		* cross-tenant access-attempt alerts;
+		* database pool metrics;
+		* Redis metrics;
+		* worker metrics.
+
+	Sensitive values, credentials, tokens, and personal data must not be written to logs.
+
+---
+
+# CODING STANDARDS
+
+	Follow:
+
+		* PEP 8;
+		* complete type hints;
+		* Pydantic 2 conventions;
+		* SQLAlchemy 2.0 conventions;
+		* SOLID where useful;
+		* DRY without forced abstraction;
+		* KISS;
+		* explicit dependency boundaries;
+		* secure defaults;
+		* composition over inheritance.
+
+	Each important public function should include:
+
+		* a clear responsibility;
+		* typed inputs and outputs;
+		* appropriate documentation;
+		* explicit error handling;
+		* test coverage.
+
+	Do not create generic base classes unless they solve a real recurring problem.
+
+---
+
+# CONFIGURATION MANAGEMENT
+
+	Use environment-based configuration with typed settings.
+
+	Separate:
+
+		* local;
+		* testing;
+		* staging;
+		* production.
+
+	Never hardcode:
+
+		* credentials;
+		* JWT secrets;
+		* OAuth secrets;
+		* encryption keys;
+		* database passwords;
+		* Redis credentials;
+		* provider API keys.
+
+	Design for secret managers such as:
+
+		* AWS Secrets Manager;
+		* HashiCorp Vault;
+		* Google Secret Manager;
+		* Azure Key Vault.
+
+---
+
+# DEPLOYMENT
+
+	Provide a production deployment strategy covering:
+
+		* Docker;
+		* PostgreSQL;
+		* Redis;
+		* reverse proxy or load balancer;
+		* TLS;
+		* worker processes;
+		* database migrations;
+		* health checks;
+		* zero-downtime deployment;
+		* rollback;
+		* secret management;
+		* backups;
+		* disaster recovery;
+		* log aggregation;
+		* monitoring;
+		* alerting;
+		* horizontal scaling.
+
+	Do not expose development configurations in production.
+
+---
+
+# REQUIRED DELIVERABLES
+
+	Develop the solution in clearly separated phases.
+
+	## Phase 1: Requirements and Threat Model
+
+	Provide:
+
+		* functional requirements;
+		* non-functional requirements;
+		* user categories;
+		* trust boundaries;
+		* platform-versus-tenant responsibilities;
+		* major threats;
+		* cross-tenant attack scenarios;
+		* privilege-escalation scenarios.
+
+	## Phase 2: Architecture
+
+	Provide:
+
+		* system context diagram;
+		* container diagram;
+		* component diagram;
+		* authentication architecture;
+		* authorization architecture;
+		* tenant resolution flow;
+		* platform administration flow;
+		* tenant administration flow.
+
+	## Phase 3: Database Design
+
+	Provide:
+
+		* ER diagram;
+		* tables;
+		* relationships;
+		* constraints;
+		* indexes;
+		* RLS strategy;
+		* deletion strategy;
+		* audit strategy.
+
+	## Phase 4: Project Structure
+
+	Provide:
+
+		* complete folder tree;
+		* responsibilities of each module;
+		* dependency rules;
+		* import boundaries.
+
+	## Phase 5: Authentication
+
+	Implement:
+
+		* password authentication;
+		* JWT access tokens;
+		* rotating refresh tokens;
+		* email verification;
+		* password reset;
+		* Google login;
+		* Facebook login;
+		* session management;
+		* device management.
+
+	## Phase 6: Authorization
+
+	Implement:
+
+		* platform RBAC;
+		* tenant RBAC;
+		* tenant membership validation;
+		* resource ownership;
+		* team and department access;
+		* hierarchical roles;
+		* effective permission calculation;
+		* permission caching;
+		* impersonation controls.
+
+	## Phase 7: APIs
+
+	Implement:
+
+		* authentication APIs;
+		* platform administration APIs;
+		* tenant administration APIs;
+		* role and permission APIs;
+		* AI Assistant authorization examples;
+		* audit APIs;
+		* session APIs.
+
+	## Phase 8: Testing
+
+	Provide:
+
+		* unit tests;
+		* integration tests;
+		* security tests;
+		* cross-tenant isolation tests;
+		* OAuth tests;
+		* permission tests;
+		* impersonation tests.
+
+	## Phase 9: Deployment
+
+	Provide:
+
+		* Docker configuration;
+		* production settings;
+		* migration procedure;
+		* monitoring;
+		* backup and recovery strategy.
+
+---
+
+# IMPLEMENTATION RULES
+
+	1. Do not generate the entire project as one unstructured response.
+	2. Start with requirements, threat model, and architecture.
+	3. Confirm the domain model through explicit assumptions.
+	4. Then provide the folder structure and database schema.
+	5. Implement the project module by module.
+	6. Provide complete file paths before every code block.
+	7. Do not omit imports.
+	8. Do not use placeholder pseudocode for core security logic.
+	9. Clearly mark configuration values that must come from environment variables.
+	10. Explain security-critical decisions.
+	11. Include migrations for schema changes.
+	12. Include tests with each major module.
+	13. Ensure every tenant-owned query is tenant-scoped.
+	14. Keep platform and tenant permissions strictly separated.
+	15. Never allow tenant administrators to grant platform permissions.
+	16. Use deny-by-default authorization.
+	17. Return generic not-found responses when revealing resource existence would create a security risk.
+	18. Do not claim that the system is secure merely because JWT, RBAC, or RLS is present.
+	19. Use layered security controls.
+	20. State any assumptions before implementation.
+
+---
+
+# EXPECTED FIRST RESPONSE
+
+	Do not begin by generating application code.
+
+	First just give me exact production ready SQLAlchemy models required for this project.

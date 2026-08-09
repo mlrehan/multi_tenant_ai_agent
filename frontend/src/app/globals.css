@@ -1,0 +1,198 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * IAM Control Center design tokens.
+ *
+ * Sidebar is a fixed deep-navy surface even in light mode -- security
+ * consoles read as "operational" against a light canvas with a dark rail,
+ * the same way most cloud IAM consoles (AWS, GCP) are built; a fully light
+ * sidebar has no visual anchor. Primary accent is teal (not the default
+ * blue) to stay out of the way of semantic red/amber used for risk levels
+ * and destructive actions elsewhere in the UI.
+ *
+ * `--font-mono` (JetBrains Mono) is not decorative: permission codes,
+ * tenant/user/role UUIDs, and API paths are this product's actual subject
+ * matter, and are set in mono throughout as identifier chips -- see
+ * `components/identity-chip.tsx` and the permission-ledger component.
+ */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+  --font-heading: var(--font-inter);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Risk-level and status scales -- domain-specific, not decorative: risk
+     levels are a real column on the permission catalog (docs/14) and drive
+     the impersonation-scope narrowing (docs/03 scenario 9). */
+  --color-risk-low: var(--risk-low);
+  --color-risk-medium: var(--risk-medium);
+  --color-risk-high: var(--risk-high);
+  --color-risk-critical: var(--risk-critical);
+  --color-status-success: var(--status-success);
+  --color-status-warning: var(--status-warning);
+  --color-status-danger: var(--status-danger);
+  --color-status-info: var(--status-info);
+}
+
+:root {
+  --background: #f7f8fa;
+  --foreground: #0b1220;
+  --card: #ffffff;
+  --card-foreground: #0b1220;
+  --popover: #ffffff;
+  --popover-foreground: #0b1220;
+  --primary: #0f766e;
+  --primary-foreground: #ffffff;
+  --secondary: #eef2f3;
+  --secondary-foreground: #0b1220;
+  --muted: #eef1f4;
+  --muted-foreground: #5b6472;
+  --accent: #e6f6f5;
+  --accent-foreground: #0f766e;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #e2e5ea;
+  --input: #e2e5ea;
+  --ring: #0f766e;
+  --chart-1: #0f766e;
+  --chart-2: #6366f1;
+  --chart-3: #f59e0b;
+  --chart-4: #ec4899;
+  --chart-5: #64748b;
+  --radius: 0.5rem;
+
+  --sidebar: #0b1220;
+  --sidebar-foreground: #c7cdd9;
+  --sidebar-primary: #0f766e;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #16202e;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #1b2536;
+  --sidebar-ring: #14919b;
+
+  --risk-low: #64748b;
+  --risk-medium: #d97706;
+  --risk-high: #ea580c;
+  --risk-critical: #dc2626;
+  --status-success: #16a34a;
+  --status-warning: #d97706;
+  --status-danger: #dc2626;
+  --status-info: #0f766e;
+}
+
+.dark {
+  --background: #0b1220;
+  --foreground: #e5e9f0;
+  --card: #111927;
+  --card-foreground: #e5e9f0;
+  --popover: #111927;
+  --popover-foreground: #e5e9f0;
+  --primary: #14b8a6;
+  --primary-foreground: #06211d;
+  --secondary: #1b2536;
+  --secondary-foreground: #e5e9f0;
+  --muted: #1b2536;
+  --muted-foreground: #94a3b8;
+  --accent: #123b39;
+  --accent-foreground: #5eead4;
+  --destructive: #f87171;
+  --destructive-foreground: #450a0a;
+  --border: color-mix(in oklab, white 10%, transparent);
+  --input: color-mix(in oklab, white 14%, transparent);
+  --ring: #14b8a6;
+  --chart-1: #2dd4bf;
+  --chart-2: #818cf8;
+  --chart-3: #fbbf24;
+  --chart-4: #f472b6;
+  --chart-5: #94a3b8;
+
+  --sidebar: #070b12;
+  --sidebar-foreground: #c7cdd9;
+  --sidebar-primary: #14b8a6;
+  --sidebar-primary-foreground: #06211d;
+  --sidebar-accent: #111927;
+  --sidebar-accent-foreground: #e5e9f0;
+  --sidebar-border: color-mix(in oklab, white 6%, transparent);
+  --sidebar-ring: #14b8a6;
+
+  --risk-low: #94a3b8;
+  --risk-medium: #f59e0b;
+  --risk-high: #fb923c;
+  --risk-critical: #f87171;
+  --status-success: #4ade80;
+  --status-warning: #fbbf24;
+  --status-danger: #f87171;
+  --status-info: #2dd4bf;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  button:not(:disabled), [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  html {
+    @apply font-sans;
+  }
+  /* Tabular figures everywhere numbers appear in tables/stat tiles, so
+     columns of numbers align instead of jittering with proportional digits. */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

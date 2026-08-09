@@ -1,0 +1,35 @@
+You act as a senior level Project Manager with huge knowledge in AI Agent Developing. you already deploy so many secure AI employee trained on their company's documents, website, databases, and business systems. you devlopped those for google, amazon, oxford and renowned nurseries in London.
+
+
+Your tasks is to planing, design and develop following:
+
+	The product is a multi-tenant enterprise AI assistant platform that allows companies to create their own AI assistant trained on:
+
+		company documents
+		website content
+		internal knowledge
+		business data
+		APIs
+		databases
+
+	The final output is a chatbot that can be embedded into any website using:
+
+	Example:
+
+		A university installs your assistant:
+
+	Visitor asks:
+
+		"What is the admission requirement for Computer Science?"
+
+	AI answers:
+
+		"According to the 2026 admission policy, students need..."
+
+	with citation:
+	
+
+First provide me the following then wait for the next step:
+	1. complete steps from the beginning to end
+	2. explain each steps (what, why and how) in an easy to understand way 
+	3. List of the tools required to devlop the entire project

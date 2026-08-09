@@ -1,0 +1,148 @@
+[project]
+name = "iam-platform"
+version = "0.1.0"
+description = "Enterprise multi-tenant identity, authentication & authorization platform"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    # Required by FastAPI to parse multipart bodies -- without it the document
+    # upload route raises at request time, not import time, so its absence is
+    # invisible until someone actually uploads a file.
+    "python-multipart>=0.0.9",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "email-validator>=2.2",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "redis>=5.2",
+    "argon2-cffi>=23.1",
+    "pyjwt[crypto]>=2.9",
+    "pyotp>=2.9",
+    "httpx>=0.27",
+    "celery[redis]>=5.6.3",
+    "crawl4ai>=0.9.2",
+    "langchain-text-splitters>=1.1.2",
+    "tiktoken>=0.13.0",
+    "playwright>=1.62.0",
+    "docling>=2.118.0",
+    "beautifulsoup4>=4.15.0",
+    "lxml>=6.1.1",
+    "openai>=2.53.0",
+    "qdrant-client>=1.19.0",
+    "cohere>=7.0.8",
+    "langgraph>=1.2.10",
+    "langchain-core>=1.5.3",
+    "tavily-python>=0.7.27",
+    "boto3>=1.43.66",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "import-linter>=2.1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The embeddable widget is a non-Python file inside the package, and setuptools
+# ships no such file into a wheel unless it is named here. Left implicit it
+# would work in an editable install (which imports straight from `src/`) and be
+# absent from the built image -- the exact shape of the `.dockerignore` and
+# model-prefetch bugs Phase 11 found. `tests/unit/test_widget_script_ships.py`
+# guards it.
+[tool.setuptools.package-data]
+"iam_platform.api.v1.public_chat" = ["*.js"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: requires a real Postgres/Redis instance (see tests/integration/README)",
+    "unit: pure in-process test, no external services",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's `Depends()`/`Query()` in a default argument is the framework's
+# documented DI pattern, not the mutable-default-argument bug B008 exists to
+# catch -- these calls are cheap markers FastAPI itself never re-evaluates
+# per-call, unlike an actual mutable default.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.params.Depends",
+    # Same rationale as Depends: FastAPI's parameter markers are declarations
+    # read at route-registration time, not mutable default arguments.
+    "fastapi.File",
+    "fastapi.params.File",
+]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+mypy_path = "src"
+
+# Third-party libraries that ship no type information. Scoped per-module
+# rather than set globally, so an untyped import anywhere else is still an
+# error -- the point is to name the specific libraries we accept as opaque,
+# not to switch the check off.
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*", "qdrant_client.*", "cohere.*", "celery.*", "crawl4ai.*"]
+ignore_missing_imports = true
+
+# docling ships `py.typed`, so mypy would type-check the entire ML stack it
+# pulls in -- minutes per run, for a package this project only ever touches
+# through an `Any`-typed converter behind a lazy import. `skip` treats it as
+# Any without analyzing it.
+[[tool.mypy.overrides]]
+module = ["docling.*", "docling_core.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[tool.importlinter]
+root_package = "iam_platform"
+
+[[tool.importlinter.contracts]]
+name = "Layered architecture"
+type = "layers"
+layers = [
+    "iam_platform.api",
+    "iam_platform.workers",
+    "iam_platform.infrastructure",
+    "iam_platform.application",
+    "iam_platform.core",
+    "iam_platform.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain has no project-internal dependencies"
+type = "forbidden"
+source_modules = ["iam_platform.domain"]
+forbidden_modules = [
+    "iam_platform.core",
+    "iam_platform.application",
+    "iam_platform.infrastructure",
+    "iam_platform.api",
+    "iam_platform.workers",
+]
+
+[[tool.importlinter.contracts]]
+name = "API does not import infrastructure directly"
+type = "forbidden"
+source_modules = ["iam_platform.api"]
+forbidden_modules = ["iam_platform.infrastructure"]

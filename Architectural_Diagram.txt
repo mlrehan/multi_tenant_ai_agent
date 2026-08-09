@@ -1,0 +1,72 @@
+									  ┌───────────────────────────────────────────────────────────────┐
+                                      │                        CLIENT WEBSITE                         │
+                                      │   ┌───────────────────────────────────────────────────────┐   │
+                                      │   │           Embeddable JS Widget (<script>)             │   │
+                                      └───┴───────────────────────────┬───────────────────────────┴───┘
+                                                                      │ 
+                                                                      │ HTTPS / WebSockets / SSE
+                                                                      ▼
+                                      ┌───────────────────────────────────────────────────────────────┐
+                                      │               FASTAPI GATEWAY & SECURITY LAYER                │
+                                      │  • CORS & Origin Check    • Rate Limiting & Quota Management  │
+                                      │  • JWT Tenant Extraction  • Session Token Signature Auth      │
+                                      └──────────────┬─────────────────────────────────┬──────────────┘
+                                                     │                                 │
+                                                     │                                 │
+        ┌────────────────────────────────────────────┘                                 └────────────────────────────────────────────┐
+        │                                                                                                                           │
+        ▼ [FLOW A: ASYNC DATA INGESTION PIPELINE]                                                                                   ▼ [FLOW B: REAL-TIME QUERY & ANSWER PIPELINE]
+┌─────────────────────────────────────────────────────────────┐                                                             ┌─────────────────────────────────────────────────────────────┐
+│                       COMPANY ADMIN                         │                                                             │                       WEBSITE VISITOR                       │
+│      (Upload Docs, Provide Web URLs, Connect DB/APIs)       │                                                             │               "What are CS admission rules?"                │
+└──────────────────────────────┬──────────────────────────────┘                                                             └──────────────────────────────┬──────────────────────────────┘
+                               │                                                                                                                           │
+                               ▼                                                                                                                           ▼
+┌─────────────────────────────────────────────────────────────┐                                                             ┌─────────────────────────────────────────────────────────────┐
+│             INGESTION DISPATCHER & JOB WORKER               │                                                             │             LANGGRAPH ORCHESTRATION ENGINE                  │
+│      • Create Ingestion Record in Postgres (Status: Pending)│                                                             │   ┌─────────────────────────────────────────────────────┐   │
+│      • Enqueue Job to Celery + Redis Broker                 │                                                             │   │ Step 1: Input Guardrails & Query Sanitization       │   │
+└──────────────────────────────┬──────────────────────────────┘                                                             │   └──────────────────────────┬──────────────────────────┘   │
+                               │                                                                                            │                              │                              │
+                               ▼                                                                                            │                              ▼                              │
+┌─────────────────────────────────────────────────────────────┐                                                             │   ┌─────────────────────────────────────────────────────┐   │
+│              PARSING & CRAWLING SUBSYSTEM                   │                                                             │   │ Step 2: Query Embedding & Hybrid Search             │   │
+│   ┌──────────────────────────┬──────────────────────────┐   │                                                             │   │   • OpenAI text-embedding-3-large                   │   │
+│   │ Document Parser          │ Web & API Scraper        │   │                                                             │   │   • Fetch top 20 matches from Vector Store          │   │
+│   │ • Unstructured.io        │ • Crawl subpages         │   │                                                             │   └──────────────────────────┬──────────────────────────┘   │
+│   │ • PDF, DOCX, XLSX, PPTX  │ • Strip HTML navigation  │   │                                                             │                              │                              │
+│   └────────────┬─────────────┴────────────┬─────────────┘   │                                                             │                              ▼                              │
+└────────────────┼──────────────────────────┼─────────────────┘                                                             │   ┌─────────────────────────────────────────────────────┐   │
+                 └────────────┬─────────────┘                                                                               │   │ Step 3: RBAC Filtering & Cohere Reranking           │   │
+                              │                                                                                             │   │   • Filter passages by visitor role rights      │   │
+                              ▼                                                                                             │   │   • Rerank candidate chunks down to Top 5       │   │
+┌─────────────────────────────────────────────────────────────┐                                                             │   └──────────────────────────┬──────────────────────────┘   │
+│             TEXT CHUNKING & EMBEDDING ENGINE                │                                                             │                              │                              │
+│   • Semantic Splitting (700 Tokens, 100 Token Overlap)      │                                                             │                              ▼                              │
+│   • Metadata Tagging (Tenant ID, Roles, URLs, Page #)       │                                                             │   ┌─────────────────────────────────────────────────────┐   │
+│   • OpenAI `text-embedding-3-large` (3072 Dimensions)       │                                                             │   │ Step 4: Grounded LLM Generation & Citation Parsing  │   │
+└──────────────────────────────┬──────────────────────────────┘                                                             │   │   • Inject system prompt with hard constraints      │   │
+                               │                                                                                            │   │   • Stream response text + source citation tags │   │
+                               │                                                                                            │   └─────────────────────────────────────────────────────┘   │
+                               │                                                                                            └──────────────────────────────┬──────────────────────────────┘
+                               │                                                                                                                           │
+                               └──────────────────────────────┬────────────────────────────────────────────────────────────┘                               │
+                                                              │                                                                                            │
+                                                              ▼                                                                                            ▼
+                                      ┌───────────────────────────────────────────────────────────────┐                             ┌──────────────────────────────────────────────┐
+                                      │                    DATA & STORAGE LAYER                       │                             │           FRONTEND WIDGET STREAM             │
+                                      │                                                               │                             │                                              │
+                                      │   ┌───────────────────────────────────────────────────────┐   │                             │  "According to 2026 Policy, students need..."│
+                                      │   │ PostgreSQL Database (Relational Data)                 │   │                             │                                              │
+                                      │   │ • Tenant Credentials & System Prompts                 │   │                             │  Citations:                                  │
+                                      │   │ • Ingestion Job Logs & File Provenance Metadata       │   │                             │  • [1] Admission Policy 2026, Page 7         │
+                                      │   │ • Full Transcript Audit Trail & Analytics             │   │                             │  • [2] https://university.edu/admissions     │
+                                      │   └───────────────────────────────────────────────────────┘   │                             └──────────────────────────────────────────────┘
+                                      │                                                               │
+                                      │   ┌───────────────────────────────────────────────────────┐   │
+                                      │   │ Qdrant Vector DB (Tenant-Isolated Collections)        │   │
+                                      │   │ • `tenant_university_a_xxxx`                          │   │
+                                      │   │ • `tenant_company_b_yyyy`                             │   │
+                                      │   └───────────────────────────────────────────────────────┘   │
+                                      └───────────────────────────────────────────────────────────────┘
+2. Deep-Dive Component Explanations

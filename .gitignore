@@ -1,0 +1,26 @@
+# Environment / secrets
+.env
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# Local object storage (STORAGE__MODE=local) -- real tenant document uploads,
+# never committed. Production uses Cloudflare R2 instead (STORAGE__MODE=r2).
+var/
