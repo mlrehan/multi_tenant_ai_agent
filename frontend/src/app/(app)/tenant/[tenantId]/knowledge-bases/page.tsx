@@ -11,7 +11,9 @@ import {
   Loader2,
   Plus,
   MessageSquare,
+  RefreshCw,
   Search,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -24,6 +26,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -63,6 +74,8 @@ import {
   useChatWidgets,
   useCreateChatWidget,
   useSetChatWidgetStatus,
+  useRetryDocument,
+  useDeleteDocument,
 } from "@/features/ai-resources/hooks";
 import { isApiError } from "@/lib/api-client";
 import { streamAnswer } from "@/features/ai-resources/api";
@@ -337,38 +350,49 @@ function DocumentsDialog({
    * the browse dialog and a drop bypasses it entirely.
    */
   function addFiles(incoming: FileList | File[]) {
+    // Validation runs here, not inside the `setStaged` updater. React defers
+    // an updater to the render phase, so anything it collects is still empty
+    // when the code after `setStaged` runs -- an earlier version gathered the
+    // rejections in there and every "unsupported file type" toast silently
+    // never fired. Keeping the updater pure also means StrictMode's
+    // double-invoke can't double a toast.
     const rejected: string[] = [];
-    setStaged((current) => {
-      const seen = new Set(current.map((s) => s.key));
-      const additions: StagedFile[] = [];
+    const accepted: StagedFile[] = [];
+    const seen = new Set(staged.map((s) => s.key));
 
-      for (const file of Array.from(incoming)) {
-        const key = stagedKey(file);
-        if (seen.has(key)) {
-          rejected.push(`${file.name} is already in the list`);
-          continue;
-        }
-        if (!ACCEPTED_EXTENSIONS.has(extensionOf(file.name))) {
-          rejected.push(`${file.name} is not a supported file type`);
-          continue;
-        }
-        if (file.size > MAX_UPLOAD_BYTES) {
-          rejected.push(`${file.name} is larger than 50 MB`);
-          continue;
-        }
-        if (file.size === 0) {
-          rejected.push(`${file.name} is empty`);
-          continue;
-        }
-        seen.add(key);
-        additions.push({ file, key, status: "ready" });
+    for (const file of Array.from(incoming)) {
+      const key = stagedKey(file);
+      if (seen.has(key)) {
+        rejected.push(`${file.name} is already in the list`);
+        continue;
       }
-      return additions.length ? [...current, ...additions] : current;
-    });
+      if (!ACCEPTED_EXTENSIONS.has(extensionOf(file.name))) {
+        rejected.push(`${file.name} is not a supported file type`);
+        continue;
+      }
+      if (file.size > MAX_UPLOAD_BYTES) {
+        rejected.push(`${file.name} is larger than 50 MB`);
+        continue;
+      }
+      if (file.size === 0) {
+        rejected.push(`${file.name} is empty`);
+        continue;
+      }
+      seen.add(key);
+      accepted.push({ file, key, status: "ready" });
+    }
 
-    // Reported after the state update rather than inside it: React may invoke
-    // the updater twice in development (StrictMode), which would double every
-    // toast.
+    if (accepted.length) {
+      setStaged((current) => {
+        // `seen` came from a snapshot of `staged`; two drops in quick
+        // succession can both read the same one, so dedupe once more against
+        // what is actually in state.
+        const present = new Set(current.map((s) => s.key));
+        const fresh = accepted.filter((a) => !present.has(a.key));
+        return fresh.length ? [...current, ...fresh] : current;
+      });
+    }
+
     for (const message of rejected) toast.error(message);
   }
 
@@ -540,26 +564,20 @@ function DocumentsDialog({
               <TableHeader>
                 <TableRow>
                   <TableHead>File</TableHead>
-                  <TableHead>Size</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead className="w-20">Size</TableHead>
+                  <TableHead className="w-20">Chunks</TableHead>
+                  <TableHead className="w-28">Status</TableHead>
+                  <TableHead className="w-28 text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {documents.map((doc) => (
-                  <TableRow key={doc.id}>
-                    <TableCell>
-                      <div className="truncate font-medium">{doc.filename}</div>
-                      {doc.status === "failed" && doc.failure_reason && (
-                        <p className="mt-0.5 text-xs text-destructive">{doc.failure_reason}</p>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground tabular-nums">
-                      {formatBytes(doc.size_bytes)}
-                    </TableCell>
-                    <TableCell>
-                      <DocumentStatusBadge document={doc} />
-                    </TableCell>
-                  </TableRow>
+                  <DocumentRow
+                    key={doc.id}
+                    tenantId={tenantId}
+                    knowledgeBaseId={knowledgeBase.id}
+                    document={doc}
+                  />
                 ))}
               </TableBody>
             </Table>
@@ -567,6 +585,141 @@ function DocumentsDialog({
         )}
       </div>
     </DialogContent>
+  );
+}
+
+/** One document, with the actions a tenant admin needs when ingestion went
+ * wrong: see why, try again, or remove it.
+ *
+ * Chunk count sits beside status deliberately. `Ready` answers "did the
+ * pipeline finish"; the count answers "is there anything to find" -- and a
+ * `Ready` row showing 0 chunks is exactly the case that used to look like
+ * success and could answer nothing.
+ */
+function DocumentRow({
+  tenantId,
+  knowledgeBaseId,
+  document,
+}: {
+  tenantId: string;
+  knowledgeBaseId: string;
+  document: KnowledgeBaseDocument;
+}) {
+  const retry = useRetryDocument(tenantId, knowledgeBaseId);
+  const remove = useDeleteDocument(tenantId, knowledgeBaseId);
+  const [confirming, setConfirming] = useState(false);
+
+  const emptyButReady = document.status === "ready" && document.chunk_count === 0;
+
+  async function handleRetry() {
+    try {
+      await retry.mutateAsync(document.id);
+      toast.success(`Re-ingesting ${document.filename}.`);
+    } catch (err) {
+      toast.error(isApiError(err) ? err.message : "Couldn't start re-ingestion.");
+    }
+  }
+
+  async function handleDelete() {
+    try {
+      await remove.mutateAsync(document.id);
+      toast.success(`${document.filename} deleted.`);
+    } catch (err) {
+      toast.error(isApiError(err) ? err.message : "Couldn't delete the document.");
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  return (
+    <TableRow>
+      {/* max-w-0 with w-full is the table-cell idiom for "take the remaining
+          space but let truncate work" -- a cell sizes to content otherwise,
+          and one long crawled-page title widens the whole dialog. */}
+      <TableCell className="w-full max-w-0 align-top">
+        <div className="truncate font-medium">{document.filename}</div>
+        {/* `whitespace-normal` is load-bearing: TableCell sets
+            `whitespace-nowrap`, which is right for the short cells but stops
+            these notes wrapping, so they render as one long line straight
+            across the columns to their right. */}
+        {document.status === "failed" && document.failure_reason && (
+          <p className="mt-0.5 text-xs whitespace-normal text-destructive">
+            {document.failure_reason}
+          </p>
+        )}
+        {emptyButReady && (
+          <p className="mt-0.5 text-xs whitespace-normal text-amber-600 dark:text-amber-500">
+            Indexed, but no searchable text was found — this file can&rsquo;t answer
+            questions.
+          </p>
+        )}
+      </TableCell>
+      <TableCell className="align-top text-sm text-muted-foreground tabular-nums">
+        {formatBytes(document.size_bytes)}
+      </TableCell>
+      <TableCell className="align-top text-sm tabular-nums">
+        <span className={emptyButReady ? "text-amber-600 dark:text-amber-500" : ""}>
+          {document.chunk_count}
+        </span>
+      </TableCell>
+      <TableCell className="align-top">
+        <DocumentStatusBadge document={document} />
+      </TableCell>
+      <TableCell className="align-top text-right">
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={`Re-ingest ${document.filename}`}
+            disabled={retry.isPending || document.status === "processing"}
+            onClick={() => void handleRetry()}
+          >
+            {retry.isPending ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <RefreshCw />
+            )}
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={`Delete ${document.filename}`}
+            className="text-muted-foreground hover:text-destructive"
+            disabled={remove.isPending}
+            onClick={() => setConfirming(true)}
+          >
+            <Trash2 />
+          </Button>
+        </div>
+
+        {/* Destructive and irreversible -- the vectors and the stored file go
+            too -- so it asks first. */}
+        <AlertDialog open={confirming} onOpenChange={setConfirming}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this document?</AlertDialogTitle>
+              <AlertDialogDescription>
+                <span className="font-medium">{document.filename}</span> and everything
+                indexed from it will be removed, including its searchable chunks and the
+                stored file. Assistants will stop finding it. This cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={remove.isPending}
+                onClick={() => void handleDelete()}
+              >
+                {remove.isPending && <Loader2 className="animate-spin" />}
+                Delete
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </TableCell>
+    </TableRow>
   );
 }
 

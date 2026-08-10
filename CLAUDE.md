@@ -404,6 +404,30 @@ The first measurement was a single sample pair and overstated this as "4.4× fas
 
 **Status:** `ruff`, `mypy --strict` (216 files), `lint-imports` (3/3) and the full suite — **537 tests, up from 522** — all pass clean in ~18 minutes.
 
+## Knowledge-base management pass — retry, delete, and the zero-chunk lie
+
+A seven-part user review of the knowledge-base surface (one ingestion flow for both upload paths, modal overflow, URL ingestion verification, a failing PDF, source management, honest status, tenant isolation).
+
+**The defect underneath the rest: zero chunks counted as success.** A scanned 40-page PDF sat at `ready` with **0 chunks** — in the knowledge base, looking ingested, unable to answer anything. The worst of the three outcomes, because a visible failure gets retried and a silent one doesn't. `index_blocks` returning `0` is still not an error *in the indexer* (one navigation-only page in a 500-page crawl genuinely isn't), so it returns the count and **each caller decides**: the upload job raises `DocumentParseError`; the crawl job marks the page failed **by returning, never raising**, because raising inside `session.begin()` would roll back the very status write it is recording — docs/18's pitfall, hit and caught during this pass. Separately, `AiResourceDocumentRepository.save()` **never persisted `failure_reason`** — it wrote `status` and `deleted_at` and dropped the reason — so even a correctly failed document explained nothing.
+
+**New:** `application/ai_resources/manage_document.py` (`RetryDocumentIngestion`, `DeleteDocument`), `Document.mark_processing()`, `delete_chunks`/`count_chunks` on the document repository, `chunk_count` on `DocumentResponse`, and two routes (`POST .../documents/{id}/retry`, `DELETE .../documents/{id}`).
+
+**Two decisions worth not re-litigating:**
+1. **Authorizing the knowledge base is not authorizing the document.** Both use cases check `document.knowledge_base_id != knowledge_base_id` → `DocumentNotFoundError`. RLS already hides a cross-*tenant* id; this closes the cross-*knowledge-base* case inside one tenant, which RLS cannot see. Live: wrong KB and other-tenant ids both answer **404**, never 403.
+2. **Delete order is vectors → chunk rows → bytes → soft-delete.** Vectors first because that is the copy a query still reaches — an orphaned point keeps answering questions and citing a source the tenant was told is gone. Bytes are best-effort; failing the whole delete over a storage hiccup leaves a document that can't be removed. Both use `tenant.documents.upload`: changing what a KB contains is one authority either direction.
+
+**Mutation-tested, not assumed:** removing the cross-KB guard and removing the vector delete each fail 4 of the 8 tests in `tests/unit/ai_resources/test_manage_document.py`; restoring them passes.
+
+**Verified against the live stack.** Retry on the real failing PDF: `ready`/0 chunks → `processing`, old reason cleared → `failed` with an actionable reason (the fast PDF path correctly *declined* first — `0/40 pages` carry a text layer — and deferred to docling). Delete of a purpose-indexed CSV: 2 chunk rows + 2 Qdrant points before → **0 rows, 0 points, no stored file, collection back to its prior 23** after.
+
+**Two frontend defects a typecheck could never see:**
+1. **Rejected files were reported to nobody.** `addFiles` collected rejection messages *inside* the `setStaged` updater and toasted them after the call — but React defers an updater to the render phase, so the array was empty when the toast loop ran. Every "unsupported file type" message was computed and discarded. Validation is now pure and outside the updater (which also makes StrictMode's double-invoke harmless — the reason it had been written that way).
+2. **`TableCell` sets `whitespace-nowrap`**, so a failure reason ran straight across the columns to its right. Fixed locally with `whitespace-normal`, not by changing the shared cell.
+
+Modal overflow was fixed at the root: `DialogContent` gained `grid-cols-[minmax(0,1fr)] max-h-[calc(100dvh-2rem)] overflow-y-auto`, so every dialog in the console is bounded.
+
+**Left alone deliberately:** Qdrant's `Api key is used with an insecure connection` warning is accurate and local-only (the dev instance really does accept unauthenticated HTTP) — a warning about the dev topology, not a defect; blank `QDRANT__API_KEY` locally to silence it. **Not built:** a per-source detail view (extracted text, chunk inspection) and re-ingest/re-embed for `data_sources` rather than individual documents.
+
 ## Ground rules for continuing this project
 
 - Never generate the entire project in one response — follow the phase sequence.

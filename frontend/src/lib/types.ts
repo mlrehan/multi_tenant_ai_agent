@@ -196,6 +196,9 @@ export interface KnowledgeBaseDocument {
   status: DocumentStatus;
   /** Populated only when status === "failed". */
   failure_reason: string | null;
+  /** Searchable chunks produced. `status: "ready"` with 0 chunks means the
+   *  pipeline finished but found nothing to index. */
+  chunk_count: number;
   created_at: string;
 }
 

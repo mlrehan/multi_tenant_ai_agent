@@ -207,6 +207,7 @@ class FakeVectorSearchClient:
     def __init__(self) -> None:
         self.by_namespace: dict[str, list[tuple[UUID, float]]] = {}
         self.queried_namespaces: list[str] = []
+        self.deleted: list[tuple[str, UUID]] = []
 
     async def query(
         self, *, namespace: str, query_text: str, top_k: int
@@ -216,6 +217,12 @@ class FakeVectorSearchClient:
         # actually reaching the client is the stored one.
         self.queried_namespaces.append(namespace)
         return self.by_namespace.get(namespace, [])[:top_k]
+
+    async def delete_document(self, *, namespace: str, document_id: UUID) -> None:
+        # Recorded with the namespace, not just the id: a delete sent to the
+        # wrong namespace would remove nothing and leave the document
+        # answering queries, which is the failure this fake exists to catch.
+        self.deleted.append((namespace, document_id))
 
 
 class FakeDocumentIngestionQueue:

@@ -137,6 +137,13 @@ class DocumentResponse(BaseModel):
     #: Populated only when status='failed'. Surfaced so a tenant can fix a bad
     #: upload themselves rather than opening a support ticket.
     failure_reason: str | None
+    #: How many searchable chunks this document actually produced.
+    #:
+    #: `status` says whether the pipeline finished; this says whether it
+    #: produced anything to find. The two can disagree, and when they did --
+    #: `ready` with zero chunks, from a scanned PDF whose OCR ran out of
+    #: memory -- nothing in the console showed it. That is what this is for.
+    chunk_count: int
     created_at: datetime
 
 

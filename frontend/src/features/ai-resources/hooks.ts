@@ -307,3 +307,27 @@ export function useSetChatWidgetStatus(tenantId: string) {
       queryClient.invalidateQueries({ queryKey: ["chat-widgets", tenantId] }),
   });
 }
+
+export function useRetryDocument(tenantId: string, knowledgeBaseId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (documentId: string) =>
+      api.retryDocument(tenantId, knowledgeBaseId, documentId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["kb-documents", tenantId, knowledgeBaseId],
+      }),
+  });
+}
+
+export function useDeleteDocument(tenantId: string, knowledgeBaseId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (documentId: string) =>
+      api.deleteDocument(tenantId, knowledgeBaseId, documentId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["kb-documents", tenantId, knowledgeBaseId],
+      }),
+  });
+}

@@ -85,6 +85,7 @@ from iam_platform.application.ai_resources.manage_document import (
 from iam_platform.application.ai_resources.manage_knowledge_base import (
     CreateKnowledgeBase,
     CreateKnowledgeBaseCommand,
+    DocumentSummary,
     ListDocuments,
     ListDocumentsQuery,
     ListKnowledgeBases,
@@ -110,7 +111,6 @@ from iam_platform.domain.ai_resources.entities import (
     AiAssistant,
     ChatWidget,
     DataSource,
-    Document,
     KnowledgeBase,
     ModelConfiguration,
 )
@@ -201,7 +201,8 @@ def _data_source_response(source: DataSource) -> schemas.DataSourceResponse:
     )
 
 
-def _document_response(document: Document) -> schemas.DocumentResponse:
+def _document_response(summary: DocumentSummary) -> schemas.DocumentResponse:
+    document = summary.document
     return schemas.DocumentResponse(
         id=document.id,
         filename=document.filename,
@@ -209,6 +210,7 @@ def _document_response(document: Document) -> schemas.DocumentResponse:
         size_bytes=document.size_bytes,
         status=document.status.value,
         failure_reason=document.failure_reason,
+        chunk_count=summary.chunk_count,
         created_at=document.created_at,
     )
 

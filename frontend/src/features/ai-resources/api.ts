@@ -171,6 +171,31 @@ export function listDocuments(tenantId: string, knowledgeBaseId: string) {
   );
 }
 
+/** Re-runs ingestion for a document whose bytes are already stored. 202 --
+ *  the work happens in a worker, so this means "queued", not "indexed". */
+export function retryDocument(
+  tenantId: string,
+  knowledgeBaseId: string,
+  documentId: string,
+) {
+  return apiFetch<void>(
+    `v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/retry`,
+    { method: "POST", tenantId },
+  );
+}
+
+/** Removes the document, its chunks, its vectors and its stored bytes. */
+export function deleteDocument(
+  tenantId: string,
+  knowledgeBaseId: string,
+  documentId: string,
+) {
+  return apiFetch<void>(
+    `v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/documents/${documentId}`,
+    { method: "DELETE", tenantId },
+  );
+}
+
 export function createDataSource(
   tenantId: string,
   knowledgeBaseId: string,

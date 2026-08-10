@@ -449,6 +449,98 @@ before any further retrieval change, hybrid BM25 + dense retrieval, structure-aw
 that actually uses docling's output, and splitting the Celery queues so a two-hour site
 crawl cannot block document parsing.
 
+## Knowledge-base management pass — after the performance pass
+
+Raised as a seven-part review of the knowledge-base surface: one ingestion flow for both
+upload paths, a modal that stays inside the viewport, verified URL ingestion, the failing
+PDF, source management, honest ingestion status, and tenant isolation on the new routes.
+
+### The defect underneath the rest: zero chunks counted as success
+
+A scanned 40-page PDF reached `ready` with **0 chunks**. It was in the knowledge base, it
+looked ingested, and it could never answer anything — the worst of the three possible
+outcomes, because a visible failure gets retried and a silent one does not.
+
+The cause was that `index_blocks` returning `0` was not an error anywhere. It still is not,
+*in the indexer* — one navigation-only page in a 500-page crawl is genuinely not a failure —
+so the count is returned and **each caller decides**:
+
+- `process_document_upload.py` raises `DocumentParseError`. A file a tenant uploaded and
+  expects to search is a failure at zero, and the message distinguishes "nothing was
+  extracted" (likely a scan) from "read, but no indexable text".
+- `process_url_crawl.py` marks the page failed **by returning, never raising** — the failure
+  write happens in its own transaction, and raising inside the `session.begin()` block would
+  roll back the very status it is trying to record. That is
+  [docs/18's rollback pitfall](18-schema-rls-and-migrations.md), and it was written and caught
+  during this pass rather than avoided by memory.
+
+`documents.failure_reason` was also never persisted: `AiResourceDocumentRepository.save()`
+updated `status` and `deleted_at` and silently dropped the reason, so even a correctly failed
+document showed no explanation. Fixed in the same repository method.
+
+### Retry and delete, because a failure the tenant cannot act on is not much better
+
+`application/ai_resources/manage_document.py` adds `RetryDocumentIngestion` and
+`DeleteDocument`, both on `tenant.documents.upload` — changing what a knowledge base contains
+is one authority whether that means adding a file or removing one, and a second permission
+granted alongside the first is how tenants end up able to upload but not clean up.
+
+Two things worth not re-litigating:
+
+1. **Authorizing the knowledge base is not authorizing the document.** Both use cases check
+   `document.knowledge_base_id != knowledge_base_id` and raise `DocumentNotFoundError`. The
+   repository is RLS-scoped, so a cross-*tenant* id is already invisible; this closes the
+   cross-*knowledge-base* case inside one tenant, which RLS cannot see. Verified live: wrong
+   KB and other-tenant ids both answer **404**, never 403 — a resource the caller cannot see
+   must not be provable to exist.
+2. **Delete order is vectors → chunk rows → stored bytes → soft-delete.** Vectors first
+   because that is the copy a query can still reach: an orphaned point keeps answering
+   questions and citing a source the tenant was told is gone. Bytes are best-effort, since
+   refusing the whole delete over a storage hiccup leaves a document that cannot be removed.
+
+Mutation-tested rather than assumed: removing the cross-KB guard and removing the vector
+delete each fail `tests/unit/ai_resources/test_manage_document.py` (4 of 8), and restoring
+them passes.
+
+### Verified against the live stack
+
+Retry on the real failing PDF: `ready`/0 chunks → `processing` with the old reason cleared →
+`failed` with *"no text could be extracted … if it is a scanned document, the page images may
+be too large or too complex to read on this worker"*. The fast PDF path correctly **declined**
+first (`0/40 pages` carry a text layer) and deferred to docling, which is the intended split.
+
+Delete, on a CSV indexed for the purpose: 2 chunk rows and 2 Qdrant points before, **0 rows,
+0 points, no stored file and the collection back to its prior 23 points** after — so the
+"no orphaned Qdrant points" requirement is measured, not asserted.
+
+### Two frontend defects, both invisible to a typecheck
+
+1. **Rejected files were reported to nobody.** `addFiles` collected its rejection messages
+   *inside* the `setStaged` updater and toasted them after the call — but React defers an
+   updater to the render phase, so the array was still empty when the toast loop ran. Every
+   "unsupported file type" / "larger than 50 MB" / "already in the list" message was
+   computed and discarded. Validation is now pure and outside the updater, which also makes
+   StrictMode's double-invoke harmless (the reason the code had been written that way).
+2. **A long note ran straight across the columns to its right.** `TableCell` sets
+   `whitespace-nowrap`, correct for the short cells and fatal for the failure-reason and
+   empty-document notes. Fixed locally with `whitespace-normal` rather than by changing the
+   shared cell.
+
+The modal overflow was fixed at the root — `DialogContent` itself gained
+`grid-cols-[minmax(0,1fr)] max-h-[calc(100dvh-2rem)] overflow-y-auto`, so every dialog in the
+console is bounded, not just this one.
+
+### Still open
+
+The Qdrant `Api key is used with an insecure connection` warning is **accurate and local-only**
+— the dev instance genuinely accepts unauthenticated HTTP. Left as-is deliberately: it is a
+warning about the dev topology, not a defect in the code, and per the review's own instruction
+working behaviour is not changed because a log line is yellow. Blanking `QDRANT__API_KEY`
+locally silences it.
+
+Not built in this pass: a per-source detail view (extracted text, chunk-by-chunk inspection)
+and re-ingest/re-embed for `data_sources` as opposed to individual documents.
+
 ## Decisions I'm assuming — flag any of these you want changed
 
 Stated up front per this project's own rule ("state assumptions before implementing anything non-obvious" — CLAUDE.md ground rules):

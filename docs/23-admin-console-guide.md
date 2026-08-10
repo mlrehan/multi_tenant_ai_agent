@@ -321,12 +321,32 @@ policies — instead of general knowledge. This is the retrieval half of a RAG s
 Knowledge bases use the same four visibility modes as assistants.
 
 **Documents** opens the upload panel. Drop files in or browse for them — PDF, Word, Excel,
-PowerPoint, CSV, JSON, XML and images (which are OCR'd), up to 50 MB each. Uploading is
-instantaneous; *indexing* is not. A file is parsed, split into chunks and embedded by a background
-worker, so it appears in the list as **Processing** and settles to **Ready** or **Failed** on its
-own — the list refreshes itself until nothing is still in flight. A failed document shows the
-reason inline, so a corrupt or password-protected file can be fixed and re-uploaded without a
+PowerPoint, CSV, JSON, XML and images (which are OCR'd), up to 50 MB each. Both entry points run
+the *same* validation and the *same* upload, so a `.zip` is refused identically whether it was
+dropped or picked; files are **staged first**, listed with their sizes and individually removable,
+and only sent when **Upload** is pressed. Rejections (wrong type, over 50 MB, empty, already in the
+list) are reported per file rather than silently dropped.
+
+Uploading is instantaneous; *indexing* is not. A file is parsed, split into chunks and embedded by
+a background worker, so it appears in the list as **Processing** and settles to **Ready** or
+**Failed** on its own — the list refreshes itself until nothing is still in flight. A failed
+document shows the reason inline, so a corrupt or password-protected file can be fixed without a
 support ticket.
+
+**Status and chunk count answer different questions, and the list shows both.** *Ready* means the
+pipeline finished; **Chunks** means it produced something searchable. A `Ready` document with zero
+chunks — a scanned PDF whose pages defeated OCR is the usual cause — is in the knowledge base and
+cannot answer anything, so it is called out in amber rather than left looking healthy. New
+ingestions can no longer end that way at all: zero chunks from an uploaded file is now recorded as
+a failure with a reason.
+
+Each row has **Re-ingest** and **Delete**. Re-ingest re-queues the stored bytes, so a transient
+failure needs no re-upload and the document keeps its identity and history. Delete removes the
+vector points first, then the chunk rows, then the stored file, then soft-deletes the record — in
+that order, because an orphaned vector would keep answering questions and citing a source the
+tenant was told is gone. It asks for confirmation and cannot be undone. Both are gated on
+`tenant.documents.upload`: changing what a knowledge base contains is one authority, whether that
+means adding a file or removing one.
 
 > If documents stay on **Processing** indefinitely, the background worker isn't running. It's a
 > separate process from the API — see [22-deployment-and-operations.md](22-deployment-and-operations.md).

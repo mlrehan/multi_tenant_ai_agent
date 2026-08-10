@@ -134,6 +134,24 @@ If something fails, the reason appears next to it, so you can fix the file and t
 > **If documents sit on Processing forever**, the background worker isn't running. That's
 > one for whoever operates the service — nothing is wrong with your file.
 
+**Read the Chunks column, not just the status.** *Ready* means the pipeline finished;
+**Chunks** tells you whether it found anything to search. A document showing **0 chunks** is
+flagged in amber — it is in your knowledge base but cannot answer a single question. The
+usual cause is a scanned PDF whose pages were too large or too complex to read. Re-export it
+from the original if you can, or split it into smaller files.
+
+### Fixing and removing documents
+
+Every document has two buttons on the right:
+
+- **Re-ingest** (circular arrow) — puts it back through the pipeline. Use this after a
+  failure that wasn't the file's fault, or after the service has been fixed. You do not need
+  to find and upload the file again; the copy already stored is reused, and the document
+  keeps its place in the list.
+- **Delete** (bin) — removes the document, everything indexed from it, and the stored file.
+  It asks first, and it **cannot be undone**. Assistants stop finding it immediately, so this
+  is also how you take something out of circulation quickly.
+
 ### Step 4 — check it actually works
 
 Two buttons on your knowledge base:
@@ -258,6 +276,8 @@ check the tenant switcher at the top — you may be looking at a different organ
 | Check why an answer was poor | Knowledge bases → Test search |
 | Put chat on our website | Knowledge bases → Embed |
 | Switch the public chat off right now | Knowledge bases → Embed → Turn off |
+| Retry a document that failed | Knowledge bases → Documents → circular-arrow button |
+| Remove a document and everything indexed from it | Knowledge bases → Documents → bin button |
 | Use our own AI provider account | Provider credentials |
 | Turn on 2FA | Account → My identity |
 
@@ -270,6 +290,14 @@ check the tenant switcher at the top — you may be looking at a different organ
 
 **"Documents stay on Processing."** The background worker isn't running. Contact whoever
 operates the service.
+
+**"It says Ready but the assistant never uses it."** Check the **Chunks** column. If it shows
+**0**, nothing searchable came out of the file — almost always a scanned PDF. Re-export the
+original as a PDF instead of scanning a printout, then delete the old copy and upload the new
+one.
+
+**"A document failed and I don't want to upload it again."** Press **Re-ingest**. The stored
+copy is reused, so there is nothing to re-upload.
 
 **"The widget doesn't appear on our site."** The page's address must be on the widget's
 allowed-websites list, exactly — `https://www.example.com` and `https://example.com` are

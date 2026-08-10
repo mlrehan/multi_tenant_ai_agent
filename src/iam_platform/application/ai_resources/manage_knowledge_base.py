@@ -357,6 +357,25 @@ class ListDocumentsQuery:
     permissions: frozenset[str]
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentSummary:
+    """A document plus the one fact its own row cannot tell you.
+
+    `status = 'ready'` says the pipeline finished. `chunk_count` says it
+    produced something searchable, and the two can disagree: a scanned PDF
+    whose OCR failed used to arrive here as `ready` with nothing indexed, which
+    looks like success and answers no question. Surfacing the count is what
+    makes that visible in the console rather than only in a chunk table nobody
+    reads.
+
+    Derived, so it belongs on a read model rather than on `Document` -- the
+    entity describes the upload, not the state of a downstream index.
+    """
+
+    document: Document
+    chunk_count: int
+
+
 class ListDocuments:
     """Documents in one knowledge base, with their ingestion status.
 
@@ -369,7 +388,7 @@ class ListDocuments:
     def __init__(self, uow_factory: AiResourceUowFactory) -> None:
         self._uow_factory = uow_factory
 
-    async def execute(self, query: ListDocumentsQuery) -> list[Document]:
+    async def execute(self, query: ListDocumentsQuery) -> list[DocumentSummary]:
         actor_id = UUID(query.actor_user_id)
         tenant_id = UUID(query.tenant_id)
 
@@ -387,4 +406,17 @@ class ListDocuments:
                 knowledge_base_id=UUID(query.knowledge_base_id),
                 requester=requester,
             )
-            return await uow.documents.list_by_knowledge_base(UUID(query.knowledge_base_id))
+            documents = await uow.documents.list_by_knowledge_base(
+                UUID(query.knowledge_base_id)
+            )
+            # One count per document. A single grouped query would be fewer
+            # round trips, but a knowledge base holds tens to hundreds of
+            # documents, not millions, and adding a bespoke aggregate to the
+            # repository for that is optimising the wrong thing first.
+            return [
+                DocumentSummary(
+                    document=document,
+                    chunk_count=await uow.documents.count_chunks(document.id),
+                )
+                for document in documents
+            ]
