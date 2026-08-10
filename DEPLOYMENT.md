@@ -489,7 +489,13 @@ CORS_ALLOWED_ORIGINS=["https://yourdomain.com"]
 # if you use that feature and sit behind a reverse proxy -- left empty, the API
 # guesses from the incoming request's Host, which a proxy may not preserve, and
 # tenants would be handed a snippet pointing at the wrong hostname.
-PUBLIC_API_BASE_URL=https://api.yourdomain.com
+#
+# Matches CORS_ALLOWED_ORIGINS and the Nginx server_name below: this compose
+# setup has no separate frontend service (see the note in Part B), so the API
+# itself is what answers at the bare domain -- there is no api. subdomain to
+# point at unless you add one yourself, with its own DNS record and Nginx
+# server block.
+PUBLIC_API_BASE_URL=https://yourdomain.com
 
 LOG_LEVEL=INFO
 ```
