@@ -149,9 +149,7 @@ def _assistant_response(assistant: AiAssistant) -> schemas.AssistantResponse:
 def _model_configuration_response(mc: ModelConfiguration) -> schemas.ModelConfigurationResponse:
     return schemas.ModelConfigurationResponse(
         id=mc.id,
-        tenant_id=mc.tenant_id,
         model_name=mc.model_name,
-        is_platform_default=mc.is_platform_default,
     )
 
 

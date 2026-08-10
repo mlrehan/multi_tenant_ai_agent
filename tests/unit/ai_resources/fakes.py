@@ -222,16 +222,41 @@ class FakeConversationRepository:
 
 
 class FakeModelConfigurationRepository:
+    """Models entitlements, not ownership.
+
+    `grants` is deliberately separate from `by_id`: a configuration existing
+    and a tenant being allowed to use it are different facts, and a fake that
+    conflated them would let a test pass while the real rule was broken --
+    which is precisely the bug the entitlement table was introduced to fix.
+    """
+
     def __init__(self) -> None:
         self.by_id: dict[UUID, ModelConfiguration] = {}
+        self.grants: set[tuple[UUID, UUID]] = set()
+
+    def grant(self, *, tenant_id: UUID, model_configuration_id: UUID) -> None:
+        """Test helper -- the equivalent of a platform admin granting access."""
+        self.grants.add((tenant_id, model_configuration_id))
 
     async def get_by_id(self, model_configuration_id: UUID) -> ModelConfiguration | None:
         return self.by_id.get(model_configuration_id)
 
     async def list_available_to_tenant(self, tenant_id: UUID) -> list[ModelConfiguration]:
         return [
-            m for m in self.by_id.values() if m.tenant_id is None or m.tenant_id == tenant_id
+            m
+            for m in self.by_id.values()
+            if (tenant_id, m.id) in self.grants and not m.is_archived
         ]
+
+    async def is_available_to_tenant(
+        self, *, tenant_id: UUID, model_configuration_id: UUID
+    ) -> bool:
+        configuration = self.by_id.get(model_configuration_id)
+        return (
+            configuration is not None
+            and not configuration.is_archived
+            and (tenant_id, model_configuration_id) in self.grants
+        )
 
     async def add(self, model_configuration: ModelConfiguration) -> None:
         self.by_id[model_configuration.id] = model_configuration

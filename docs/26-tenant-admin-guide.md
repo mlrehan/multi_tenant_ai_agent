@@ -92,6 +92,11 @@ answer from.
 `Admissions FAQ` or `Refund Policy`. Leave visibility as **tenant** unless you have a
 reason not to — that means everyone in your organisation can use it.
 
+> **If the model list is empty**, your organisation has not been given a model
+> yet. That is a platform-side setting, not something you can fix from here —
+> ask your service administrator to make one available to your organisation.
+> You will see it as soon as they do.
+
 > You may see **department** and **team** in the visibility list, greyed out. They're not
 > broken; there's simply nothing in the product yet that puts people into departments or
 > teams, so choosing them would make the knowledge base unreachable by anyone.

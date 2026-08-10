@@ -88,6 +88,8 @@ _AI_RESOURCE_STATUS_MAP: dict[type[ai_resource_errors.AiResourceError], int] = {
     ai_resource_errors.DataSourceNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.ConversationNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.ModelConfigurationNotFoundError: status.HTTP_404_NOT_FOUND,
+    ai_resource_errors.ModelConfigurationManagementDeniedError: status.HTTP_403_FORBIDDEN,
+    ai_resource_errors.ModelConfigurationInUseError: status.HTTP_409_CONFLICT,
     ai_resource_errors.ProviderCredentialNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.PermissionDeniedError: status.HTTP_403_FORBIDDEN,
     ai_resource_errors.ResourceAccessDeniedError: status.HTTP_403_FORBIDDEN,

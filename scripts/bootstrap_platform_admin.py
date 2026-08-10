@@ -50,6 +50,12 @@ DEFAULT_PERMISSIONS = [
      "Browse the platform user directory"),
     ("platform.users.manage", "users", "manage", "critical",
      "Suspend or reactivate any platform account"),
+    # Governs the model catalogue *and* which tenants may use each entry.
+    # High rather than critical: it shapes what tenants can spend money on and
+    # which models their assistants run, but it grants no access to tenant
+    # data and cannot escalate anyone's privileges.
+    ("platform.model_configurations.manage", "model_configurations", "manage", "high",
+     "Create, edit and archive model configurations, and control which tenants may use them"),
 ]
 
 

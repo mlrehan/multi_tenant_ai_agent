@@ -68,11 +68,22 @@ def _seed_member(
     return user_id, membership
 
 
-def _seed_model_configuration(uow: FakeAiResourceUnitOfWork, tenant_id=None) -> ModelConfiguration:
+def _seed_model_configuration(
+    uow: FakeAiResourceUnitOfWork, tenant_id=None, *, granted_to=None
+) -> ModelConfiguration:
+    """Creates a platform-owned configuration and, unless told otherwise,
+    grants it to `granted_to`.
+
+    Existing and available are separate steps here for the same reason they
+    are separate rows in the database: the tests that matter most are the ones
+    where a configuration exists and the tenant may *not* use it.
+    """
     config = ModelConfiguration(
         id=uuid4(), tenant_id=tenant_id, model_name="claude-sonnet-5", created_at=NOW, updated_at=NOW
     )
     uow.model_configurations.by_id[config.id] = config
+    if granted_to is not None:
+        uow.model_configurations.grant(tenant_id=granted_to, model_configuration_id=config.id)
     return config
 
 
@@ -108,7 +119,7 @@ class TestCreateAssistant:
         uow = FakeAiResourceUnitOfWork()
         tenant_id = uuid4()
         user_id, membership = _seed_member(uow, tenant_id)
-        config = _seed_model_configuration(uow, tenant_id)
+        config = _seed_model_configuration(uow, granted_to=tenant_id)
 
         use_case = CreateAssistant(uow, FixedClock(NOW))
         assistant_id = await use_case.execute(
@@ -132,7 +143,7 @@ class TestCreateAssistant:
         uow = FakeAiResourceUnitOfWork()
         tenant_id = uuid4()
         user_id, _ = _seed_member(uow, tenant_id)
-        config = _seed_model_configuration(uow, tenant_id)
+        config = _seed_model_configuration(uow, granted_to=tenant_id)
 
         use_case = CreateAssistant(uow, FixedClock(NOW))
         with pytest.raises(PermissionDeniedError):
@@ -170,7 +181,7 @@ class TestCreateAssistant:
         uow = FakeAiResourceUnitOfWork()
         tenant_id = uuid4()
         user_id, _ = _seed_member(uow, tenant_id)
-        config = _seed_model_configuration(uow, tenant_id)
+        config = _seed_model_configuration(uow, granted_to=tenant_id)
 
         use_case = CreateAssistant(uow, FixedClock(NOW))
         with pytest.raises(InvalidStateTransitionError):
@@ -398,7 +409,7 @@ class TestUpdateAssistant:
         tenant_id = uuid4()
         user_id, membership = _seed_member(uow, tenant_id)
         assistant = _seed_assistant(uow, tenant_id, membership.id)
-        new_config = _seed_model_configuration(uow, tenant_id)
+        new_config = _seed_model_configuration(uow, granted_to=tenant_id)
 
         use_case = UpdateAssistant(uow, FixedClock(NOW))
         await use_case.execute(
@@ -524,13 +535,19 @@ class TestArchiveAssistant:
 
 
 class TestListModelConfigurations:
-    async def test_returns_platform_defaults_and_tenant_owned(self) -> None:
+    async def test_returns_only_configurations_granted_to_this_tenant(self) -> None:
+        """The rule that replaced "platform defaults plus my own".
+
+        The ungranted configuration is the point: it exists, it is
+        platform-owned, and before entitlements every tenant would have been
+        offered it.
+        """
         uow = FakeAiResourceUnitOfWork()
         tenant_id = uuid4()
         user_id, _ = _seed_member(uow, tenant_id)
-        platform_default = _seed_model_configuration(uow, tenant_id=None)
-        tenant_owned = _seed_model_configuration(uow, tenant_id=tenant_id)
-        _other_tenant = _seed_model_configuration(uow, tenant_id=uuid4())
+        granted = _seed_model_configuration(uow, granted_to=tenant_id)
+        _ungranted = _seed_model_configuration(uow)
+        _another_tenants = _seed_model_configuration(uow, granted_to=uuid4())
 
         use_case = ListModelConfigurations(uow)
         result = await use_case.execute(
@@ -538,7 +555,25 @@ class TestListModelConfigurations:
                 actor_user_id=str(user_id), tenant_id=str(tenant_id), permissions=frozenset()
             )
         )
-        assert {c.id for c in result} == {platform_default.id, tenant_owned.id}
+        assert {c.id for c in result} == {granted.id}
+
+    async def test_an_archived_configuration_is_not_offered(self) -> None:
+        """Archiving withdraws a model from new assignments while leaving
+        assistants that already use it alone."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, _ = _seed_member(uow, tenant_id)
+        live = _seed_model_configuration(uow, granted_to=tenant_id)
+        retired = _seed_model_configuration(uow, granted_to=tenant_id)
+        retired.archive(now=NOW)
+
+        use_case = ListModelConfigurations(uow)
+        result = await use_case.execute(
+            ListModelConfigurationsQuery(
+                actor_user_id=str(user_id), tenant_id=str(tenant_id), permissions=frozenset()
+            )
+        )
+        assert {c.id for c in result} == {live.id}
 
     async def test_non_member_gets_empty_list(self) -> None:
         uow = FakeAiResourceUnitOfWork()
@@ -552,3 +587,111 @@ class TestListModelConfigurations:
             )
         )
         assert result == []
+
+
+class TestModelConfigurationEntitlement:
+    """Which configurations a tenant may *select*.
+
+    The case that matters is the one the old design could not express: a
+    configuration that exists, is perfectly valid, and belongs to no tenant --
+    usable only by the tenants the platform granted it to.
+    """
+
+    async def test_tenant_can_create_an_assistant_with_a_granted_configuration(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, _ = _seed_member(uow, tenant_id)
+        config = _seed_model_configuration(uow, granted_to=tenant_id)
+
+        assistant_id = await CreateAssistant(uow, FixedClock(NOW)).execute(
+            CreateAssistantCommand(
+                actor_user_id=str(user_id),
+                tenant_id=str(tenant_id),
+                permissions=frozenset({CREATE}),
+                name="Helper",
+                description=None,
+                model_configuration_id=str(config.id),
+            )
+        )
+        stored = await uow.assistants.get_by_id(assistant_id)
+        assert stored is not None
+        assert stored.model_configuration_id == config.id
+
+    async def test_a_configuration_not_granted_to_this_tenant_is_refused(self) -> None:
+        """Submitting the id by hand does not help: it is reported as
+        not-found, so an unentitled configuration is indistinguishable from
+        one that does not exist."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, _ = _seed_member(uow, tenant_id)
+        # Exists, and is granted to somebody else entirely.
+        config = _seed_model_configuration(uow, granted_to=uuid4())
+
+        with pytest.raises(ModelConfigurationNotFoundError):
+            await CreateAssistant(uow, FixedClock(NOW)).execute(
+                CreateAssistantCommand(
+                    actor_user_id=str(user_id),
+                    tenant_id=str(tenant_id),
+                    permissions=frozenset({CREATE}),
+                    name="Helper",
+                    description=None,
+                    model_configuration_id=str(config.id),
+                )
+            )
+
+    async def test_update_cannot_switch_to_an_ungranted_configuration(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, membership = _seed_member(uow, tenant_id)
+        granted = _seed_model_configuration(uow, granted_to=tenant_id)
+        assistant = _seed_assistant(uow, tenant_id, membership.id)
+        assistant.model_configuration_id = granted.id
+        ungranted = _seed_model_configuration(uow, granted_to=uuid4())
+
+        with pytest.raises(ModelConfigurationNotFoundError):
+            await UpdateAssistant(uow, FixedClock(NOW)).execute(
+                UpdateAssistantCommand(
+                    actor_user_id=str(user_id),
+                    tenant_id=str(tenant_id),
+                    assistant_id=str(assistant.id),
+                    permissions=frozenset({CREATE}),
+                    name="Renamed",
+                    description=None,
+                    system_prompt=None,
+                    model_configuration_id=str(ungranted.id),
+                )
+            )
+        # Unchanged -- a refused edit must not partially apply.
+        stored = await uow.assistants.get_by_id(assistant.id)
+        assert stored is not None
+        assert stored.model_configuration_id == granted.id
+
+    async def test_an_assistant_keeps_an_archived_configuration_through_other_edits(
+        self,
+    ) -> None:
+        """Archiving withdraws a model from new assignments. An assistant
+        already using it must still be editable, or archiving would silently
+        freeze every assistant that had chosen it."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, membership = _seed_member(uow, tenant_id)
+        config = _seed_model_configuration(uow, granted_to=tenant_id)
+        assistant = _seed_assistant(uow, tenant_id, membership.id)
+        assistant.model_configuration_id = config.id
+        config.archive(now=NOW)
+
+        await UpdateAssistant(uow, FixedClock(NOW)).execute(
+            UpdateAssistantCommand(
+                actor_user_id=str(user_id),
+                tenant_id=str(tenant_id),
+                assistant_id=str(assistant.id),
+                permissions=frozenset({CREATE}),
+                name="Renamed",
+                description=None,
+                system_prompt=None,
+                model_configuration_id=str(config.id),
+            )
+        )
+        stored = await uow.assistants.get_by_id(assistant.id)
+        assert stored is not None
+        assert stored.name == "Renamed"

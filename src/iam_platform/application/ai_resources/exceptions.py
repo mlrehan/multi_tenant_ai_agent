@@ -21,6 +21,26 @@ class DataSourceNotFoundError(AiResourceError):
     pass
 
 
+class ModelConfigurationManagementDeniedError(AiResourceError):
+    """The caller may not govern the model-configuration catalogue.
+
+    A 403 rather than a 404: the catalogue is platform infrastructure, not a
+    tenant-owned resource, so there is no cross-tenant existence to conceal --
+    and telling an operator "you lack this permission" is the useful answer.
+    Contrast `ModelConfigurationNotFoundError`, which a *tenant* gets for a
+    configuration they were never granted, precisely so they cannot tell an
+    unavailable one from a non-existent one.
+    """
+
+    def __init__(self, required_permission: str) -> None:
+        super().__init__(f"missing required permission: {required_permission}")
+        self.required_permission = required_permission
+
+
+class ModelConfigurationInUseError(AiResourceError):
+    """Revoking would strand assistants that still use this configuration."""
+
+
 class ConversationNotFoundError(AiResourceError):
     pass
 

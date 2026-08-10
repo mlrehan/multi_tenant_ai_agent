@@ -71,10 +71,17 @@ class CreateAssistant:
                 raise PermissionDeniedError(CREATE_ASSISTANT_PERMISSION)
 
             model_configuration_id = UUID(command.model_configuration_id)
-            # RLS already restricts this read to platform defaults plus this
-            # tenant's own rows, so "not found" here also covers "belongs to
-            # another tenant" without a separate check.
-            if await uow.model_configurations.get_by_id(model_configuration_id) is None:
+            # Entitlement, not visibility. RLS scopes *reads*, which is not
+            # the same question as "may this tenant use this model" -- a
+            # platform-owned configuration is readable by every tenant and
+            # assignable only by the ones it was granted to. Reported as
+            # not-found rather than forbidden so an unentitled id and a
+            # nonexistent one are indistinguishable, and the
+            # `fk_ai_assistants_model_configuration` constraint enforces the
+            # same rule underneath in case this check is ever bypassed.
+            if not await uow.model_configurations.is_available_to_tenant(
+                tenant_id=tenant_id, model_configuration_id=model_configuration_id
+            ):
                 raise ModelConfigurationNotFoundError(command.model_configuration_id)
 
             assistant = AiAssistant(
@@ -272,10 +279,16 @@ class UpdateAssistant:
             )
 
             model_configuration_id = UUID(command.model_configuration_id)
-            # Same "RLS already scopes this read" reasoning as CreateAssistant.
+            # Same entitlement check as CreateAssistant. Skipped when the
+            # configuration is unchanged, so an assistant whose model has
+            # since been archived can still have its name or prompt edited --
+            # archiving withdraws a model from *new* assignments, and making
+            # every other edit impossible would be a different, harsher rule.
             if (
                 model_configuration_id != assistant.model_configuration_id
-                and await uow.model_configurations.get_by_id(model_configuration_id) is None
+                and not await uow.model_configurations.is_available_to_tenant(
+                    tenant_id=tenant_id, model_configuration_id=model_configuration_id
+                )
             ):
                 raise ModelConfigurationNotFoundError(command.model_configuration_id)
 
@@ -409,15 +422,14 @@ class ListModelConfigurationsQuery:
 
 
 class ListModelConfigurations:
-    """Platform defaults plus this tenant's own configurations -- what
-    ``CreateAssistant``/``UpdateAssistant`` will accept a ``model_configuration_id``
-    from, modulo the known ``fk_ai_assistants_model_configuration`` gap
-    (docs/README.md / scripts/seed_demo_data.py): a platform-default row
-    (``tenant_id IS NULL``) is returned here as *readable* but the FK still
-    rejects it if assigned to an assistant. Returning it anyway rather than
-    filtering it out keeps this query truthful about what
-    ``list_available_to_tenant`` actually considers available; the caller
-    decides how to present the unusable rows."""
+    """Exactly what this tenant may assign -- nothing decorative.
+
+    Every row returned here is one `CreateAssistant`/`UpdateAssistant` will
+    accept, so the console can offer all of them without disabled entries or
+    explanations. That was not true before entitlements: this query used to
+    return platform-owned rows the foreign key would then reject, and the
+    console had to render them greyed out with a note about a foreign key.
+    """
 
     def __init__(self, uow_factory: AiResourceUowFactory) -> None:
         self._uow_factory = uow_factory

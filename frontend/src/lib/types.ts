@@ -256,11 +256,27 @@ export interface ChatWidget {
   embed_snippet: string;
 }
 
+/** One model the current tenant is allowed to assign. The server returns only
+ *  available configurations, so there is nothing here to filter on. */
 export interface ModelConfiguration {
   id: string;
-  tenant_id: string | null;
   model_name: string;
-  is_platform_default: boolean;
+}
+
+/** The platform-side view: the catalogue, plus who may use each entry. */
+export interface PlatformModelConfiguration {
+  id: string;
+  model_name: string;
+  parameters: Record<string, unknown>;
+  token_budget_per_month: number | null;
+  provider_credential_id: string | null;
+  /** Set for rows created before entitlements existed, which belong to one
+   *  tenant. Platform-created configurations have null. */
+  owning_tenant_id: string | null;
+  archived_at: string | null;
+  /** Tenants currently granted this configuration. */
+  tenant_ids: string[];
+  created_at: string;
 }
 
 export interface KnowledgeBase {

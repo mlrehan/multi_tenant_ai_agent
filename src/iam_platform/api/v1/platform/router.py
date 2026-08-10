@@ -10,11 +10,26 @@ of that computation (Phase 6 scope note, CLAUDE.md).
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 
 from iam_platform.api.deps.authn import get_container, get_current_claims
 from iam_platform.api.deps.container import AppContainer
 from iam_platform.api.v1.platform import schemas
+from iam_platform.application.ai_resources.manage_model_configuration import (
+    ArchiveModelConfiguration,
+    CreateModelConfiguration,
+    CreateModelConfigurationCommand,
+    GrantModelConfigurationToTenant,
+    ListModelConfigurationsForPlatform,
+    ListModelConfigurationsForPlatformQuery,
+    ModelConfigurationActionCommand,
+    ModelConfigurationWithAccess,
+    RestoreModelConfiguration,
+    RevokeModelConfigurationFromTenant,
+    TenantAccessCommand,
+    UpdateModelConfiguration,
+    UpdateModelConfigurationCommand,
+)
 from iam_platform.application.identity.ports import AccessTokenClaims
 from iam_platform.application.platform_authz.effective_permissions import (
     ResolvePlatformEffectivePermissions,
@@ -438,3 +453,176 @@ async def get_my_effective_platform_permissions(
         ResolvePlatformEffectivePermissionsQuery(user_id=str(claims.user_id))
     )
     return schemas.EffectivePermissionsResponse(permissions=sorted(permissions))
+
+
+def _platform_model_configuration_response(
+    item: ModelConfigurationWithAccess,
+) -> schemas.PlatformModelConfigurationResponse:
+    configuration = item.configuration
+    return schemas.PlatformModelConfigurationResponse(
+        id=configuration.id,
+        model_name=configuration.model_name,
+        parameters=configuration.parameters,
+        token_budget_per_month=configuration.token_budget_per_month,
+        provider_credential_id=configuration.provider_credential_id,
+        owning_tenant_id=configuration.tenant_id,
+        archived_at=configuration.archived_at,
+        tenant_ids=item.tenant_ids,
+        created_at=configuration.created_at,
+    )
+
+
+@router.get(
+    "/model-configurations",
+    response_model=schemas.PlatformModelConfigurationListResponse,
+)
+async def list_platform_model_configurations(
+    include_archived: bool = True,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.PlatformModelConfigurationListResponse:
+    """The catalogue, with the tenants each entry is available to."""
+    use_case = ListModelConfigurationsForPlatform(container.platform_uow_factory, container.clock)
+    items = await use_case.execute(
+        ListModelConfigurationsForPlatformQuery(
+            actor_user_id=str(claims.user_id), include_archived=include_archived
+        )
+    )
+    return schemas.PlatformModelConfigurationListResponse(
+        model_configurations=[_platform_model_configuration_response(i) for i in items]
+    )
+
+
+@router.post(
+    "/model-configurations",
+    status_code=status.HTTP_201_CREATED,
+    response_model=schemas.CreateModelConfigurationResponse,
+)
+async def create_model_configuration(
+    body: schemas.CreateModelConfigurationRequest,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.CreateModelConfigurationResponse:
+    """Adds a platform-owned model. Creating it grants it to nobody."""
+    use_case = CreateModelConfiguration(container.platform_uow_factory, container.clock)
+    configuration_id = await use_case.execute(
+        CreateModelConfigurationCommand(
+            actor_user_id=str(claims.user_id),
+            model_name=body.model_name,
+            parameters=body.parameters,
+            token_budget_per_month=body.token_budget_per_month,
+            provider_credential_id=(
+                str(body.provider_credential_id) if body.provider_credential_id else None
+            ),
+        )
+    )
+    return schemas.CreateModelConfigurationResponse(id=configuration_id)
+
+
+@router.patch(
+    "/model-configurations/{model_configuration_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def update_model_configuration(
+    model_configuration_id: str,
+    body: schemas.UpdateModelConfigurationRequest,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    use_case = UpdateModelConfiguration(container.platform_uow_factory, container.clock)
+    await use_case.execute(
+        UpdateModelConfigurationCommand(
+            actor_user_id=str(claims.user_id),
+            model_configuration_id=model_configuration_id,
+            model_name=body.model_name,
+            parameters=body.parameters,
+            token_budget_per_month=body.token_budget_per_month,
+            provider_credential_id=(
+                str(body.provider_credential_id) if body.provider_credential_id else None
+            ),
+        )
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/model-configurations/{model_configuration_id}/archive",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def archive_model_configuration(
+    model_configuration_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    """Withdraws it from new assignments. Existing assistants keep working."""
+    use_case = ArchiveModelConfiguration(container.platform_uow_factory, container.clock)
+    await use_case.execute(
+        ModelConfigurationActionCommand(
+            actor_user_id=str(claims.user_id),
+            model_configuration_id=model_configuration_id,
+        )
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/model-configurations/{model_configuration_id}/restore",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def restore_model_configuration(
+    model_configuration_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    use_case = RestoreModelConfiguration(container.platform_uow_factory, container.clock)
+    await use_case.execute(
+        ModelConfigurationActionCommand(
+            actor_user_id=str(claims.user_id),
+            model_configuration_id=model_configuration_id,
+        )
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/model-configurations/{model_configuration_id}/tenants",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def grant_model_configuration(
+    model_configuration_id: str,
+    body: schemas.GrantModelConfigurationRequest,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    """Makes this configuration available to one tenant. Idempotent."""
+    use_case = GrantModelConfigurationToTenant(container.platform_uow_factory, container.clock)
+    await use_case.execute(
+        TenantAccessCommand(
+            actor_user_id=str(claims.user_id),
+            model_configuration_id=model_configuration_id,
+            tenant_id=str(body.tenant_id),
+        )
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/model-configurations/{model_configuration_id}/tenants/{tenant_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def revoke_model_configuration(
+    model_configuration_id: str,
+    tenant_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    """Refused with a 409 while any of that tenant's assistants still use it."""
+    use_case = RevokeModelConfigurationFromTenant(container.platform_uow_factory, container.clock)
+    await use_case.execute(
+        TenantAccessCommand(
+            actor_user_id=str(claims.user_id),
+            model_configuration_id=model_configuration_id,
+            tenant_id=tenant_id,
+        )
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -47,12 +47,21 @@ def _pk() -> Mapped[uuid.UUID]:
 
 
 class ModelConfigurationModel(TimestampMixin, Base):
+    """A model the platform offers. Ownership and *availability* are separate
+    things here, and only the first lives on this row.
+
+    `tenant_id IS NULL` means platform-owned; a non-null value means the row
+    was created for one tenant (the shape this table shipped with, still in
+    use). Neither says which tenants may *use* it -- that is
+    `tenant_model_configurations`, and it is what `ai_assistants` references.
+    """
+
     __tablename__ = "model_configurations"
     __table_args__ = (
-        # Same COALESCE-bucket technique as `tenant_roles` -- lets the
-        # nullable-tenant composite FK from `ai_assistants` work while keeping
-        # platform-default rows (tenant_id IS NULL) in one uniqueness
-        # namespace. See docs/16 and the tenant_authz model's note.
+        # Kept: `tenant_model_configurations` references (tenant_id, id) for
+        # tenant-owned rows, and a composite FK needs a matching UNIQUE on the
+        # referenced side -- the lesson this codebase has now learned three
+        # times (documents, data_sources, and here).
         UniqueConstraint("tenant_id", "id", name="uq_model_configurations_tenant_id_id"),
     )
 
@@ -64,6 +73,67 @@ class ModelConfigurationModel(TimestampMixin, Base):
     model_name: Mapped[str] = mapped_column(Text, nullable=False)
     parameters: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     token_budget_per_month: Mapped[int | None] = mapped_column(BigInteger)
+    #: Withdrawn from new assignments. Not a delete -- assistants already
+    #: using it keep working.
+    archived_at: Mapped[datetime | None]
+
+
+class TenantModelConfigurationModel(Base):
+    """Which model configurations a tenant is allowed to use.
+
+    **This table is the authorization boundary, not a convenience index.**
+    `ai_assistants` carries a composite FK to `(tenant_id,
+    model_configuration_id)` here, so an assistant cannot reference a
+    configuration its tenant has not been granted -- the database refuses it
+    regardless of what the application layer believes. That is strictly
+    stronger than the constraint it replaced, which only enforced "the
+    configuration belongs to my tenant" and therefore made platform-owned
+    configurations unusable by anyone.
+
+    The same FK gives revocation its policy for free: with no ON DELETE
+    action, Postgres refuses to delete an entitlement row while an assistant
+    still depends on it, so a tenant cannot be left pointing at a
+    configuration it may no longer use.
+    """
+
+    __tablename__ = "tenant_model_configurations"
+    __table_args__ = (
+        # The FK target from `ai_assistants`, and the "granted once" rule.
+        UniqueConstraint(
+            "tenant_id",
+            "model_configuration_id",
+            name="uq_tenant_model_configurations_pair",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id"],
+            ["tenants.id"],
+            name="fk_tenant_model_configurations_tenant_id_tenants",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["model_configuration_id"],
+            ["model_configurations.id"],
+            name="fk_tenant_model_configurations_model_configuration",
+            # A configuration cannot be hard-deleted out from under a grant;
+            # archiving is the supported way to retire one.
+            ondelete="RESTRICT",
+        ),
+        Index("ix_tenant_model_configurations_tenant_id", "tenant_id"),
+        Index(
+            "ix_tenant_model_configurations_model_configuration_id",
+            "model_configuration_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    model_configuration_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), nullable=False
+    )
+    granted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
 class ProviderCredentialModel(Base):
@@ -115,9 +185,17 @@ class AiAssistantModel(TimestampMixin, Base):
             ["tenant_memberships.tenant_id", "tenant_memberships.id"],
             name="fk_ai_assistants_owner_membership",
         ),
+        # Points at the *entitlement*, not at the configuration. This is what
+        # makes "a tenant may only use models it has been granted" a database
+        # invariant rather than an application convention -- a hand-crafted
+        # request carrying another tenant's configuration id is rejected by
+        # Postgres even if every check above it were wrong.
         ForeignKeyConstraint(
             ["tenant_id", "model_configuration_id"],
-            ["model_configurations.tenant_id", "model_configurations.id"],
+            [
+                "tenant_model_configurations.tenant_id",
+                "tenant_model_configurations.model_configuration_id",
+            ],
             name="fk_ai_assistants_model_configuration",
         ),
         UniqueConstraint("tenant_id", "id", name="uq_ai_assistants_tenant_id_id"),

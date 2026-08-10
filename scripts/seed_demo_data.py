@@ -201,23 +201,25 @@ async def main(owner_email: str) -> None:
                  "st": member_status, "jt": job_title},
             )
 
-        # Deliberately TENANT-SCOPED, not a platform default (tenant_id NULL).
+        # A PLATFORM-OWNED configuration, granted to this tenant -- the shape
+        # the product actually uses now.
         #
-        # docs/16-schema-ai-resources.md describes platform-default model
-        # configurations as "readable by all tenants", but `ai_assistants`
-        # carries a plain composite FK
-        # `(tenant_id, model_configuration_id) -> model_configurations(tenant_id, id)`
-        # with a NOT NULL `tenant_id`, so a tenant assistant can only ever
-        # reference a config belonging to that same tenant -- a platform
-        # default is unreachable and inserting one fails with
-        # `fk_ai_assistants_model_configuration`. Phase 6 hit the same
-        # nullable-tenant problem with `tenant_roles` and solved it with a
-        # simple single-column FK; `ai_assistants` was not given the same
-        # treatment. Seeding a tenant-scoped row works with the schema as it
-        # actually is rather than as documented.
+        # This used to seed a tenant-scoped row with a long comment explaining
+        # that a platform-owned one was unreachable: `ai_assistants` carried a
+        # composite FK to `model_configurations(tenant_id, id)`, and with a
+        # NOT NULL `ai_assistants.tenant_id` that could never match a row whose
+        # `tenant_id` is NULL. That FK now points at
+        # `tenant_model_configurations` instead, so ownership and availability
+        # are separate and a platform-owned model can be granted to any number
+        # of tenants. See docs/16-schema-ai-resources.md.
         model_config_id = (
             await conn.execute(
-                text("SELECT id FROM model_configurations WHERE tenant_id = :t LIMIT 1"),
+                text(
+                    "SELECT mc.id FROM model_configurations mc "
+                    "JOIN tenant_model_configurations tmc "
+                    "  ON tmc.model_configuration_id = mc.id "
+                    "WHERE tmc.tenant_id = :t LIMIT 1"
+                ),
                 {"t": str(tenant_id)},
             )
         ).scalar()
@@ -226,9 +228,17 @@ async def main(owner_email: str) -> None:
             await conn.execute(
                 text(
                     "INSERT INTO model_configurations (id, tenant_id, model_name, parameters) "
-                    "VALUES (:id, :t, 'claude-opus-5', '{}'::jsonb)"
+                    "VALUES (:id, NULL, 'claude-opus-5', '{}'::jsonb)"
                 ),
-                {"id": str(model_config_id), "t": str(tenant_id)},
+                {"id": str(model_config_id)},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO tenant_model_configurations "
+                    "(id, tenant_id, model_configuration_id) VALUES (:id, :t, :cid) "
+                    "ON CONFLICT DO NOTHING"
+                ),
+                {"id": str(uuid.uuid4()), "t": str(tenant_id), "cid": str(model_config_id)},
             )
 
         has_assistants = (

@@ -4,6 +4,7 @@ import type {
   PlatformUserPage,
   RolePermissionMap,
   Tenant,
+  PlatformModelConfiguration,
 } from "@/lib/types";
 
 export function listTenants() {
@@ -89,5 +90,57 @@ export function endImpersonation(impersonationSessionId: string) {
   return apiFetch<void>("v1/platform/impersonation/end", {
     method: "POST",
     body: { impersonation_session_id: impersonationSessionId },
+  });
+}
+
+export function listPlatformModelConfigurations() {
+  return apiFetch<{ model_configurations: PlatformModelConfiguration[] }>(
+    "v1/platform/model-configurations",
+  );
+}
+
+export function createModelConfiguration(body: {
+  model_name: string;
+  parameters?: Record<string, unknown>;
+  token_budget_per_month?: number | null;
+}) {
+  return apiFetch<{ id: string }>("v1/platform/model-configurations", {
+    method: "POST",
+    body,
+  });
+}
+
+export function updateModelConfiguration(
+  id: string,
+  body: {
+    model_name: string;
+    parameters?: Record<string, unknown>;
+    token_budget_per_month?: number | null;
+  },
+) {
+  return apiFetch<void>(`v1/platform/model-configurations/${id}`, {
+    method: "PATCH",
+    body,
+  });
+}
+
+export function archiveModelConfiguration(id: string) {
+  return apiFetch<void>(`v1/platform/model-configurations/${id}/archive`, { method: "POST" });
+}
+
+export function restoreModelConfiguration(id: string) {
+  return apiFetch<void>(`v1/platform/model-configurations/${id}/restore`, { method: "POST" });
+}
+
+export function grantModelConfiguration(id: string, tenantId: string) {
+  return apiFetch<void>(`v1/platform/model-configurations/${id}/tenants`, {
+    method: "POST",
+    body: { tenant_id: tenantId },
+  });
+}
+
+export function revokeModelConfiguration(id: string, tenantId: string) {
+  return apiFetch<void>(`v1/platform/model-configurations/${id}/tenants/${tenantId}`, {
+    method: "DELETE",
   });
 }

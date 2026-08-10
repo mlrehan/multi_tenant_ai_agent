@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from iam_platform.application.ai_resources.ports import StoredChunk
@@ -49,6 +50,7 @@ from iam_platform.infrastructure.db.models.ai_resources import (
     KnowledgeBaseModel,
     ModelConfigurationModel,
     ProviderCredentialModel,
+    TenantModelConfigurationModel,
 )
 
 
@@ -425,6 +427,7 @@ def _model_configuration_to_domain(m: ModelConfigurationModel) -> ModelConfigura
         token_budget_per_month=m.token_budget_per_month,
         created_at=m.created_at,
         updated_at=m.updated_at,
+        archived_at=m.archived_at,
     )
 
 
@@ -437,13 +440,46 @@ class SqlModelConfigurationRepository:
         return _model_configuration_to_domain(model) if model else None
 
     async def list_available_to_tenant(self, tenant_id: UUID) -> list[ModelConfiguration]:
-        stmt = select(ModelConfigurationModel).where(
-            (ModelConfigurationModel.tenant_id.is_(None))
-            | (ModelConfigurationModel.tenant_id == tenant_id)
+        # Driven by the grant, not by ownership. Archived configurations are
+        # excluded because this list is "what can I choose now"; an assistant
+        # already using an archived one keeps it (see `is_available_to_tenant`
+        # and the entity's `archive`).
+        stmt = (
+            select(ModelConfigurationModel)
+            .join(
+                TenantModelConfigurationModel,
+                TenantModelConfigurationModel.model_configuration_id
+                == ModelConfigurationModel.id,
+            )
+            .where(
+                TenantModelConfigurationModel.tenant_id == tenant_id,
+                ModelConfigurationModel.archived_at.is_(None),
+            )
+            .order_by(ModelConfigurationModel.model_name)
         )
         return [
             _model_configuration_to_domain(m) for m in (await self._session.execute(stmt)).scalars()
         ]
+
+    async def is_available_to_tenant(
+        self, *, tenant_id: UUID, model_configuration_id: UUID
+    ) -> bool:
+        stmt = (
+            select(func.count())
+            .select_from(TenantModelConfigurationModel)
+            .join(
+                ModelConfigurationModel,
+                ModelConfigurationModel.id
+                == TenantModelConfigurationModel.model_configuration_id,
+            )
+            .where(
+                TenantModelConfigurationModel.tenant_id == tenant_id,
+                TenantModelConfigurationModel.model_configuration_id
+                == model_configuration_id,
+                ModelConfigurationModel.archived_at.is_(None),
+            )
+        )
+        return bool((await self._session.execute(stmt)).scalar_one())
 
     async def add(self, model_configuration: ModelConfiguration) -> None:
         self._session.add(
@@ -703,3 +739,122 @@ class SqlPublicWidgetLookup:
                 await session.execute(select(ChatWidgetModel).where(condition))
             ).scalar_one_or_none()
             return _widget_to_domain(model) if model else None
+
+
+class SqlPlatformModelConfigurationRepository:
+    """The catalogue, on the BYPASSRLS platform connection.
+
+    Separate from `SqlModelConfigurationRepository` because the questions are
+    different: that one asks "what may this tenant use", this one asks "what
+    exists". Sharing a class would mean one of them running with the wrong
+    connection eventually.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_id(self, model_configuration_id: UUID) -> ModelConfiguration | None:
+        model = await self._session.get(ModelConfigurationModel, model_configuration_id)
+        return _model_configuration_to_domain(model) if model else None
+
+    async def list_all(self, *, include_archived: bool = True) -> list[ModelConfiguration]:
+        stmt = select(ModelConfigurationModel)
+        if not include_archived:
+            stmt = stmt.where(ModelConfigurationModel.archived_at.is_(None))
+        stmt = stmt.order_by(ModelConfigurationModel.model_name)
+        return [
+            _model_configuration_to_domain(m)
+            for m in (await self._session.execute(stmt)).scalars()
+        ]
+
+    async def add(self, model_configuration: ModelConfiguration) -> None:
+        self._session.add(
+            ModelConfigurationModel(
+                id=model_configuration.id,
+                tenant_id=model_configuration.tenant_id,
+                provider_credential_id=model_configuration.provider_credential_id,
+                model_name=model_configuration.model_name,
+                parameters=model_configuration.parameters,
+                token_budget_per_month=model_configuration.token_budget_per_month,
+                archived_at=model_configuration.archived_at,
+            )
+        )
+        await self._session.flush()
+
+    async def save(self, model_configuration: ModelConfiguration) -> None:
+        await self._session.execute(
+            update(ModelConfigurationModel)
+            .where(ModelConfigurationModel.id == model_configuration.id)
+            .values(
+                # `tenant_id` is deliberately absent: ownership is set once at
+                # creation. Allowing an update would let a platform-owned row
+                # be quietly reassigned to a tenant, which no use case wants
+                # and which would silently change who the FK lets use it.
+                provider_credential_id=model_configuration.provider_credential_id,
+                model_name=model_configuration.model_name,
+                parameters=model_configuration.parameters,
+                token_budget_per_month=model_configuration.token_budget_per_month,
+                archived_at=model_configuration.archived_at,
+            )
+        )
+
+
+class SqlTenantModelAccessRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_tenant_ids_for_configuration(
+        self, model_configuration_id: UUID
+    ) -> list[UUID]:
+        stmt = select(TenantModelConfigurationModel.tenant_id).where(
+            TenantModelConfigurationModel.model_configuration_id == model_configuration_id
+        )
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def grant(
+        self,
+        *,
+        tenant_id: UUID,
+        model_configuration_id: UUID,
+        granted_by_user_id: UUID,
+    ) -> None:
+        # ON CONFLICT rather than a read-then-write: two operators granting
+        # the same configuration at once should both succeed, and the unique
+        # constraint is the arbiter rather than a race between two SELECTs.
+        await self._session.execute(
+            pg_insert(TenantModelConfigurationModel)
+            .values(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                model_configuration_id=model_configuration_id,
+                granted_by_user_id=granted_by_user_id,
+            )
+            .on_conflict_do_nothing(constraint="uq_tenant_model_configurations_pair")
+        )
+
+    async def revoke(self, *, tenant_id: UUID, model_configuration_id: UUID) -> int:
+        # Counted first, and the delete skipped if anything depends on it.
+        # The foreign key would refuse anyway -- that is the guarantee -- but
+        # letting it raise would abort the transaction and turn a normal,
+        # explainable refusal into a 500.
+        blocking = (
+            await self._session.execute(
+                select(func.count())
+                .select_from(AiAssistantModel)
+                .where(
+                    AiAssistantModel.tenant_id == tenant_id,
+                    AiAssistantModel.model_configuration_id == model_configuration_id,
+                )
+            )
+        ).scalar_one()
+        if blocking:
+            return int(blocking)
+
+        await self._session.execute(
+            delete(TenantModelConfigurationModel).where(
+                TenantModelConfigurationModel.tenant_id == tenant_id,
+                TenantModelConfigurationModel.model_configuration_id
+                == model_configuration_id,
+            )
+        )
+        return 0

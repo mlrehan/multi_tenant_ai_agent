@@ -380,17 +380,62 @@ class Conversation(Entity):
 
 @dataclass(kw_only=True)
 class ModelConfiguration(Entity):
-    tenant_id: UUID | None  # None => platform-provided default, readable by all tenants
+    #: ``None`` => platform-owned. Retained rather than removed: it is the
+    #: only ownership marker on the row, and tenant-owned configurations
+    #: predate the entitlement model and are still in use. *Availability* is
+    #: no longer derived from it -- that is `tenant_model_configurations`.
+    tenant_id: UUID | None
     provider_credential_id: UUID | None = None
     model_name: str
     parameters: dict[str, Any] = field(default_factory=dict)
     token_budget_per_month: int | None = None
     created_at: datetime
     updated_at: datetime
+    #: Set when the platform withdraws a configuration from further use.
+    #: Deliberately not a delete: assistants already pointing at it keep
+    #: working, and the audit trail keeps its referent.
+    archived_at: datetime | None = None
 
     @property
-    def is_platform_default(self) -> bool:
+    def is_platform_owned(self) -> bool:
         return self.tenant_id is None
+
+    @property
+    def is_archived(self) -> bool:
+        return self.archived_at is not None
+
+    def archive(self, *, now: datetime) -> None:
+        """Stops this configuration being offered for new assignments.
+
+        Existing assistants are untouched by design -- archiving is how a
+        platform operator retires a model without breaking every tenant that
+        already chose it. Removing it from a tenant entirely is a separate,
+        deliberately harder action (revoking the entitlement), which the
+        database refuses while an assistant still depends on it.
+        """
+        if self.archived_at is None:
+            self.archived_at = now
+            self.updated_at = now
+
+    def restore(self, *, now: datetime) -> None:
+        if self.archived_at is not None:
+            self.archived_at = None
+            self.updated_at = now
+
+    def update_details(
+        self,
+        *,
+        model_name: str,
+        parameters: dict[str, Any],
+        token_budget_per_month: int | None,
+        provider_credential_id: UUID | None,
+        now: datetime,
+    ) -> None:
+        self.model_name = model_name
+        self.parameters = parameters
+        self.token_budget_per_month = token_budget_per_month
+        self.provider_credential_id = provider_credential_id
+        self.updated_at = now
 
 
 class CredentialOwnerType(StrEnum):

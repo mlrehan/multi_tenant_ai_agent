@@ -77,6 +77,19 @@ REVOKE ALL ON platform_user_roles FROM app_tenant;
 
 `app_tenant` gets no `GRANT` on these tables at all — belt-and-suspenders alongside RLS, since a `GRANT`-level block is the stronger of the two barriers.
 
+## Tightening a foreign key breaks every hand-built test fixture
+
+Adding a constraint is not only a data-migration question. `tenant_model_configurations` repointed `ai_assistants`' composite FK at an entitlement table, and **70 assertions across `tests/integration/db/test_ai_resources_rls.py` failed at once** — not because tenant isolation regressed, but because that suite builds its object graph with raw SQL (`user → tenant → membership → model_configuration → assistant`) and the graph now needs one more edge.
+
+That is the correct failure. A fixture that hand-assembles rows encodes the schema's shape, so a stronger invariant *should* invalidate it, and the fix is to build the missing row rather than to relax the constraint.
+
+Two things this is worth remembering for:
+
+1. **Budget for it.** The application code, the use cases and the unit tests can all be complete and green while the integration fixtures still describe the old schema. The full suite is where that surfaces, ~27 minutes in.
+2. **The migration and the fixtures are separate problems.** The migration backfills *existing production rows*; fixtures create *new* rows from scratch and get no such help. Both need doing, and doing one does not hint that the other is outstanding.
+
+Same family as the composite-FK/UNIQUE lesson below, which this codebase has now hit three times: a constraint that is right for production is also a constraint every test seeder has to satisfy.
+
 ## A rollback pitfall every Unit of Work implementation must avoid
 
 Discovered during Phase 5 integration testing against a real Postgres instance (invisible to unit tests running against the in-memory fakes, which have no real transaction/rollback semantics): a Unit of Work's `__aexit__` rolls back the transaction on **any** exception raised from inside its `async with` block. That's correct and desired for genuine failures, but it is a trap for use cases where the *expected, successful outcome of detecting a problem* is itself a database write that must survive — for example:

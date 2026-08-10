@@ -73,10 +73,17 @@ class ChangeVisibilityRequest(BaseModel):
 
 
 class ModelConfigurationResponse(BaseModel):
+    """One model this tenant may assign.
+
+    Deliberately narrow. `tenant_id` and `is_platform_default` used to be here
+    so the console could grey out rows it was not allowed to assign; every row
+    returned now *is* assignable, so both fields would only invite a client to
+    re-derive an availability rule the server already applied. Who owns a
+    configuration is platform information and is not a tenant's business.
+    """
+
     id: UUID
-    tenant_id: UUID | None
     model_name: str
-    is_platform_default: bool
 
 
 class ModelConfigurationListResponse(BaseModel):

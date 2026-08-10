@@ -36,7 +36,7 @@ erDiagram
 
 - **Check:** `visibility IN ('tenant','department','team','restricted')`; `status IN ('draft','published','archived')`
 - **Unique:** `uq_ai_assistants_tenant_id_id ON (tenant_id, id)`
-- **Composite FK:** `(tenant_id, department_id)` → `departments(tenant_id, id)`; `(tenant_id, team_id)` → `teams(tenant_id, id)`; `(tenant_id, owner_membership_id)` → `tenant_memberships(tenant_id, id)`; `(tenant_id, model_configuration_id)` → `model_configurations(tenant_id, id)` (nullable-tenant variant, see that table)
+- **Composite FK:** `(tenant_id, department_id)` → `departments(tenant_id, id)`; `(tenant_id, team_id)` → `teams(tenant_id, id)`; `(tenant_id, owner_membership_id)` → `tenant_memberships(tenant_id, id)`; `(tenant_id, model_configuration_id)` → `tenant_model_configurations(tenant_id, model_configuration_id)` — **the entitlement, not the configuration** (see `tenant_model_configurations` below)
 - **Tenant scoping:** standard; `visibility='department'|'team'` additionally filters at query time against the requester's own `department_id`/`team_id`, and `visibility='restricted'` requires an `assistant_members` row (Phase 1 §12: "restricted assistants require explicit assignment")
 - **Deletion behavior:** soft-archive via `status='archived'` preferred; hard delete RESTRICT while `conversations` reference it
 - **Audit:** publish/unpublish, visibility changes (FR-AUDIT: "assistant access changes")
@@ -237,3 +237,30 @@ Message-level content (the individual turns within a conversation) is a natural 
 - **Deletion behavior:** never hard-deleted while `active`; revoked and retained for audit; `credential_ciphertext` is envelope-encrypted via KMS and is never returned by any read API — only the AI-execution infrastructure service decrypts it server-side at call time, and only `key_hint` (last 4 characters) is ever shown in any UI
 - **Audit:** creation, rotation, revocation (FR-AUDIT: "provider credential changes") — every read/decrypt operation for actual model calls is also logged at the infrastructure layer, distinct from admin-facing CRUD audit
 - **Retention:** revoked credentials retained indefinitely (metadata only — the ciphertext may be scrubbed post-revocation once no longer needed) for audit trail
+
+---
+
+## `tenant_model_configurations` — which tenants may use which models
+
+**Purpose:** the platform owns the model catalogue and decides, per tenant, which entries that tenant may use. This table carries that decision, and `ai_assistants` references it.
+
+**Why it exists.** `model_configurations.tenant_id` records *ownership* (`NULL` = platform-owned). It was originally also doing duty as *availability*, via a composite FK from `ai_assistants` to `model_configurations(tenant_id, id)`. Because `ai_assistants.tenant_id` is `NOT NULL`, that FK could only match a configuration owned by the same tenant — so a platform-owned row was unreachable by every assistant in the product, and "platform defaults readable by all tenants" (as this document previously described them) was unimplementable. Separating the two concepts fixes that without removing the ownership column, which tenant-owned rows still need.
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| tenant_id | UUID | NOT NULL, FK → tenants(id) ON DELETE CASCADE |
+| model_configuration_id | UUID | NOT NULL, FK → model_configurations(id) ON DELETE RESTRICT |
+| granted_by_user_id | UUID | NULL, FK → users(id) |
+| created_at | TIMESTAMPTZ | NOT NULL |
+
+- **Unique:** `uq_tenant_model_configurations_pair ON (tenant_id, model_configuration_id)` — also the FK target from `ai_assistants`, so a composite FK has the matching UNIQUE it requires.
+- **Tenant scoping:** RLS `SELECT` only, own rows only. Which models a customer may use describes the shape of their deployment, so it is not readable across the boundary. **No INSERT/UPDATE/DELETE policy exists** — all writes are platform-side on the BYPASSRLS `app_platform` connection, and with `FORCE ROW LEVEL SECURITY` the absence of a policy is itself the denial.
+- **Retention:** follows tenant.
+
+**Two invariants the database enforces, not the application:**
+
+1. An assistant cannot reference a configuration its tenant has not been granted — `fk_ai_assistants_model_configuration` rejects it regardless of what any use case believes.
+2. A grant cannot be revoked while an assistant depends on it — the same constraint read from the other side, which is what stops an operator stranding production assistants.
+
+**Archiving vs revoking.** `model_configurations.archived_at` withdraws a configuration from *new* assignments while leaving existing assistants and existing grants intact. Revoking removes a tenant's access entirely and is refused while assistants still use it. Retiring a model across a fleet is archive → migrate assistants → revoke.

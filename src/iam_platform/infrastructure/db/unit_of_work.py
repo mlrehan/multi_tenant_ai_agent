@@ -45,9 +45,11 @@ from iam_platform.application.identity.ports import (
 )
 from iam_platform.application.platform_authz.ports import (
     ImpersonationSessionRepository,
+    PlatformModelConfigurationRepository,
     PlatformPermissionRepository,
     PlatformRoleRepository,
     PlatformUserRoleRepository,
+    TenantModelAccessRepository,
 )
 from iam_platform.application.tenancy.ports import (
     TenantFeatureRepository,
@@ -71,7 +73,9 @@ from iam_platform.infrastructure.db.repositories.ai_resources import (
     SqlDocumentRepository,
     SqlKnowledgeBaseRepository,
     SqlModelConfigurationRepository,
+    SqlPlatformModelConfigurationRepository,
     SqlProviderCredentialRepository,
+    SqlTenantModelAccessRepository,
 )
 from iam_platform.infrastructure.db.repositories.audit import (
     SqlAccountLockoutRepository,
@@ -346,6 +350,8 @@ class SqlPlatformUnitOfWork:
     role_hierarchy: RoleHierarchyRepository
     authorization_overrides: AuthorizationOverrideRepository
     impersonation_sessions: ImpersonationSessionRepository
+    model_configurations: PlatformModelConfigurationRepository
+    tenant_model_access: TenantModelAccessRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 
@@ -368,6 +374,8 @@ class SqlPlatformUnitOfWork:
         self.platform_roles = SqlPlatformRoleRepository(session)
         self.platform_permissions = SqlPlatformPermissionRepository(session)
         self.platform_user_roles = SqlPlatformUserRoleRepository(session)
+        self.model_configurations = SqlPlatformModelConfigurationRepository(session)
+        self.tenant_model_access = SqlTenantModelAccessRepository(session)
         self.users = SqlUserRepository(session)
         self.identities = SqlAuthIdentityRepository(session)
         self.credentials = SqlCredentialRepository(session)

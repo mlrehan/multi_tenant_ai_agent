@@ -30,6 +30,7 @@ from iam_platform.application.tenant_authz.ports import (
     TenantPermissionRepository,
     TenantRoleRepository,
 )
+from iam_platform.domain.ai_resources.entities import ModelConfiguration
 from iam_platform.domain.platform_authz.entities import (
     ImpersonationSession,
     PlatformPermission,
@@ -428,6 +429,59 @@ class FakeTenantUnitOfWork:
         self._snapshot = None
 
 
+class FakePlatformModelConfigurationRepository:
+    def __init__(self) -> None:
+        self.by_id: dict[UUID, ModelConfiguration] = {}
+
+    async def get_by_id(self, model_configuration_id: UUID) -> ModelConfiguration | None:
+        return self.by_id.get(model_configuration_id)
+
+    async def list_all(self, *, include_archived: bool = True) -> list[ModelConfiguration]:
+        return [
+            m
+            for m in self.by_id.values()
+            if include_archived or not m.is_archived
+        ]
+
+    async def add(self, model_configuration: ModelConfiguration) -> None:
+        self.by_id[model_configuration.id] = model_configuration
+
+    async def save(self, model_configuration: ModelConfiguration) -> None:
+        self.by_id[model_configuration.id] = model_configuration
+
+
+class FakeTenantModelAccessRepository:
+    """Grants, plus the assistants that block a revocation.
+
+    `blocking_assistants` stands in for the `ai_assistants` rows the real
+    repository counts. Modelled rather than ignored because "revocation is
+    refused while an assistant depends on it" is the policy under test, and a
+    fake that always allowed revocation would make that test vacuous.
+    """
+
+    def __init__(self, configurations: FakePlatformModelConfigurationRepository) -> None:
+        self._configurations = configurations
+        self.grants: set[tuple[UUID, UUID]] = set()
+        self.blocking_assistants: dict[tuple[UUID, UUID], int] = {}
+
+    async def list_tenant_ids_for_configuration(
+        self, model_configuration_id: UUID
+    ) -> list[UUID]:
+        return [t for (t, c) in self.grants if c == model_configuration_id]
+
+    async def grant(
+        self, *, tenant_id: UUID, model_configuration_id: UUID, granted_by_user_id: UUID
+    ) -> None:
+        self.grants.add((tenant_id, model_configuration_id))
+
+    async def revoke(self, *, tenant_id: UUID, model_configuration_id: UUID) -> int:
+        blocking = self.blocking_assistants.get((tenant_id, model_configuration_id), 0)
+        if blocking:
+            return blocking
+        self.grants.discard((tenant_id, model_configuration_id))
+        return 0
+
+
 class FakePlatformUnitOfWork:
     """Same shared-instance-as-factory + rollback-simulation pattern as
     ``FakeTenantUnitOfWork``, matching ``PlatformUowFactory``'s call shape."""
@@ -443,6 +497,8 @@ class FakePlatformUnitOfWork:
         "role_hierarchy",
         "authorization_overrides",
         "impersonation_sessions",
+        "model_configurations",
+        "tenant_model_access",
         "audit",
         "security_events",
     )
@@ -458,6 +514,8 @@ class FakePlatformUnitOfWork:
         self.role_hierarchy = FakeRoleHierarchyRepository()
         self.authorization_overrides = FakeAuthorizationOverrideRepository()
         self.impersonation_sessions = FakeImpersonationSessionRepository()
+        self.model_configurations = FakePlatformModelConfigurationRepository()
+        self.tenant_model_access = FakeTenantModelAccessRepository(self.model_configurations)
         self.audit = FakeAuditWriter()
         self.security_events = FakeSecurityEventWriter()
         self.last_user_id: UUID | None = None

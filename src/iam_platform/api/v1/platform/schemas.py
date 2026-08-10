@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -131,3 +135,52 @@ class CreateUserResponse(BaseModel):
 
 class UpdateUserRequest(BaseModel):
     email: EmailStr
+
+
+class CreateModelConfigurationRequest(BaseModel):
+    """A model the platform offers to tenants.
+
+    No `tenant_id` field: a configuration created here is platform-owned, and
+    availability is a separate grant. Letting the request name an owner would
+    reintroduce exactly the coupling entitlements exist to remove.
+    """
+
+    model_name: str = Field(min_length=1, max_length=200)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    token_budget_per_month: int | None = Field(default=None, ge=0)
+    provider_credential_id: UUID | None = None
+
+
+class UpdateModelConfigurationRequest(BaseModel):
+    model_name: str = Field(min_length=1, max_length=200)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    token_budget_per_month: int | None = Field(default=None, ge=0)
+    provider_credential_id: UUID | None = None
+
+
+class CreateModelConfigurationResponse(BaseModel):
+    id: UUID
+
+
+class GrantModelConfigurationRequest(BaseModel):
+    tenant_id: UUID
+
+
+class PlatformModelConfigurationResponse(BaseModel):
+    id: UUID
+    model_name: str
+    parameters: dict[str, Any]
+    token_budget_per_month: int | None
+    provider_credential_id: UUID | None
+    #: True for rows created before entitlements existed, which belong to one
+    #: tenant. Surfaced so an operator can tell them apart rather than
+    #: wondering why a configuration they did not create is in the list.
+    owning_tenant_id: UUID | None
+    archived_at: datetime | None
+    #: Tenants currently allowed to use this configuration.
+    tenant_ids: list[UUID]
+    created_at: datetime
+
+
+class PlatformModelConfigurationListResponse(BaseModel):
+    model_configurations: list[PlatformModelConfigurationResponse]

@@ -91,8 +91,11 @@ function ModelConfigurationField({
   error?: string;
 }) {
   const { data, isLoading } = useModelConfigurations(tenantId);
-  const usable = (data?.model_configurations ?? []).filter((c) => !c.is_platform_default);
-  const byId = new Map((data?.model_configurations ?? []).map((c) => [c.id, c]));
+  // Every row the server returns is one this tenant may assign -- availability
+  // is decided by the platform's grant, server-side. Nothing to filter, and
+  // nothing to render disabled.
+  const available = data?.model_configurations ?? [];
+  const byId = new Map(available.map((c) => [c.id, c]));
 
   return (
     <div>
@@ -109,21 +112,18 @@ function ModelConfigurationField({
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
-          {data?.model_configurations.map((c: ModelConfiguration) => (
-            <SelectItem key={c.id} value={c.id} disabled={c.is_platform_default}>
+          {available.map((c: ModelConfiguration) => (
+            <SelectItem key={c.id} value={c.id}>
               {c.model_name}
-              {c.is_platform_default ? " (platform default — currently unassignable)" : ""}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
       <FieldError message={error} />
-      {!isLoading && usable.length === 0 && (
+      {!isLoading && available.length === 0 && (
         <p className="mt-1 text-xs text-muted-foreground">
-          This tenant has no assignable model configuration yet, and platform defaults can&apos;t
-          currently be assigned to a tenant assistant (a known backend limitation — the foreign key
-          requires a matching <code className="font-mono">tenant_id</code>). Ask a platform
-          administrator to provision one.
+          No model configuration is available for this tenant. Contact your platform
+          administrator.
         </p>
       )}
     </div>

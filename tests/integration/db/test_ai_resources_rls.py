@@ -79,6 +79,17 @@ async def _seed_two_tenants_with_assistants(migrator_engine: AsyncEngine):
                 ),
                 {"id": str(config_id), "tid": str(tenant_id)},
             )
+            # The entitlement `ai_assistants` now references. Owning a
+            # configuration is no longer the same as being allowed to use it,
+            # so the grant is a row this graph has to build explicitly --
+            # see `tenant_model_configurations` in docs/16.
+            await conn.execute(
+                text(
+                    "INSERT INTO tenant_model_configurations "
+                    "(id, tenant_id, model_configuration_id) VALUES (:id, :tid, :cid)"
+                ),
+                {"id": str(uuid4()), "tid": str(tenant_id), "cid": str(config_id)},
+            )
             await conn.execute(
                 text(
                     "INSERT INTO ai_assistants "

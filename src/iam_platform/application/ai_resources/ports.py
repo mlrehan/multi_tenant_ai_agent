@@ -202,7 +202,26 @@ class ConversationRepository(Protocol):
 class ModelConfigurationRepository(Protocol):
     async def get_by_id(self, model_configuration_id: UUID) -> ModelConfiguration | None: ...
     async def list_available_to_tenant(self, tenant_id: UUID) -> list[ModelConfiguration]:
-        """Platform defaults (``tenant_id IS NULL``) plus this tenant's own."""
+        """Configurations this tenant has been *granted*, excluding archived.
+
+        Not "platform-owned plus my own" any more: availability is an explicit
+        grant in `tenant_model_configurations`, so a platform-owned model is
+        offered to a tenant only when someone decided it should be.
+        """
+        ...
+
+    async def is_available_to_tenant(
+        self, *, tenant_id: UUID, model_configuration_id: UUID
+    ) -> bool:
+        """Whether this tenant may assign this configuration.
+
+        The application-layer half of the check whose other half is the
+        `fk_ai_assistants_model_configuration` foreign key. Both exist on
+        purpose: this one produces a clean 404 that reveals nothing, the
+        constraint guarantees the rule holds even if this call is ever
+        forgotten. Archived configurations are unavailable for *new*
+        assignments while remaining valid for assistants already using them.
+        """
         ...
 
     async def add(self, model_configuration: ModelConfiguration) -> None: ...

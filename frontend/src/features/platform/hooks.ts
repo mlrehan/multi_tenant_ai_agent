@@ -164,3 +164,69 @@ export function useEndImpersonation() {
     },
   });
 }
+
+const modelConfigurationsKey = ["platform-model-configurations"];
+
+export function usePlatformModelConfigurations() {
+  return useQuery({
+    queryKey: modelConfigurationsKey,
+    queryFn: () => api.listPlatformModelConfigurations(),
+  });
+}
+
+/** Every mutation on this screen changes the same list, and several of them
+ *  change what tenants can see too, so they share one invalidation. */
+function useModelConfigurationMutation<TVars>(
+  mutationFn: (vars: TVars) => Promise<unknown>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: modelConfigurationsKey });
+      // A grant or revoke changes what a tenant admin is offered.
+      queryClient.invalidateQueries({ queryKey: ["model-configurations"] });
+    },
+  });
+}
+
+export function useCreateModelConfiguration() {
+  return useModelConfigurationMutation(
+    (body: { model_name: string; token_budget_per_month?: number | null }) =>
+      api.createModelConfiguration(body),
+  );
+}
+
+export function useUpdateModelConfiguration() {
+  return useModelConfigurationMutation(
+    (vars: {
+      id: string;
+      model_name: string;
+      token_budget_per_month?: number | null;
+    }) =>
+      api.updateModelConfiguration(vars.id, {
+        model_name: vars.model_name,
+        token_budget_per_month: vars.token_budget_per_month,
+      }),
+  );
+}
+
+export function useArchiveModelConfiguration() {
+  return useModelConfigurationMutation((id: string) => api.archiveModelConfiguration(id));
+}
+
+export function useRestoreModelConfiguration() {
+  return useModelConfigurationMutation((id: string) => api.restoreModelConfiguration(id));
+}
+
+export function useGrantModelConfiguration() {
+  return useModelConfigurationMutation((vars: { id: string; tenantId: string }) =>
+    api.grantModelConfiguration(vars.id, vars.tenantId),
+  );
+}
+
+export function useRevokeModelConfiguration() {
+  return useModelConfigurationMutation((vars: { id: string; tenantId: string }) =>
+    api.revokeModelConfiguration(vars.id, vars.tenantId),
+  );
+}

@@ -139,6 +139,26 @@ and every tenant they belong to. You can grant and revoke platform roles from ri
 You cannot suspend or delete **your own** account. Recovering from that needs direct database
 access, so the console refuses rather than letting you lock yourself out.
 
+### Platform → Model configurations
+
+**What it is:** the catalogue of AI models this platform offers, and which customers may use each one.
+
+**What it's for:** tenants do not bring their own models. You decide what exists and who gets it, and their administrators pick from what you have made available. They cannot create or edit these — the console gives them no way to, and the API refuses if they try.
+
+**Two separate steps, deliberately.** Creating a configuration makes it available to *nobody*. Availability is a per-tenant grant you make afterwards, from the **+ Tenant** button. Until a tenant has at least one, its administrators cannot create an assistant at all — that is the single most common cause of "the model dropdown is empty".
+
+| Action | What it does |
+|---|---|
+| **New configuration** | Adds a model to the catalogue. Owned by the platform, available to no one yet. |
+| **+ Tenant** | Grants one tenant permission to use it. Idempotent. |
+| **× on a tenant chip** | Revokes that tenant's access. **Refused** while any of their assistants still uses it, with a count. |
+| **Edit** | Changes the model name or monthly token budget. Applies to every assistant already using it. |
+| **Archive** | Withdraws it from *new* assignments. Assistants already using it keep working, and grants stay in place. |
+
+Retiring a model across every customer is therefore: archive it, move the assistants that use it, then revoke. Nothing breaks at any step, and the database will not let you skip the middle one.
+
+Rows labelled *"owned by a single tenant"* predate this screen. They belong to one customer rather than the platform; they behave identically otherwise.
+
 ### Platform → Roles
 
 **What it is:** the platform-scope roles, the grant/revoke tool, and role definition itself.
@@ -278,13 +298,11 @@ further, but nothing is destroyed.
 
 **What "Model configuration" means.** It's *which AI model and provider settings* the assistant
 actually runs on — think "Claude Opus via our Anthropic account" as opposed to a different model or
-a different set of parameters. It's picked from a list, not typed, and the list only offers
-configurations this tenant actually owns; a **platform default** configuration (one every tenant is
-meant to be able to use) is shown for visibility but greyed out as currently unassignable — a known
-gap in how assistants are linked to model configurations at the database level, tracked as a
-backend defect rather than hidden. If the tenant has no configuration of its own yet, the form says
-so and points at asking a platform administrator to provision one; there's no manage screen for
-these yet.
+a different set of parameters. It's picked from a list, not typed, and **the list offers exactly
+what the platform has made available to this tenant** — every entry in it is selectable, because
+availability is decided server-side on [Platform → Model configurations](#platform--model-configurations)
+and the database enforces the same rule underneath. If the list is empty, nobody has granted this
+tenant a model yet, and the form says so.
 
 Four visibility modes:
 

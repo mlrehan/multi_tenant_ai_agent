@@ -444,6 +444,30 @@ Mutation-tested: dropping the URL re-validation, the cross-KB check, the chunk-p
 
 **Still not built:** re-embedding without re-fetching. The stored markdown makes it possible (that is why it is stored) and it is the right response to an embedding-model change, but it needs a job that re-embeds `document_chunks` in place rather than re-running the parse.
 
+## Model-configuration governance — platform owns, tenants are entitled
+
+A user-requested audit-then-fix of who controls model configurations. **Audit first, and it changed the diagnosis:** the brief attributed the empty assistant dropdown to the composite FK `(tenant_id, model_configuration_id) → model_configurations(tenant_id, id)` being unsatisfiable for a platform-owned row (`tenant_id IS NULL`). That FK problem is real but was **latent** — the live database had **zero** platform-owned rows and zero configurations visible to the affected tenant, so `list_available_to_tenant` returned `[]`. Fixing only the FK would have left the dropdown just as empty. The actual gap: **platform governance did not exist at all** — no permission, no use case, no route, no UI. The only writes anywhere were raw SQL in `scripts/seed_demo_data.py`.
+
+**The chosen design keeps `model_configurations.tenant_id` and strengthens the DB invariant rather than weakening it.** New table `tenant_model_configurations (tenant_id, model_configuration_id)`, and `ai_assistants`' composite FK **repointed at it**. The old constraint enforced *"the configuration belongs to my tenant"*; the new one enforces *"the configuration has been granted to my tenant"* — the actual business rule, and one a platform-owned row can satisfy. A single-column FK (the `tenant_roles` precedent) would have been a smaller migration that dropped a DB-level tenant invariant and replaced it with nothing.
+
+**Proven at the database level, as the migrator superuser — bypassing RLS, permissions and every line of application code:** an assistant referencing an unentitled configuration is refused by `fk_ai_assistants_model_configuration`, and revoking a grant an assistant still uses is refused with *"still referenced"*. That is the "do not rely solely on RLS" requirement met by construction. 8 tests in `tests/integration/db/test_model_configuration_entitlements.py`.
+
+**Revocation policy falls out of the FK for free:** the database refuses to strand an assistant. `RevokeModelConfigurationFromTenant` counts blockers first and raises a 409 naming the number, so the operator gets *"1 assistant(s) in this tenant still use this model configuration"* rather than a 500 from a constraint violation. Retiring a model fleet-wide is therefore **archive → migrate assistants → revoke**, with nothing broken at any step. Archiving is deliberately weaker than revoking: it withdraws a model from *new* assignments and leaves existing assistants alone.
+
+**Why not `tenant_features`.** It exists and is a real entitlement mechanism, but it is keyed by a TEXT `feature_code`, cannot be a foreign-key target from `ai_assistants`, has no write API, no RLS and zero rows. Using it would have meant encoding UUIDs into feature-code strings.
+
+**No new pipeline, and `tenant_id` was not removed** — it is the only ownership marker, and tenant-owned rows created before entitlements are still in use (2 live assistants depend on one). The migration backfills grants from **the assistants themselves** union all tenant-owned configurations, so no currently-valid assistant could be orphaned; verified against live data before and after.
+
+**New:** `platform.model_configurations.manage` (one permission, gating reads too — the catalogue has no read-only audience), `application/ai_resources/manage_model_configuration.py` on the BYPASSRLS platform UoW, `/v1/platform/model-configurations` routes, a Platform → Model configurations console screen, and `archived_at` on the entity and table.
+
+**The tenant-facing response got narrower, not wider:** `ModelConfigurationResponse` dropped `tenant_id` and `is_platform_default`. Every row returned is now assignable, so both fields would only invite a client to re-derive a rule the server already applied — and who owns a configuration is platform information.
+
+**Driven live end to end:** platform admin creates → tenant sees nothing → grant → tenant sees it → tenant creates an assistant with it (201) → hand-submitted ids for another tenant's *and* an ungranted configuration both **404** (never 403, so neither is provable to exist) → revoke while in use **409** → tenant admin's create/grant/list all **403**. The assistant dropdown, previously empty with a message explaining a foreign key, now offers the granted model with no note at all.
+
+**One pre-existing defect fixed in passing:** `IntegrityError` was unmapped in `api/exception_handlers.py`, so any FK violation returned a 500.
+
+**Tightening the FK broke 70 assertions in the pre-existing RLS suite** — `tests/integration/db/test_ai_resources_rls.py` builds its graph in raw SQL and now needs the entitlement row too. The correct failure, and one worth budgeting for: application code, use cases and unit tests were all green while the integration fixtures still described the old schema, and that only surfaces ~27 minutes into the full suite. Written up in [docs/18](docs/18-schema-rls-and-migrations.md#tightening-a-foreign-key-breaks-every-hand-built-test-fixture).
+
 ## Ground rules for continuing this project
 
 - Never generate the entire project in one response — follow the phase sequence.

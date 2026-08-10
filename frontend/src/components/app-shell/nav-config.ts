@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Building2,
+  Cpu,
   Fingerprint,
   Gauge,
   KeyRound,
@@ -32,6 +33,12 @@ export const platformNavItems: NavItem[] = [
     href: "/platform/users",
     icon: Users,
     requiresPlatformPermission: "platform.users.read",
+  },
+  {
+    label: "Model configurations",
+    href: "/platform/model-configurations",
+    icon: Cpu,
+    requiresPlatformPermission: "platform.model_configurations.manage",
   },
   { label: "Platform roles", href: "/platform/roles", icon: ShieldCheck },
   { label: "Permissions", href: "/platform/permissions", icon: KeyRound },

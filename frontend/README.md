@@ -202,14 +202,6 @@ npx tsc --noEmit # typecheck
 
 These are backend limitations the UI works around, not frontend bugs:
 
-- **No model-configuration CRUD.** You can pick an existing configuration, but nothing in the
-  console creates one — `ListModelConfigurations` exists, create/update/delete don't.
-- **Platform-default model configurations don't work.** `ai_assistants` carries a plain composite FK
-  `(tenant_id, model_configuration_id) → model_configurations(tenant_id, id)` with a `NOT NULL`
-  `tenant_id`, so a tenant assistant can only reference a config owned by that same tenant — a
-  platform default (`tenant_id IS NULL`) is unreachable, despite docs/16 describing them as
-  "readable by all tenants". `scripts/seed_demo_data.py` seeds a tenant-scoped config to work
-  around it.
 - **No override list endpoint.** Overrides can be created but not listed, so the RBAC tab creates
   only.
 - **No delete or re-index for a document.** Uploading works and status is visible, but a document

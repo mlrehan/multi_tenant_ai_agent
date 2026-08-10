@@ -28,6 +28,7 @@ from iam_platform.application.tenant_authz.ports import (
     TenantMembershipRoleRepository,
     TenantRoleRepository,
 )
+from iam_platform.domain.ai_resources.entities import ModelConfiguration
 from iam_platform.domain.platform_authz.entities import (
     ImpersonationSession,
     PlatformPermission,
@@ -72,6 +73,49 @@ class ImpersonationSessionRepository(Protocol):
     async def save(self, session: ImpersonationSession) -> None: ...
 
 
+class PlatformModelConfigurationRepository(Protocol):
+    """Model configurations, seen from the platform side.
+
+    Distinct from the tenant-scoped `ModelConfigurationRepository` in
+    `ai_resources.ports` for the same reason `users` is on this unit of work:
+    governing them is a cross-tenant job, and the tenant-scoped connection
+    deliberately cannot see across tenants.
+    """
+
+    async def get_by_id(self, model_configuration_id: UUID) -> ModelConfiguration | None: ...
+    async def list_all(self, *, include_archived: bool = True) -> list[ModelConfiguration]: ...
+    async def add(self, model_configuration: ModelConfiguration) -> None: ...
+    async def save(self, model_configuration: ModelConfiguration) -> None: ...
+
+
+class TenantModelAccessRepository(Protocol):
+    """Grants of a model configuration to a tenant.
+
+    Deletion can fail: `ai_assistants` references this table, so Postgres
+    refuses to revoke a grant an assistant still depends on. `revoke` reports
+    that as a value rather than letting an IntegrityError escape, so the
+    caller can turn it into a 409 that explains itself.
+    """
+
+    async def list_tenant_ids_for_configuration(
+        self, model_configuration_id: UUID
+    ) -> list[UUID]: ...
+
+    async def grant(
+        self,
+        *,
+        tenant_id: UUID,
+        model_configuration_id: UUID,
+        granted_by_user_id: UUID,
+    ) -> None:
+        """Idempotent -- granting twice is not an error, it is the same state."""
+        ...
+
+    async def revoke(self, *, tenant_id: UUID, model_configuration_id: UUID) -> int:
+        """Returns how many assistants block the revocation (0 == revoked)."""
+        ...
+
+
 class PlatformUnitOfWork(Protocol):
     platform_roles: PlatformRoleRepository
     platform_permissions: PlatformPermissionRepository
@@ -104,6 +148,11 @@ class PlatformUnitOfWork(Protocol):
     role_hierarchy: RoleHierarchyRepository
     authorization_overrides: AuthorizationOverrideRepository
     impersonation_sessions: ImpersonationSessionRepository
+    # Model-configuration governance is platform-scope by definition: the
+    # platform owns the catalogue and decides which tenants may use each
+    # entry, so both live on the BYPASSRLS connection.
+    model_configurations: PlatformModelConfigurationRepository
+    tenant_model_access: TenantModelAccessRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 
