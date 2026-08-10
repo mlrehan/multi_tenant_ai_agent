@@ -379,6 +379,31 @@ A fourth console session started from a single, explicit user audit of nine scre
 
 **Verified:** `ruff check src tests`, `mypy src` (strict), `lint-imports` (all 3 contracts), and the full suite — **309 tests, up from 289** (new coverage for `UpdateAssistant`/`ArchiveAssistant`/`ListModelConfigurations`, including the self-escalation and "cannot modify someone else's assistant" cases) — all pass clean against live Postgres/Redis. `npm run build` (25 routes), `npx tsc --noEmit`, and `npx eslint src` pass clean. The full flow was driven live in the browser against the real backend and Postgres — edit an assistant (confirmed the model-configuration label bug and its fix), archive it (confirmed it drops out of the active list, matching the soft-delete contract), and confirm department/team are genuinely inert in the visibility picker, not just described as inert. `docs/23-admin-console-guide.md` is updated throughout to match — Platform → Tenants, Platform → Roles, Platform → Impersonation, Tenant → Members, Tenant → Roles & Permissions, and Tenant → Assistants sections all reflect what the console can now actually do, including an explicit explanation of what "Model configuration" means and why department/team visibility is disabled.
 
+## Performance pass — PDF fast path and reasoning latency
+
+Two ingestion/answer defects raised by the user in review, both settled by measurement rather than argument. Neither touches the security model.
+
+**1. docling ran on every rich document, including text-native PDFs.** docling infers text from a *rendered image* using ML layout models — right for a scan, wrong for a PDF exported from Word that already carries the author's exact text. Worse here: the hardened image ships no compiler, so `TORCH_COMPILE_DISABLE=1` forces eager execution. Measured on a one-page PDF, warm process: **docling 14,789.7 ms vs pypdfium2 text layer 10.9 ms — 1,351×.**
+
+`infrastructure/parsing/fast_pdf.py` reads the text layer first and **declines** when there is none, so scanned documents still reach docling's OCR. Declining is a *distinct signal from failing*: the dispatcher falls through on `ParserDeclined` and deliberately does **not** on `DocumentParseError`, because a broken file must report its own reason rather than be retried by a parser that will also fail. Citations improve too — page numbers come free from the text layer (`"page 1"`), where docling reports them inconsistently and falls back to headings. Verified in the live worker, not just a bench.
+
+**pypdfium2, not PyMuPDF** — PyMuPDF is AGPL-3.0 or paid commercial, and network copyleft is not a liability worth taking on for a hosted multi-tenant product. pypdfium2 (PDFium, BSD-3-Clause/Apache-2.0) was already an indirect dependency via docling; it is now declared **directly**, since relying on a transitive dependency for something load-bearing is one upstream refactor from breaking.
+
+**2. The answer path had an unbounded reasoning tail.** `OPENAI__CHAT_REASONING_EFFORT` is sent only when set — same opt-in shape as `chat_temperature`, same reason (non-reasoning models reject it outright; `gpt-5.5` accepts `"low"` and **rejects `"minimal"`**).
+
+The first measurement was a single sample pair and overstated this as "4.4× faster". Six questions each, real prompt, time-to-first-token:
+
+| | min | median | max |
+|---|---|---|---|
+| unset | 1.03s | 2.11s | **10.80s** |
+| `"low"` | 0.83s | 1.24s | **1.58s** |
+
+**The median barely moves; the tail collapses.** A reasoning model emits nothing while thinking, so an 11-second outlier is a visitor watching an empty bubble — one such wait is what closes a tab. The value is passed through unvalidated on purpose: a local allowlist would go stale and start refusing values the API accepts.
+
+**Still unfixed and dominant:** retrieval is ~2.5s of a ~5.6s answer — three serial network hops (embedding → Qdrant → Cohere) with no caching.
+
+**Status:** `ruff`, `mypy --strict` (216 files), `lint-imports` (3/3) and the full suite — **537 tests, up from 522** — all pass clean in ~18 minutes.
+
 ## Ground rules for continuing this project
 
 - Never generate the entire project in one response — follow the phase sequence.
