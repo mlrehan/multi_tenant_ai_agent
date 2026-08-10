@@ -76,10 +76,14 @@ from iam_platform.application.ai_resources.manage_data_source import (
     CreateDataSourceCommand,
     ListDataSources,
     ListDataSourcesQuery,
+    ResyncDataSource,
+    ResyncDataSourceCommand,
 )
 from iam_platform.application.ai_resources.manage_document import (
     DeleteDocument,
     DocumentActionCommand,
+    GetDocumentDetail,
+    GetDocumentDetailQuery,
     RetryDocumentIngestion,
 )
 from iam_platform.application.ai_resources.manage_knowledge_base import (
@@ -619,6 +623,56 @@ async def list_documents(
     )
 
 
+@router.get(
+    "/knowledge-bases/{knowledge_base_id}/documents/{document_id}",
+    response_model=schemas.DocumentDetailResponse,
+)
+async def get_document_detail(
+    tenant_id: str,
+    knowledge_base_id: str,
+    document_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> schemas.DocumentDetailResponse:
+    """The document plus the text that was actually indexed from it.
+
+    Read access to the knowledge base is enough: the same passages are already
+    reachable by asking the knowledge base a question, so requiring modify
+    rights here would withhold the diagnosis from the people who need it while
+    protecting nothing.
+    """
+    use_case = GetDocumentDetail(container.ai_resource_uow_factory)
+    detail = await use_case.execute(
+        GetDocumentDetailQuery(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            document_id=document_id,
+            permissions=permissions,
+            limit=limit,
+            offset=offset,
+        )
+    )
+    return schemas.DocumentDetailResponse(
+        document=_document_response(DocumentSummary(detail.document, detail.chunk_count)),
+        chunks=[
+            schemas.DocumentChunkResponse(
+                id=c.chunk_id,
+                chunk_index=c.chunk_index,
+                text=c.text,
+                token_count=c.token_count,
+                source_location=c.source_location,
+            )
+            for c in detail.chunks
+        ],
+        chunk_count=detail.chunk_count,
+        source_url=detail.document.source_url,
+    )
+
+
 @router.post(
     "/knowledge-bases/{knowledge_base_id}/documents/{document_id}/retry",
     status_code=status.HTTP_202_ACCEPTED,
@@ -750,6 +804,42 @@ async def list_data_sources(
     return schemas.DataSourceListResponse(
         data_sources=[_data_source_response(s) for s in sources]
     )
+
+
+@router.post(
+    "/knowledge-bases/{knowledge_base_id}/data-sources/{data_source_id}/resync",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resync_data_source(
+    tenant_id: str,
+    knowledge_base_id: str,
+    data_source_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    """Re-crawls an existing source.
+
+    Enqueues the same job creation does. That job updates a page's existing
+    document rather than inserting a second one, so a re-sync refreshes
+    changed pages and picks up new ones without duplicating anything.
+    """
+    use_case = ResyncDataSource(
+        container.ai_resource_uow_factory,
+        container.crawl_job_queue,
+        container.url_validator,
+        container.clock,
+    )
+    await use_case.execute(
+        ResyncDataSourceCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            data_source_id=data_source_id,
+            permissions=permissions,
+        )
+    )
+    return Response(status_code=status.HTTP_202_ACCEPTED)
 
 
 @router.post(

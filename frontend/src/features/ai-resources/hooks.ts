@@ -308,6 +308,39 @@ export function useSetChatWidgetStatus(tenantId: string) {
   });
 }
 
+/** One document's indexed text. `enabled` so the query only runs while the
+ *  inspector is actually open -- a document with hundreds of chunks is not
+ *  something to fetch for every row in the list. */
+export function useDocumentDetail(
+  tenantId: string,
+  knowledgeBaseId: string,
+  documentId: string | null,
+) {
+  return useQuery({
+    queryKey: ["kb-document-detail", tenantId, knowledgeBaseId, documentId],
+    queryFn: () =>
+      api.getDocumentDetail(tenantId, knowledgeBaseId, documentId as string),
+    enabled: Boolean(documentId),
+  });
+}
+
+export function useResyncDataSource(tenantId: string, knowledgeBaseId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (dataSourceId: string) =>
+      api.resyncDataSource(tenantId, knowledgeBaseId, dataSourceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["data-sources", tenantId, knowledgeBaseId],
+      });
+      // A re-crawl rewrites documents, so the list beside it is stale too.
+      queryClient.invalidateQueries({
+        queryKey: ["kb-documents", tenantId, knowledgeBaseId],
+      });
+    },
+  });
+}
+
 export function useRetryDocument(tenantId: string, knowledgeBaseId: string) {
   const queryClient = useQueryClient();
   return useMutation({

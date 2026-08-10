@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 
 from iam_platform.application.ai_resources.authorize import load_visible_knowledge_base
 from iam_platform.application.ai_resources.exceptions import (
+    DataSourceNotFoundError,
     KnowledgeBaseNotFoundError,
     PermissionDeniedError,
     TooManyUrlsError,
@@ -146,6 +147,118 @@ class CreateDataSource:
             at=now,
         )
         return source.id
+
+
+@dataclass(frozen=True, slots=True)
+class ResyncDataSourceCommand:
+    actor_user_id: str
+    tenant_id: str
+    knowledge_base_id: str
+    data_source_id: str
+    permissions: frozenset[str]
+
+
+class ResyncDataSource:
+    """Re-runs an existing crawl.
+
+    **No second pipeline.** This re-enqueues the *same* job `CreateDataSource`
+    enqueues, and that job is already idempotent by construction: a crawled
+    page is looked up by `(knowledge_base_id, source_url)` and updated rather
+    than inserted again (backed by `uq_documents_source_url_per_kb`), and
+    `index_blocks` deletes a document's chunks and vectors before writing new
+    ones. So a re-sync refreshes pages that changed, adds pages that appeared,
+    and does not accumulate duplicates.
+
+    What it deliberately does **not** do is remove documents for pages that
+    have since vanished from the site. Deleting a tenant's indexed content as
+    a side effect of a refresh is not a decision this use case should make
+    silently -- a site that briefly 404s during a deploy would otherwise
+    quietly empty a knowledge base. Those documents stay, and can be deleted
+    individually.
+
+    **The stored URLs are re-validated, not trusted because they passed once.**
+    A hostname that resolved to a public address when the source was created
+    can resolve somewhere else entirely by the time someone presses re-sync;
+    the whole point of the SSRF guard is that resolution is checked at the
+    moment of use.
+    """
+
+    def __init__(
+        self,
+        uow_factory: AiResourceUowFactory,
+        crawl_queue: CrawlJobQueue,
+        url_validator: UrlValidator,
+        clock: Clock,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._crawl_queue = crawl_queue
+        self._url_validator = url_validator
+        self._clock = clock
+
+    async def execute(self, command: ResyncDataSourceCommand) -> None:
+        actor_id = UUID(command.actor_user_id)
+        tenant_id = UUID(command.tenant_id)
+        knowledge_base_id = UUID(command.knowledge_base_id)
+        data_source_id = UUID(command.data_source_id)
+        now = self._clock.now()
+
+        async with self._uow_factory(actor_id, tenant_id) as uow:
+            if CREATE_DATA_SOURCE_PERMISSION not in command.permissions:
+                raise PermissionDeniedError(CREATE_DATA_SOURCE_PERMISSION)
+
+            requester = await build_requester_context(
+                uow, tenant_id=tenant_id, user_id=actor_id, permissions=command.permissions
+            )
+            if requester is None:
+                raise KnowledgeBaseNotFoundError(command.knowledge_base_id)
+
+            await load_visible_knowledge_base(
+                uow,
+                knowledge_base_id=knowledge_base_id,
+                requester=requester,
+                for_modification=True,
+            )
+
+            source = await uow.data_sources.get(
+                tenant_id=tenant_id, source_id=data_source_id
+            )
+            # The knowledge-base check authorizes *a* knowledge base; without
+            # this a caller could pass the id of a source belonging to a
+            # different one. RLS already hides another tenant's rows, so this
+            # closes the cross-knowledge-base case inside one tenant.
+            if source is None or source.knowledge_base_id != knowledge_base_id:
+                raise DataSourceNotFoundError(command.data_source_id)
+
+            for url in source.urls:
+                self._url_validator.assert_safe(url)
+
+            # Resets the page counters as well as the status, so the console
+            # shows this run's progress rather than the previous run's totals
+            # while the crawl is still going.
+            source.mark_syncing()
+            await uow.data_sources.save(source)
+            await uow.audit.record(
+                actor_user_id=actor_id,
+                effective_user_id=actor_id,
+                tenant_id=tenant_id,
+                action="ai_resources.data_source_resynced",
+                resource_type="data_source",
+                resource_id=source.id,
+                result="success",
+                metadata={
+                    "knowledge_base_id": str(knowledge_base_id),
+                    "urls": list(source.urls),
+                },
+            )
+
+        # After the commit, for the same reason as creation: a worker quick
+        # enough to claim the job first would read the pre-reset row.
+        await self._crawl_queue.enqueue(
+            tenant_id=tenant_id,
+            actor_user_id=actor_id,
+            data_source_id=source.id,
+            at=now,
+        )
 
 
 @dataclass(frozen=True, slots=True)

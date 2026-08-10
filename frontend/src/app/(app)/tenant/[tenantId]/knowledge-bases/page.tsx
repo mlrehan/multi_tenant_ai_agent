@@ -76,6 +76,8 @@ import {
   useSetChatWidgetStatus,
   useRetryDocument,
   useDeleteDocument,
+  useDocumentDetail,
+  useResyncDataSource,
 } from "@/features/ai-resources/hooks";
 import { isApiError } from "@/lib/api-client";
 import { streamAnswer } from "@/features/ai-resources/api";
@@ -608,6 +610,7 @@ function DocumentRow({
   const retry = useRetryDocument(tenantId, knowledgeBaseId);
   const remove = useDeleteDocument(tenantId, knowledgeBaseId);
   const [confirming, setConfirming] = useState(false);
+  const [inspecting, setInspecting] = useState(false);
 
   const emptyButReady = document.status === "ready" && document.chunk_count === 0;
 
@@ -637,7 +640,16 @@ function DocumentRow({
           space but let truncate work" -- a cell sizes to content otherwise,
           and one long crawled-page title widens the whole dialog. */}
       <TableCell className="w-full max-w-0 align-top">
-        <div className="truncate font-medium">{document.filename}</div>
+        {/* The filename opens the inspector. A row-level click would fight
+            with the action buttons, and a separate "view" button would be a
+            third icon competing for the same narrow column. */}
+        <button
+          type="button"
+          className="block w-full truncate text-left font-medium underline-offset-4 hover:underline"
+          onClick={() => setInspecting(true)}
+        >
+          {document.filename}
+        </button>
         {/* `whitespace-normal` is load-bearing: TableCell sets
             `whitespace-nowrap`, which is right for the short cells but stops
             these notes wrapping, so they render as one long line straight
@@ -691,6 +703,15 @@ function DocumentRow({
             <Trash2 />
           </Button>
         </div>
+
+        <Dialog open={inspecting} onOpenChange={setInspecting}>
+          <DocumentInspector
+            tenantId={tenantId}
+            knowledgeBaseId={knowledgeBaseId}
+            document={document}
+            open={inspecting}
+          />
+        </Dialog>
 
         {/* Destructive and irreversible -- the vectors and the stored file go
             too -- so it asks first. */}
@@ -1010,19 +1031,212 @@ function CrawlSection({
       {data && data.data_sources.length > 0 && (
         <ul className="space-y-2 border-t border-border pt-3">
           {data.data_sources.map((source) => (
-            <li key={source.id} className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm">{source.urls.join(", ")}</p>
-                {source.sync_status === "error" && source.failure_reason && (
-                  <p className="mt-0.5 text-xs text-destructive">{source.failure_reason}</p>
-                )}
-              </div>
-              <SyncStatusBadge source={source} />
-            </li>
+            <DataSourceRow
+              key={source.id}
+              tenantId={tenantId}
+              knowledgeBaseId={knowledgeBaseId}
+              source={source}
+            />
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+/** What was actually extracted from one document.
+ *
+ * This exists because status and chunk count answer "did it work?" and
+ * nothing answered "why not?". A scanned page that OCR'd into noise, a
+ * spreadsheet whose rows ran together, a crawled page that captured the
+ * cookie banner instead of the article — all look identical in the list and
+ * are obvious the moment you read the text.
+ *
+ * Chunk text is rendered in a `<p>`, never as markup: it is untrusted content
+ * from a tenant's own uploads, and the console is not the place to find out
+ * what happens when a document contains a `<script>` tag.
+ */
+function DocumentInspector({
+  tenantId,
+  knowledgeBaseId,
+  document,
+  open,
+}: {
+  tenantId: string;
+  knowledgeBaseId: string;
+  document: KnowledgeBaseDocument;
+  open: boolean;
+}) {
+  const { data, isLoading, error } = useDocumentDetail(
+    tenantId,
+    knowledgeBaseId,
+    open ? document.id : null,
+  );
+
+  return (
+    <DialogContent className="sm:max-w-3xl">
+      <DialogHeader>
+        <DialogTitle className="truncate">{document.filename}</DialogTitle>
+        <DialogDescription>
+          The text this document contributed to the knowledge base. If a question
+          isn&rsquo;t being answered from it, this is what the assistant had to work
+          with.
+        </DialogDescription>
+      </DialogHeader>
+
+      <div className="space-y-4 py-2">
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-4">
+          <div>
+            <dt className="text-xs text-muted-foreground">Status</dt>
+            <dd className="mt-0.5">
+              <DocumentStatusBadge document={document} />
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Chunks</dt>
+            <dd className="mt-0.5 tabular-nums">{data?.chunk_count ?? document.chunk_count}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Size</dt>
+            <dd className="mt-0.5 tabular-nums">{formatBytes(document.size_bytes)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Type</dt>
+            <dd className="mt-0.5 truncate">{document.content_type}</dd>
+          </div>
+        </dl>
+
+        {data?.source_url && (
+          <p className="truncate text-xs text-muted-foreground">
+            Crawled from{" "}
+            <a
+              href={data.source_url}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="underline underline-offset-4"
+            >
+              {data.source_url}
+            </a>
+          </p>
+        )}
+
+        {document.status === "failed" && document.failure_reason && (
+          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs whitespace-normal text-destructive">
+            {document.failure_reason}
+          </p>
+        )}
+
+        {isLoading && <TableSkeleton rows={3} columns={1} />}
+        {error && <ErrorState error={error} resource="document content" />}
+
+        {data && data.chunks.length === 0 && (
+          <EmptyState
+            icon={FileText}
+            title="Nothing was extracted"
+            description="No searchable text came out of this file, so it cannot answer questions. Scanned pages are the usual cause — re-export the original if you can, then re-ingest."
+          />
+        )}
+
+        {data && data.chunks.length > 0 && (
+          <div className="space-y-2">
+            <ul className="max-h-[45vh] space-y-2 overflow-y-auto pr-1">
+              {data.chunks.map((chunk) => (
+                <li key={chunk.id} className="rounded-md border border-border p-3">
+                  <div className="mb-1 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                    <span className="shrink-0 tabular-nums">
+                      Chunk {chunk.chunk_index + 1}
+                    </span>
+                    <span className="flex min-w-0 items-center gap-2">
+                      {/* A crawled chunk's location is a full URL, which is
+                          long enough to widen the dialog on its own. */}
+                      {chunk.source_location && (
+                        <span className="truncate">{chunk.source_location}</span>
+                      )}
+                      <span className="shrink-0 tabular-nums">
+                        {chunk.token_count} tokens
+                      </span>
+                    </span>
+                  </div>
+                  {/* `break-words` is load-bearing: `whitespace-pre-wrap`
+                      preserves the source's line breaks but will not break a
+                      long unbroken token, and crawled markdown is full of
+                      them (image and asset URLs). Without it the chunk list
+                      scrolls sideways. */}
+                  <p className="text-sm break-words whitespace-pre-wrap text-muted-foreground">
+                    {chunk.text}
+                  </p>
+                </li>
+              ))}
+            </ul>
+            {data.chunk_count > data.chunks.length && (
+              <p className="text-xs text-muted-foreground">
+                Showing the first {data.chunks.length} of {data.chunk_count} chunks.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </DialogContent>
+  );
+}
+
+/** One crawl source, with a re-run button.
+ *
+ * Re-syncing enqueues the same job that created the source. That job updates
+ * a page's existing document rather than inserting a second one, so this
+ * refreshes changed pages and picks up new ones without duplicating anything
+ * — which is why it needs no confirmation the way Delete does. Pages that
+ * have since vanished from the site are deliberately left alone.
+ */
+function DataSourceRow({
+  tenantId,
+  knowledgeBaseId,
+  source,
+}: {
+  tenantId: string;
+  knowledgeBaseId: string;
+  source: DataSource;
+}) {
+  const resync = useResyncDataSource(tenantId, knowledgeBaseId);
+  const syncing = source.sync_status === "syncing";
+
+  async function handleResync() {
+    try {
+      await resync.mutateAsync(source.id);
+      toast.success("Re-crawling this source.");
+    } catch (err) {
+      toast.error(isApiError(err) ? err.message : "Couldn't start the re-crawl.");
+    }
+  }
+
+  return (
+    <li className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <p className="truncate text-sm">{source.urls.join(", ")}</p>
+        {source.sync_status === "error" && source.failure_reason && (
+          <p className="mt-0.5 text-xs whitespace-normal text-destructive">
+            {source.failure_reason}
+          </p>
+        )}
+        {source.last_synced_at && !syncing && (
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Last crawled {new Date(source.last_synced_at).toLocaleString()}
+          </p>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <SyncStatusBadge source={source} />
+        <Button
+          size="xs"
+          variant="ghost"
+          aria-label={`Re-crawl ${source.urls.join(", ")}`}
+          disabled={resync.isPending || syncing}
+          onClick={() => void handleResync()}
+        >
+          {resync.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+        </Button>
+      </div>
+    </li>
   );
 }
 

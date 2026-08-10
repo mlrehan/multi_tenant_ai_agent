@@ -426,7 +426,23 @@ A seven-part user review of the knowledge-base surface (one ingestion flow for b
 
 Modal overflow was fixed at the root: `DialogContent` gained `grid-cols-[minmax(0,1fr)] max-h-[calc(100dvh-2rem)] overflow-y-auto`, so every dialog in the console is bounded.
 
-**Left alone deliberately:** Qdrant's `Api key is used with an insecure connection` warning is accurate and local-only (the dev instance really does accept unauthenticated HTTP) — a warning about the dev topology, not a defect; blank `QDRANT__API_KEY` locally to silence it. **Not built:** a per-source detail view (extracted text, chunk inspection) and re-ingest/re-embed for `data_sources` rather than individual documents.
+**Left alone deliberately:** Qdrant's `Api key is used with an insecure connection` warning is accurate and local-only (the dev instance really does accept unauthenticated HTTP) — a warning about the dev topology, not a defect; blank `QDRANT__API_KEY` locally to silence it.
+
+### Document inspector + crawl re-sync
+
+The remaining half of source management. Both are thin over machinery that already existed — no new pipeline, which was the explicit constraint.
+
+**`GetDocumentDetail`** returns the passages actually indexed, via a new paged `DocumentRepository.list_chunks(limit, offset)` (capped at 50). **Read access only** (`for_modification=False`): the same passages are already reachable by asking the knowledge base a question, so demanding modify rights would withhold the diagnosis while protecting nothing. Still makes the cross-knowledge-base check. **It earned its place on first use** — the crawled page's chunk 1 turned out to be 700 tokens of cookie-consent banner indexed as course material, which no status, count or retrieval test would ever have revealed.
+
+**`ResyncDataSource`** re-enqueues *the same job* `CreateDataSource` enqueues. That job was already idempotent: pages are upserted on `(knowledge_base_id, source_url)` (backed by `uq_documents_source_url_per_kb`) and `index_blocks` deletes before writing. **Proven live:** a re-crawl left one document row with the same id, chunks replaced 23 → 18, Qdrant exactly 18 — refreshed, not accumulated. Two decisions: stored URLs are **re-validated** (a hostname safe at creation can resolve internally later — resolving-then-checking only means anything at the moment of use), and documents for **vanished pages are kept** (a site that 404s during a deploy must not empty a knowledge base as a side effect of a refresh).
+
+**Two schema facts closed on the way:** `Document` never carried `source_url` despite the column existing since Phase 12, so nothing above the repository could distinguish a crawled page from an upload; and `DataSourceRepository` had no `save()`, so a status transition had nowhere to go outside the worker's raw SQL.
+
+**A layout defect only real content exposed:** crawled markdown is full of long unbroken asset URLs, and `whitespace-pre-wrap` preserves newlines without breaking a long token — the chunk list scrolled sideways. Fixed with `break-words`, verified by measuring `scrollWidth === clientWidth`.
+
+Mutation-tested: dropping the URL re-validation, the cross-KB check, the chunk-page cap, or the document-total count each fails a test that passes when restored.
+
+**Still not built:** re-embedding without re-fetching. The stored markdown makes it possible (that is why it is stored) and it is the right response to an embedding-model change, but it needs a job that re-embeds `document_chunks` in place rather than re-running the parse.
 
 ## Ground rules for continuing this project
 

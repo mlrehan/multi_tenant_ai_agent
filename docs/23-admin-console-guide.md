@@ -348,6 +348,21 @@ tenant was told is gone. It asks for confirmation and cannot be undone. Both are
 `tenant.documents.upload`: changing what a knowledge base contains is one authority, whether that
 means adding a file or removing one.
 
+**Clicking a document's name opens the inspector**: the passages that were actually indexed, in
+document order, each with its token count and source location (a page, a row, or the URL for a
+crawled page). This answers the question status and chunk count cannot — *why* a document isn't
+being used. It needs only read access to the knowledge base, deliberately: the same passages are
+already reachable by asking the knowledge base a question, so requiring modify rights would
+withhold the diagnosis while protecting nothing. Its first real use found that a crawled page's
+opening chunk was 700 tokens of cookie-consent banner.
+
+Crawl sources have a **re-crawl** button. It re-enqueues the job that created them — the same one,
+not a parallel path — which updates a page's existing document rather than inserting a second, so
+a refresh picks up changes and new pages without duplicating anything. It deliberately leaves
+documents for pages that have since disappeared: a site that 404s during a deploy must not empty a
+knowledge base as a side effect. The stored URLs are re-checked against the SSRF guard first, since
+a hostname that resolved somewhere safe last month may not today.
+
 > If documents stay on **Processing** indefinitely, the background worker isn't running. It's a
 > separate process from the API — see [22-deployment-and-operations.md](22-deployment-and-operations.md).
 

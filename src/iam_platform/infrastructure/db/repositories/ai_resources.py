@@ -16,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from iam_platform.application.ai_resources.ports import StoredChunk
 from iam_platform.domain.ai_resources.entities import (
     AiAssistant,
     AssistantAccessLevel,
@@ -253,6 +254,7 @@ def _document_to_domain(m: DocumentModel) -> Document:
         created_at=m.created_at,
         deleted_at=m.deleted_at,
         failure_reason=m.failure_reason,
+        source_url=m.source_url,
     )
 
 
@@ -331,6 +333,30 @@ class SqlDocumentRepository:
             )
         ).scalar_one()
         return int(count)
+
+    async def list_chunks(
+        self, document_id: UUID, *, limit: int, offset: int
+    ) -> list[StoredChunk]:
+        stmt = (
+            select(DocumentChunkModel)
+            .where(DocumentChunkModel.document_id == document_id)
+            # By ordinal, not by insertion or id: `chunk_index` is the
+            # document's own reading order, and it is what makes "chunk 3 of
+            # 40" mean the same thing here as in a citation.
+            .order_by(DocumentChunkModel.chunk_index)
+            .limit(limit)
+            .offset(offset)
+        )
+        return [
+            StoredChunk(
+                chunk_id=m.id,
+                chunk_index=m.chunk_index,
+                text=m.content,
+                token_count=m.token_count,
+                source_location=m.source_location,
+            )
+            for m in (await self._session.execute(stmt)).scalars()
+        ]
 
 
 def _conversation_to_domain(m: ConversationModel) -> Conversation:
@@ -540,6 +566,19 @@ class SqlDataSourceRepository:
             )
         )
         await self._session.flush()
+
+    async def save(self, source: DataSource) -> None:
+        await self._session.execute(
+            update(DataSourceModel)
+            .where(DataSourceModel.id == source.id)
+            .values(
+                sync_status=source.sync_status.value,
+                failure_reason=source.failure_reason,
+                pages_discovered=source.pages_discovered,
+                pages_indexed=source.pages_indexed,
+                last_synced_at=source.last_synced_at,
+            )
+        )
 
     async def get(self, *, tenant_id: UUID, source_id: UUID) -> DataSource | None:
         model = await self._session.get(DataSourceModel, source_id)

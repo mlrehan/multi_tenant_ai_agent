@@ -6,6 +6,7 @@ import type {
   CrawlMode,
   ChatWidget,
   DataSource,
+  DocumentDetail,
   KnowledgeBase,
   KnowledgeBaseDocument,
   KnowledgeBaseQueryHit,
@@ -173,6 +174,22 @@ export function listDocuments(tenantId: string, knowledgeBaseId: string) {
 
 /** Re-runs ingestion for a document whose bytes are already stored. 202 --
  *  the work happens in a worker, so this means "queued", not "indexed". */
+export function getDocumentDetail(
+  tenantId: string,
+  knowledgeBaseId: string,
+  documentId: string,
+  params: { limit?: number; offset?: number } = {},
+) {
+  const query = new URLSearchParams();
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  if (params.offset !== undefined) query.set("offset", String(params.offset));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return apiFetch<DocumentDetail>(
+    `v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/documents/${documentId}${suffix}`,
+    { tenantId },
+  );
+}
+
 export function retryDocument(
   tenantId: string,
   knowledgeBaseId: string,
@@ -207,6 +224,17 @@ export function createDataSource(
   return apiFetch<{ id: string }>(
     `v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/data-sources`,
     { method: "POST", tenantId, body },
+  );
+}
+
+export function resyncDataSource(
+  tenantId: string,
+  knowledgeBaseId: string,
+  dataSourceId: string,
+) {
+  return apiFetch<void>(
+    `v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/data-sources/${dataSourceId}/resync`,
+    { method: "POST", tenantId },
   );
 }
 

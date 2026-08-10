@@ -17,6 +17,10 @@ class DocumentNotFoundError(AiResourceError):
     pass
 
 
+class DataSourceNotFoundError(AiResourceError):
+    pass
+
+
 class ConversationNotFoundError(AiResourceError):
     pass
 

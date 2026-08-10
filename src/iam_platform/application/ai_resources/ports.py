@@ -64,6 +64,24 @@ class KnowledgeBaseRepository(Protocol):
     async def save(self, knowledge_base: KnowledgeBase) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class StoredChunk:
+    """One persisted chunk, as stored rather than as retrieved.
+
+    Distinct from `RetrievedChunk`, which carries a relevance `score` because
+    it only exists as the answer to a query. This one has no score -- it is
+    what is *in* the document, read by a person inspecting why a document
+    answers (or fails to answer) questions, so `token_count` and the ordinal
+    matter and relevance does not.
+    """
+
+    chunk_id: UUID
+    chunk_index: int
+    text: str
+    token_count: int
+    source_location: str | None = None
+
+
 class DocumentRepository(Protocol):
     async def get_by_id(self, document_id: UUID) -> Document | None: ...
     async def list_by_knowledge_base(self, knowledge_base_id: UUID) -> list[Document]:
@@ -78,9 +96,20 @@ class DocumentRepository(Protocol):
 
         On the document repository rather than a `DocumentChunkRepository` of
         its own: chunks have no identity apart from the document they were cut
-        from, are never listed or fetched individually by the application, and
-        exist so the vector index can be rebuilt without re-parsing. A separate
-        repository would be a second way to reach the same rows.
+        from, are only ever reached through it, and exist so the vector index
+        can be rebuilt without re-parsing. A separate repository would be a
+        second way to reach the same rows.
+        """
+        ...
+
+    async def list_chunks(
+        self, document_id: UUID, *, limit: int, offset: int
+    ) -> list[StoredChunk]:
+        """A page of the document's chunks, in the order they were cut.
+
+        Paged rather than returned whole: a large PDF runs to hundreds of
+        chunks, and this is read by a human inspecting one document, not by
+        the retrieval path.
         """
         ...
 
@@ -95,6 +124,15 @@ class DocumentRepository(Protocol):
 
 class DataSourceRepository(Protocol):
     async def add(self, source: DataSource) -> None: ...
+    async def save(self, source: DataSource) -> None:
+        """Persists a status transition (`mark_syncing`, `mark_failed`, ...).
+
+        Only the mutable status fields are written. `urls`, `mode` and `kind`
+        are what the source *is*; changing those would be a different crawl
+        wearing the same row's history, so they are set once at creation.
+        """
+        ...
+
     async def get(self, *, tenant_id: UUID, source_id: UUID) -> DataSource | None: ...
     async def list_for_knowledge_base(
         self, *, tenant_id: UUID, knowledge_base_id: UUID

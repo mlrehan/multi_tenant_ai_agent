@@ -152,6 +152,31 @@ Every document has two buttons on the right:
   It asks first, and it **cannot be undone**. Assistants stop finding it immediately, so this
   is also how you take something out of circulation quickly.
 
+**Click a document's name to see what was actually read out of it.** This is the fastest way
+to answer "why doesn't the assistant use this?". You get the text in the pieces the assistant
+searches, each with where it came from — a page number for a PDF, a row for a spreadsheet, a
+web address for a crawled page.
+
+What to look for:
+
+- **Nothing there at all** — the file gave up no text. Almost always a scan.
+- **Text that reads like gibberish** — the words were guessed from a picture of the page.
+  Re-export the original rather than scanning it.
+- **The wrong content entirely** — crawled pages often capture cookie banners, navigation
+  menus or "skip to content" links instead of the article. If the pieces are full of that,
+  the assistant is searching the furniture rather than the room.
+
+### Refreshing a website you've already added
+
+Each web source has a **re-crawl** button next to its status. It fetches the pages again:
+anything that changed is updated, anything new is added, and nothing is duplicated — a page
+keeps its place rather than appearing twice.
+
+Two things it deliberately does **not** do. It doesn't remove pages that have disappeared
+from the site, because a site that is briefly down would otherwise empty your knowledge base;
+delete those individually if you want them gone. And it doesn't re-fetch on a schedule —
+re-crawling happens when you ask for it.
+
 ### Step 4 — check it actually works
 
 Two buttons on your knowledge base:
@@ -278,6 +303,8 @@ check the tenant switcher at the top — you may be looking at a different organ
 | Switch the public chat off right now | Knowledge bases → Embed → Turn off |
 | Retry a document that failed | Knowledge bases → Documents → circular-arrow button |
 | Remove a document and everything indexed from it | Knowledge bases → Documents → bin button |
+| See what was actually read out of a file | Knowledge bases → Documents → click its name |
+| Refresh a website you already added | Knowledge bases → Documents → re-crawl button beside the source |
 | Use our own AI provider account | Provider credentials |
 | Turn on 2FA | Account → My identity |
 

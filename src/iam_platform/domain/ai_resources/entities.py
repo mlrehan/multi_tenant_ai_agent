@@ -158,6 +158,10 @@ class Document(Entity):
     #: Why ingestion failed. Set only alongside FAILED, and cleared on a
     #: successful re-ingest so a stale reason can't outlive the failure.
     failure_reason: str | None = None
+    #: The page this document was crawled from, or None for an uploaded file.
+    #: Written by the crawl worker; carried on the entity so a reader can tell
+    #: an uploaded document from a crawled one without joining `data_sources`.
+    source_url: str | None = None
 
     @property
     def is_deleted(self) -> bool:

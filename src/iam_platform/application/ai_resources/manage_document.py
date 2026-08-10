@@ -29,15 +29,22 @@ from iam_platform.application.ai_resources.ports import (
     AiResourceUowFactory,
     DocumentIngestionQueue,
     ObjectStorageClient,
+    StoredChunk,
     VectorSearchClient,
 )
 from iam_platform.application.ai_resources.requester import build_requester_context
 from iam_platform.core.clock import Clock
+from iam_platform.domain.ai_resources.entities import Document
 
 logger = logging.getLogger("iam_platform.application.ai_resources.manage_document")
 
 #: Same authority as uploading. See the module docstring.
 MANAGE_DOCUMENT_PERMISSION = "tenant.documents.upload"
+
+#: Most chunks one request will return. A large PDF runs to hundreds, and this
+#: is read by a person scrolling a dialog -- so the cap bounds the response
+#: rather than expressing a limit anyone is meant to hit.
+MAX_CHUNKS_PER_PAGE = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +54,87 @@ class DocumentActionCommand:
     knowledge_base_id: str
     document_id: str
     permissions: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class GetDocumentDetailQuery:
+    actor_user_id: str
+    tenant_id: str
+    knowledge_base_id: str
+    document_id: str
+    permissions: frozenset[str]
+    limit: int = MAX_CHUNKS_PER_PAGE
+    offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentDetail:
+    document: Document
+    chunks: list[StoredChunk]
+    #: Total across the whole document, not the length of `chunks` -- the
+    #: caller needs to know there are 300 more to page through.
+    chunk_count: int
+
+
+class GetDocumentDetail:
+    """One document with the text that was actually indexed from it.
+
+    This is the answer to "why does this document never come up?", which is
+    otherwise unanswerable from the console: `status` and a chunk count say
+    *that* something went wrong, and only the extracted text says *what* --
+    a scanned page that OCR'd into noise, a spreadsheet whose rows became one
+    unreadable run, a crawled page that captured the cookie banner.
+
+    **Read access is enough.** Deliberately `for_modification=False`: anyone
+    who can see the knowledge base can already surface these exact passages by
+    asking a question, so requiring modify rights to look at them directly
+    would protect nothing and would keep the diagnosis from the people most
+    likely to need it.
+    """
+
+    def __init__(self, uow_factory: AiResourceUowFactory) -> None:
+        self._uow_factory = uow_factory
+
+    async def execute(self, query: GetDocumentDetailQuery) -> DocumentDetail:
+        actor_id = UUID(query.actor_user_id)
+        tenant_id = UUID(query.tenant_id)
+        knowledge_base_id = UUID(query.knowledge_base_id)
+        document_id = UUID(query.document_id)
+        limit = max(1, min(query.limit, MAX_CHUNKS_PER_PAGE))
+        offset = max(0, query.offset)
+
+        async with self._uow_factory(actor_id, tenant_id) as uow:
+            requester = await build_requester_context(
+                uow, tenant_id=tenant_id, user_id=actor_id, permissions=query.permissions
+            )
+            if requester is None:
+                raise KnowledgeBaseNotFoundError(query.knowledge_base_id)
+
+            await load_visible_knowledge_base(
+                uow,
+                knowledge_base_id=knowledge_base_id,
+                requester=requester,
+                for_modification=False,
+            )
+
+            document = await uow.documents.get_by_id(document_id)
+            # The same cross-knowledge-base check the mutating paths make, and
+            # for the same reason: authorizing *a* knowledge base is not
+            # authorizing a document that lives in a different one.
+            if (
+                document is None
+                or document.is_deleted
+                or document.knowledge_base_id != knowledge_base_id
+            ):
+                raise DocumentNotFoundError(query.document_id)
+
+            return DocumentDetail(
+                document=document,
+                chunks=await uow.documents.list_chunks(
+                    document_id, limit=limit, offset=offset
+                ),
+                chunk_count=await uow.documents.count_chunks(document_id),
+            )
 
 
 class RetryDocumentIngestion:

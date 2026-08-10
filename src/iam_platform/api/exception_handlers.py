@@ -85,6 +85,7 @@ _AI_RESOURCE_STATUS_MAP: dict[type[ai_resource_errors.AiResourceError], int] = {
     ai_resource_errors.AssistantNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.KnowledgeBaseNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.DocumentNotFoundError: status.HTTP_404_NOT_FOUND,
+    ai_resource_errors.DataSourceNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.ConversationNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.ModelConfigurationNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.ProviderCredentialNotFoundError: status.HTTP_404_NOT_FOUND,

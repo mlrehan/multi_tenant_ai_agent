@@ -151,6 +151,33 @@ class DocumentListResponse(BaseModel):
     documents: list[DocumentResponse]
 
 
+class DocumentChunkResponse(BaseModel):
+    """One indexed passage, as stored.
+
+    No embedding: 3072 floats per chunk would dominate the response and mean
+    nothing to a reader. No score either -- that only exists relative to a
+    query, and this is the document, not an answer.
+    """
+
+    id: UUID
+    chunk_index: int
+    text: str
+    token_count: int
+    #: "page 7", "row 12", or the page URL for a crawled document.
+    source_location: str | None
+
+
+class DocumentDetailResponse(BaseModel):
+    document: DocumentResponse
+    #: The requested page of chunks, in document order.
+    chunks: list[DocumentChunkResponse]
+    #: Total for the document, so a caller knows how many are not on this page.
+    chunk_count: int
+    #: Present for a crawled page, absent for an uploaded file. Lets the
+    #: console link back to the page a document came from.
+    source_url: str | None
+
+
 class CreateDataSourceRequest(BaseModel):
     """A URL or website crawl to feed a knowledge base.
 

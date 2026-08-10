@@ -12,12 +12,14 @@ import copy
 from datetime import datetime
 from uuid import UUID
 
+from iam_platform.application.ai_resources.ports import StoredChunk
 from iam_platform.domain.ai_resources.entities import (
     AiAssistant,
     AssistantMember,
     AssistantStatus,
     ChatWidget,
     Conversation,
+    DataSource,
     Document,
     KnowledgeBase,
     ModelConfiguration,
@@ -100,10 +102,12 @@ class FakeKnowledgeBaseRepository:
 class FakeDocumentRepository:
     def __init__(self) -> None:
         self.by_id: dict[UUID, Document] = {}
-        #: Chunk counts per document. A count rather than the rows themselves:
-        #: nothing in the application reads chunk content through this
-        #: repository, so storing bodies would be fidelity the tests never use.
+        #: Chunk counts per document, kept separately from the rows below so a
+        #: test can assert a count without having to build chunk bodies.
         self.chunks: dict[UUID, int] = {}
+        #: Chunk bodies, for the tests that read them back. Only populated by
+        #: tests that exercise the detail view.
+        self.chunk_rows: dict[UUID, list[StoredChunk]] = {}
 
     async def get_by_id(self, document_id: UUID) -> Document | None:
         return self.by_id.get(document_id)
@@ -123,10 +127,81 @@ class FakeDocumentRepository:
 
     async def delete_chunks(self, document_id: UUID) -> int:
         removed = self.chunks.pop(document_id, 0)
+        self.chunk_rows.pop(document_id, None)
         return removed
 
     async def count_chunks(self, document_id: UUID) -> int:
         return self.chunks.get(document_id, 0)
+
+    async def list_chunks(
+        self, document_id: UUID, *, limit: int, offset: int
+    ) -> list[StoredChunk]:
+        rows = sorted(
+            self.chunk_rows.get(document_id, []), key=lambda c: c.chunk_index
+        )
+        return rows[offset : offset + limit]
+
+
+class FakeDataSourceRepository:
+    def __init__(self) -> None:
+        self.by_id: dict[UUID, DataSource] = {}
+
+    async def add(self, source: DataSource) -> None:
+        self.by_id[source.id] = source
+
+    async def save(self, source: DataSource) -> None:
+        self.by_id[source.id] = source
+
+    async def get(self, *, tenant_id: UUID, source_id: UUID) -> DataSource | None:
+        source = self.by_id.get(source_id)
+        # Mirrors the real repository's belt-and-braces tenant check, so a test
+        # that passes a foreign id gets None here as it would in production.
+        if source is None or source.tenant_id != tenant_id:
+            return None
+        return source
+
+    async def list_for_knowledge_base(
+        self, *, tenant_id: UUID, knowledge_base_id: UUID
+    ) -> list[DataSource]:
+        return [
+            s
+            for s in self.by_id.values()
+            if s.tenant_id == tenant_id and s.knowledge_base_id == knowledge_base_id
+        ]
+
+
+class FakeCrawlJobQueue:
+    def __init__(self) -> None:
+        self.enqueued: list[tuple[UUID, UUID]] = []
+        self.enqueued_actors: list[UUID] = []
+
+    async def enqueue(
+        self, *, tenant_id: UUID, actor_user_id: UUID, data_source_id: UUID, at: datetime
+    ) -> None:
+        self.enqueued.append((tenant_id, data_source_id))
+        self.enqueued_actors.append(actor_user_id)
+
+
+class FakeUrlValidator:
+    """Records what it was asked about, and refuses anything in `unsafe`.
+
+    Recording matters as much as refusing: the property under test is that a
+    re-sync re-checks its stored URLs rather than trusting that they passed
+    when the source was created.
+    """
+
+    def __init__(self, unsafe: set[str] | None = None) -> None:
+        self.checked: list[str] = []
+        self.unsafe = unsafe or set()
+
+    def assert_safe(self, url: str) -> None:
+        self.checked.append(url)
+        if url in self.unsafe:
+            from iam_platform.infrastructure.crawling.url_safety import (
+                UnsafeCrawlTargetError,
+            )
+
+            raise UnsafeCrawlTargetError(f"refusing {url}")
 
 
 class FakeConversationRepository:
@@ -294,6 +369,7 @@ class FakeAiResourceUnitOfWork:
         "assistant_members",
         "knowledge_bases",
         "documents",
+        "data_sources",
         "chat_widgets",
         "conversations",
         "model_configurations",
@@ -308,6 +384,7 @@ class FakeAiResourceUnitOfWork:
         self.assistant_members = FakeAssistantMemberRepository()
         self.knowledge_bases = FakeKnowledgeBaseRepository()
         self.documents = FakeDocumentRepository()
+        self.data_sources = FakeDataSourceRepository()
         self.chat_widgets = FakeChatWidgetRepository()
         self.conversations = FakeConversationRepository()
         self.model_configurations = FakeModelConfigurationRepository()

@@ -202,6 +202,25 @@ export interface KnowledgeBaseDocument {
   created_at: string;
 }
 
+export interface DocumentChunk {
+  id: string;
+  chunk_index: number;
+  text: string;
+  token_count: number;
+  /** "page 7", "row 12", or the page URL for a crawled document. */
+  source_location: string | null;
+}
+
+export interface DocumentDetail {
+  document: KnowledgeBaseDocument;
+  /** The requested page of chunks, in document order. */
+  chunks: DocumentChunk[];
+  /** Total for the document, not the length of `chunks`. */
+  chunk_count: number;
+  /** Present for a crawled page, absent for an uploaded file. */
+  source_url: string | null;
+}
+
 export type SyncStatus = "idle" | "syncing" | "ready" | "error";
 export type CrawlMode = "url_list" | "site";
 

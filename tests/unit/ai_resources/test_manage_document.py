@@ -26,10 +26,14 @@ from iam_platform.application.ai_resources.exceptions import (
     PermissionDeniedError,
 )
 from iam_platform.application.ai_resources.manage_document import (
+    MAX_CHUNKS_PER_PAGE,
     DeleteDocument,
     DocumentActionCommand,
+    GetDocumentDetail,
+    GetDocumentDetailQuery,
     RetryDocumentIngestion,
 )
+from iam_platform.application.ai_resources.ports import StoredChunk
 from iam_platform.core.clock import FixedClock
 from iam_platform.domain.ai_resources.entities import (
     Document,
@@ -291,3 +295,161 @@ class TestDeleteDocument:
         stored = await uow.documents.get_by_id(document.id)
         assert stored is not None
         assert not stored.is_deleted
+
+
+class TestGetDocumentDetail:
+    """The extracted text, which is the only thing that answers "why does this
+    document never come up?" -- status and a count say something went wrong,
+    the text says what."""
+
+    def _seed_chunks(self, uow: FakeAiResourceUnitOfWork, document: Document, count: int):
+        rows = [
+            StoredChunk(
+                chunk_id=uuid4(),
+                chunk_index=i,
+                text=f"passage {i}",
+                token_count=10 + i,
+                source_location=f"page {i + 1}",
+            )
+            for i in range(count)
+        ]
+        uow.documents.chunk_rows[document.id] = rows
+        uow.documents.chunks[document.id] = count
+        return rows
+
+    async def test_detail_returns_the_indexed_text_in_document_order(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, membership = _seed_member(uow, tenant_id)
+        kb = _seed_knowledge_base(uow, tenant_id, membership.id)
+        document = _seed_document(uow, kb, status=DocumentStatus.READY)
+        self._seed_chunks(uow, document, 3)
+
+        detail = await GetDocumentDetail(uow).execute(
+            GetDocumentDetailQuery(
+                actor_user_id=str(user_id),
+                tenant_id=str(tenant_id),
+                knowledge_base_id=str(kb.id),
+                document_id=str(document.id),
+                permissions=frozenset({MANAGE}),
+            )
+        )
+
+        assert [c.chunk_index for c in detail.chunks] == [0, 1, 2]
+        assert [c.text for c in detail.chunks] == ["passage 0", "passage 1", "passage 2"]
+        assert [c.source_location for c in detail.chunks] == ["page 1", "page 2", "page 3"]
+        assert detail.chunk_count == 3
+
+    async def test_chunk_count_is_the_document_total_not_the_page_length(self) -> None:
+        """Otherwise a reader on page one of a 90-chunk document is told the
+        document has 10 chunks."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, membership = _seed_member(uow, tenant_id)
+        kb = _seed_knowledge_base(uow, tenant_id, membership.id)
+        document = _seed_document(uow, kb, status=DocumentStatus.READY)
+        self._seed_chunks(uow, document, 90)
+
+        detail = await GetDocumentDetail(uow).execute(
+            GetDocumentDetailQuery(
+                actor_user_id=str(user_id),
+                tenant_id=str(tenant_id),
+                knowledge_base_id=str(kb.id),
+                document_id=str(document.id),
+                permissions=frozenset({MANAGE}),
+                limit=10,
+                offset=20,
+            )
+        )
+
+        assert len(detail.chunks) == 10
+        assert [c.chunk_index for c in detail.chunks] == list(range(20, 30))
+        assert detail.chunk_count == 90
+
+    async def test_an_over_large_limit_is_capped_rather_than_refused(self) -> None:
+        """A caller asking for everything gets a bounded page, not a 400 and
+        not a response carrying hundreds of passages."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, membership = _seed_member(uow, tenant_id)
+        kb = _seed_knowledge_base(uow, tenant_id, membership.id)
+        document = _seed_document(uow, kb, status=DocumentStatus.READY)
+        self._seed_chunks(uow, document, 400)
+
+        detail = await GetDocumentDetail(uow).execute(
+            GetDocumentDetailQuery(
+                actor_user_id=str(user_id),
+                tenant_id=str(tenant_id),
+                knowledge_base_id=str(kb.id),
+                document_id=str(document.id),
+                permissions=frozenset({MANAGE}),
+                limit=10_000,
+            )
+        )
+
+        assert len(detail.chunks) == MAX_CHUNKS_PER_PAGE
+
+    async def test_a_zero_chunk_document_reports_no_passages(self) -> None:
+        """The state the whole chunk-count surface exists for: `ready`, and
+        nothing in it to find."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, membership = _seed_member(uow, tenant_id)
+        kb = _seed_knowledge_base(uow, tenant_id, membership.id)
+        document = _seed_document(uow, kb, status=DocumentStatus.READY, chunks=0)
+
+        detail = await GetDocumentDetail(uow).execute(
+            GetDocumentDetailQuery(
+                actor_user_id=str(user_id),
+                tenant_id=str(tenant_id),
+                knowledge_base_id=str(kb.id),
+                document_id=str(document.id),
+                permissions=frozenset({MANAGE}),
+            )
+        )
+
+        assert detail.chunks == []
+        assert detail.chunk_count == 0
+
+    async def test_read_access_is_enough_no_upload_permission_needed(self) -> None:
+        """Deliberate: the same passages are already reachable by asking the
+        knowledge base a question, so requiring modify rights would withhold
+        the diagnosis while protecting nothing."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, membership = _seed_member(uow, tenant_id)
+        kb = _seed_knowledge_base(uow, tenant_id, membership.id)
+        document = _seed_document(uow, kb, status=DocumentStatus.READY)
+        self._seed_chunks(uow, document, 2)
+
+        detail = await GetDocumentDetail(uow).execute(
+            GetDocumentDetailQuery(
+                actor_user_id=str(user_id),
+                tenant_id=str(tenant_id),
+                knowledge_base_id=str(kb.id),
+                document_id=str(document.id),
+                permissions=frozenset(),
+            )
+        )
+
+        assert len(detail.chunks) == 2
+
+    async def test_a_document_in_another_knowledge_base_is_not_found(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, membership = _seed_member(uow, tenant_id)
+        authorized_kb = _seed_knowledge_base(uow, tenant_id, membership.id)
+        other_kb = _seed_knowledge_base(uow, tenant_id, membership.id)
+        document = _seed_document(uow, other_kb, status=DocumentStatus.READY)
+        self._seed_chunks(uow, document, 5)
+
+        with pytest.raises(DocumentNotFoundError):
+            await GetDocumentDetail(uow).execute(
+                GetDocumentDetailQuery(
+                    actor_user_id=str(user_id),
+                    tenant_id=str(tenant_id),
+                    knowledge_base_id=str(authorized_kb.id),
+                    document_id=str(document.id),
+                    permissions=frozenset({MANAGE}),
+                )
+            )

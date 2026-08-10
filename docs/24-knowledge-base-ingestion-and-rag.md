@@ -538,8 +538,58 @@ warning about the dev topology, not a defect in the code, and per the review's o
 working behaviour is not changed because a log line is yellow. Blanking `QDRANT__API_KEY`
 locally silences it.
 
-Not built in this pass: a per-source detail view (extracted text, chunk-by-chunk inspection)
-and re-ingest/re-embed for `data_sources` as opposed to individual documents.
+### The document inspector, and re-syncing a crawl
+
+Both were the outstanding half of source management, and both are deliberately thin over
+machinery that already existed.
+
+**`GetDocumentDetail` returns the text that was actually indexed.** Status and chunk count
+say *that* something went wrong; only the extracted passages say *what*. It reads through a
+new `DocumentRepository.list_chunks(limit, offset)` — paged, capped at 50, since a large PDF
+runs to hundreds and this is read by a person, not by retrieval. It requires **read** access
+only (`for_modification=False`): the same passages are already reachable by asking the
+knowledge base a question, so demanding modify rights would withhold the diagnosis while
+protecting nothing. It still makes the cross-knowledge-base check the mutating paths make.
+
+**It earned its place on first use.** Opening the crawled London Academy of IT page showed
+that **chunk 1 is the cookie-consent banner** — 700 tokens of "We use cookies to enhance your
+browsing experience" indexed as course material. Nothing in the status, the chunk count or
+the retrieval tester would ever have said so.
+
+**`ResyncDataSource` adds no second pipeline.** It re-enqueues the *same* job `CreateDataSource`
+enqueues, because that job was already idempotent by construction: a crawled page is looked
+up by `(knowledge_base_id, source_url)` and updated rather than inserted (backed by
+`uq_documents_source_url_per_kb`), and `index_blocks` deletes a document's chunks and vectors
+before writing new ones. Proven live rather than argued: re-crawling left **one** document
+row with the same id, its chunks replaced 23 → 18, and Qdrant holding exactly 18 — refreshed,
+not accumulated.
+
+Two decisions inside it:
+
+1. **Stored URLs are re-validated, not trusted because they passed once.** A hostname that
+   resolved to a public address at creation can resolve somewhere internal by the time
+   someone presses re-sync; resolving-then-checking is only meaningful at the moment of use.
+2. **Documents for pages that have vanished are left alone.** Deleting a tenant's indexed
+   content as a side effect of a refresh is not a decision a refresh should make — a site
+   that 404s briefly during a deploy would otherwise quietly empty a knowledge base.
+
+Both are mutation-tested: dropping the re-validation, the cross-knowledge-base check, the
+chunk-page cap, or the document-total count each fails a test that passes when restored.
+
+**Two schema facts closed on the way.** `Document` never carried `source_url` despite the
+column existing since Phase 12, so nothing above the repository could tell a crawled page
+from an uploaded file; and `DataSourceRepository` had no `save()`, so a status transition
+had nowhere to go outside the worker's raw SQL.
+
+**A layout defect only a real document exposed.** Crawled markdown is full of long unbroken
+asset URLs, and `whitespace-pre-wrap` preserves line breaks without breaking a long token —
+so the chunk list scrolled sideways. `break-words` on the passage and `truncate` on the
+per-chunk source URL fix it; measured at `scrollWidth === clientWidth`, not eyeballed.
+
+Not built in this pass: **re-embedding** without re-fetching. The stored markdown makes it
+possible (that is why it is stored) and it is the right response to an embedding-model
+change, but it needs a job that reads `document_chunks` and re-embeds in place rather than
+re-running the parse.
 
 ## Decisions I'm assuming — flag any of these you want changed
 
