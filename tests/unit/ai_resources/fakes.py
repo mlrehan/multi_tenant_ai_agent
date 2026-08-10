@@ -100,6 +100,10 @@ class FakeKnowledgeBaseRepository:
 class FakeDocumentRepository:
     def __init__(self) -> None:
         self.by_id: dict[UUID, Document] = {}
+        #: Chunk counts per document. A count rather than the rows themselves:
+        #: nothing in the application reads chunk content through this
+        #: repository, so storing bodies would be fidelity the tests never use.
+        self.chunks: dict[UUID, int] = {}
 
     async def get_by_id(self, document_id: UUID) -> Document | None:
         return self.by_id.get(document_id)
@@ -116,6 +120,13 @@ class FakeDocumentRepository:
 
     async def save(self, document: Document) -> None:
         self.by_id[document.id] = document
+
+    async def delete_chunks(self, document_id: UUID) -> int:
+        removed = self.chunks.pop(document_id, 0)
+        return removed
+
+    async def count_chunks(self, document_id: UUID) -> int:
+        return self.chunks.get(document_id, 0)
 
 
 class FakeConversationRepository:

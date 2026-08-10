@@ -73,9 +73,17 @@ async def index_blocks(
     )
 
     if not chunks:
-        # A legitimate outcome -- an empty spreadsheet, a scanned page with no
-        # recoverable text, a crawled page that was all navigation. Nothing
-        # indexed, but nothing went wrong.
+        # Nothing was indexed, so nothing is searchable. Whether that is a
+        # *failure* depends on the caller -- one navigation-only page in a
+        # 500-page crawl is not, an uploaded file the tenant expects to search
+        # is -- so this reports the fact and lets each caller decide.
+        #
+        # It previously logged and returned 0 with a comment calling that "a
+        # legitimate outcome", and `process_document_upload` then marked the
+        # document `ready`. A 40-page scanned PDF whose OCR ran out of memory
+        # was therefore recorded as successfully ingested, with zero chunks and
+        # no error anywhere: the one state that looks like success and cannot
+        # answer a single question.
         logger.info("document %s produced no chunks", target.document_id)
         return 0
 

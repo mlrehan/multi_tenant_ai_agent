@@ -57,11 +57,16 @@ class _FakeSession:
 
     def __init__(self, *, document_missing: bool = False) -> None:
         self.statements: list[str] = []
+        #: Bound parameters, so a test can assert on the *value* written and
+        #: not merely that some UPDATE ran. `failure_reason` is shown verbatim
+        #: to the tenant, which makes its content worth asserting.
+        self.parameters: list[dict[str, Any]] = []
         self._document_missing = document_missing
 
     async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _FakeResult:
         sql = " ".join(str(statement).split())
         self.statements.append(sql)
+        self.parameters.append(dict(params or {}))
 
         if sql.startswith("SELECT set_config"):
             return _FakeResult(("",))
@@ -360,9 +365,19 @@ class TestAuthorizationRefusal:
 
 
 class TestEmptyDocuments:
-    async def test_a_document_with_no_extractable_text_is_ready_not_failed(self) -> None:
-        """An empty spreadsheet or a blank scan is a legitimate outcome --
-        nothing went wrong, there was simply nothing to index."""
+    """A document that indexed nothing is a failure, not a quiet success.
+
+    This class previously asserted the opposite -- that an empty parse was "a
+    legitimate outcome" and should be marked `ready`. That belief is what let a
+    40-page scanned PDF, whose OCR ran out of memory on 38 of its pages, be
+    recorded as successfully ingested with zero chunks: the one state that
+    looks like success in the console and cannot answer a single question.
+
+    The tenant uploaded the file in order to search it. If nothing is
+    searchable, saying `ready` is telling them the opposite of what happened.
+    """
+
+    async def test_a_document_with_no_extractable_text_is_failed(self) -> None:
         session = _FakeSession()
         vectors = _FakeVectorSearch()
 
@@ -374,5 +389,44 @@ class TestEmptyDocuments:
             document_id=DOCUMENT_ID,
         )
 
-        assert any("status = 'ready'" in s for s in session.statements)
+        assert not any("status = 'ready'" in s for s in session.statements)
+        assert any("status = 'failed'" in s for s in session.statements)
         assert vectors.upserted == []
+
+    async def test_the_failure_reason_names_the_file_and_suggests_a_cause(self) -> None:
+        """`failure_reason` is rendered verbatim in the console, so it has to
+        be worth reading: which file, and what a tenant might do about it."""
+        session = _FakeSession()
+
+        await process_document_upload(
+            _factory(session),
+            _dependencies(parser=_FakeParser(blocks=[])),
+            tenant_id=TENANT_ID,
+            actor_user_id=ACTOR_ID,
+            document_id=DOCUMENT_ID,
+        )
+
+        reasons = [p.get("reason", "") for p in session.parameters if "reason" in p]
+        assert reasons, "a failure reason should have been recorded"
+        assert "scanned" in reasons[-1].lower()
+
+    async def test_no_exit_path_leaves_the_document_processing(self) -> None:
+        """The invariant the whole job is built around: `processing` means "a
+        worker is coming", so a document left there is indistinguishable from
+        one still queued."""
+        session = _FakeSession()
+
+        await process_document_upload(
+            _factory(session),
+            _dependencies(parser=_FakeParser(blocks=[])),
+            tenant_id=TENANT_ID,
+            actor_user_id=ACTOR_ID,
+            document_id=DOCUMENT_ID,
+        )
+
+        terminal = [
+            s
+            for s in session.statements
+            if "status = 'ready'" in s or "status = 'failed'" in s
+        ]
+        assert terminal, "the document must reach a terminal status"

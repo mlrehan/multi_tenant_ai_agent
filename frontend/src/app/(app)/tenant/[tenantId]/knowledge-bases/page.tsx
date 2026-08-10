@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Search,
   Upload,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -104,6 +105,32 @@ const ACCEPTED_FILE_TYPES = [
 /** Matches `MAX_UPLOAD_BYTES` in api/v1/assistants/router.py. Checked here
  * only to fail fast; the server's limit is the one that counts. */
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+/** The same list as `ACCEPTED_FILE_TYPES`, as a set for checking a dropped
+ * file. The `accept` attribute only filters the *browse* dialog — a
+ * drag-and-drop bypasses it entirely, so without this the two entry points
+ * would validate differently and a `.zip` could reach the server on one path
+ * and not the other. */
+const ACCEPTED_EXTENSIONS = new Set(ACCEPTED_FILE_TYPES.split(","));
+
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot === -1 ? "" : name.slice(dot).toLowerCase();
+}
+
+type StagedFile = {
+  file: File;
+  /** Identity for de-duplication and React keys. Name alone would reject a
+   * legitimately different file that happens to share a name; name+size+mtime
+   * is what a person means by "the same file". */
+  key: string;
+  status: "ready" | "uploading" | "done" | "error";
+  error?: string;
+};
+
+function stagedKey(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
 
 const createSchema = z.object({
   name: z.string().min(1, "Enter a name.").max(200),
@@ -296,21 +323,89 @@ function DocumentsDialog({
   const upload = useUploadDocument(tenantId, knowledgeBase.id);
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
+  const [staged, setStaged] = useState<StagedFile[]>([]);
+  const [sending, setSending] = useState(false);
 
   const documents = data?.documents;
 
-  async function uploadFiles(files: FileList | File[]) {
-    for (const file of Array.from(files)) {
-      if (file.size > MAX_UPLOAD_BYTES) {
-        toast.error(`${file.name} is larger than 50 MB.`);
-        continue;
+  /** The single entry point for both browse and drag-and-drop.
+   *
+   * Files are *staged*, not sent. Uploading on drop gives no chance to notice
+   * the wrong file was picked, and no way to undo it once a background job has
+   * started parsing it. Validation happens here too, so a `.zip` is refused
+   * identically whichever way it arrived — the `accept` attribute only filters
+   * the browse dialog and a drop bypasses it entirely.
+   */
+  function addFiles(incoming: FileList | File[]) {
+    const rejected: string[] = [];
+    setStaged((current) => {
+      const seen = new Set(current.map((s) => s.key));
+      const additions: StagedFile[] = [];
+
+      for (const file of Array.from(incoming)) {
+        const key = stagedKey(file);
+        if (seen.has(key)) {
+          rejected.push(`${file.name} is already in the list`);
+          continue;
+        }
+        if (!ACCEPTED_EXTENSIONS.has(extensionOf(file.name))) {
+          rejected.push(`${file.name} is not a supported file type`);
+          continue;
+        }
+        if (file.size > MAX_UPLOAD_BYTES) {
+          rejected.push(`${file.name} is larger than 50 MB`);
+          continue;
+        }
+        if (file.size === 0) {
+          rejected.push(`${file.name} is empty`);
+          continue;
+        }
+        seen.add(key);
+        additions.push({ file, key, status: "ready" });
       }
-      try {
-        await upload.mutateAsync(file);
-        toast.success(`${file.name} uploaded — indexing now.`);
-      } catch (err) {
-        toast.error(isApiError(err) ? err.message : `Couldn't upload ${file.name}.`);
+      return additions.length ? [...current, ...additions] : current;
+    });
+
+    // Reported after the state update rather than inside it: React may invoke
+    // the updater twice in development (StrictMode), which would double every
+    // toast.
+    for (const message of rejected) toast.error(message);
+  }
+
+  function removeStaged(key: string) {
+    setStaged((current) => current.filter((s) => s.key !== key));
+  }
+
+  /** Sends everything staged, one at a time, keeping per-file status.
+   *
+   * Sequential rather than parallel: each upload triggers a background parse,
+   * and ten at once is how a single tenant saturates the worker queue for
+   * everyone else. Successful files leave the list; failures stay, with their
+   * reason, so they can be retried without re-picking them.
+   */
+  async function uploadStaged() {
+    setSending(true);
+    try {
+      for (const item of staged.filter((s) => s.status !== "done")) {
+        setStaged((c) =>
+          c.map((s) => (s.key === item.key ? { ...s, status: "uploading" } : s)),
+        );
+        try {
+          await upload.mutateAsync(item.file);
+          setStaged((c) => c.filter((s) => s.key !== item.key));
+          toast.success(`${item.file.name} uploaded — indexing now.`);
+        } catch (err) {
+          const message = isApiError(err) ? err.message : "Upload failed.";
+          setStaged((c) =>
+            c.map((s) =>
+              s.key === item.key ? { ...s, status: "error", error: message } : s,
+            ),
+          );
+          toast.error(`${item.file.name}: ${message}`);
+        }
       }
+    } finally {
+      setSending(false);
     }
   }
 
@@ -334,7 +429,7 @@ function DocumentsDialog({
           onDrop={(e) => {
             e.preventDefault();
             setDragging(false);
-            if (e.dataTransfer.files.length > 0) void uploadFiles(e.dataTransfer.files);
+            if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
           }}
           className={`flex flex-col items-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors ${
             dragging ? "border-primary bg-primary/5" : "border-border"
@@ -361,18 +456,72 @@ function DocumentsDialog({
             accept={ACCEPTED_FILE_TYPES}
             className="hidden"
             onChange={(e) => {
-              if (e.target.files?.length) void uploadFiles(e.target.files);
+              if (e.target.files?.length) addFiles(e.target.files);
               // Reset so re-picking the same file fires `change` again.
               e.target.value = "";
             }}
           />
-          {upload.isPending && (
-            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 className="size-3 animate-spin" />
-              Uploading…
-            </p>
-          )}
         </div>
+
+        {staged.length > 0 && (
+          <div className="space-y-2 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium">
+                {staged.length} file{staged.length === 1 ? "" : "s"} ready to upload
+              </p>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={sending}
+                  onClick={() => setStaged([])}
+                >
+                  Clear
+                </Button>
+                <Button size="xs" disabled={sending} onClick={() => void uploadStaged()}>
+                  {sending && <Loader2 className="animate-spin" />}
+                  {sending ? "Uploading…" : "Upload"}
+                </Button>
+              </div>
+            </div>
+            <ul className="space-y-1">
+              {staged.map((item) => (
+                <li
+                  key={item.key}
+                  className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-2.5 py-1.5"
+                >
+                  {/* min-w-0 is what lets `truncate` work inside a flex row —
+                      without it the item refuses to shrink below its content
+                      and a long filename widens the dialog. */}
+                  <div className="min-w-0">
+                    <p className="truncate text-sm">{item.file.name}</p>
+                    {item.error && (
+                      <p className="truncate text-xs text-destructive">{item.error}</p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {formatBytes(item.file.size)}
+                    </span>
+                    {item.status === "uploading" ? (
+                      <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                    ) : (
+                      <button
+                        type="button"
+                        aria-label={`Remove ${item.file.name}`}
+                        className="text-muted-foreground hover:text-foreground"
+                        disabled={sending}
+                        onClick={() => removeStaged(item.key)}
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <CrawlSection tenantId={tenantId} knowledgeBaseId={knowledgeBase.id} />
 

@@ -16,7 +16,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from iam_platform.api.deps.authn import get_container, get_current_claims
@@ -76,6 +76,11 @@ from iam_platform.application.ai_resources.manage_data_source import (
     CreateDataSourceCommand,
     ListDataSources,
     ListDataSourcesQuery,
+)
+from iam_platform.application.ai_resources.manage_document import (
+    DeleteDocument,
+    DocumentActionCommand,
+    RetryDocumentIngestion,
 )
 from iam_platform.application.ai_resources.manage_knowledge_base import (
     CreateKnowledgeBase,
@@ -610,6 +615,72 @@ async def list_documents(
     return schemas.DocumentListResponse(
         documents=[_document_response(d) for d in documents]
     )
+
+
+@router.post(
+    "/knowledge-bases/{knowledge_base_id}/documents/{document_id}/retry",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_document(
+    tenant_id: str,
+    knowledge_base_id: str,
+    document_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    """Re-runs ingestion for a document whose bytes are already stored.
+
+    202, not 200: the work happens in a worker, and the response means "queued"
+    rather than "indexed". The document's status is the record of what actually
+    happened.
+    """
+    use_case = RetryDocumentIngestion(
+        container.ai_resource_uow_factory,
+        container.document_ingestion_queue,
+        container.clock,
+    )
+    await use_case.execute(
+        DocumentActionCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            document_id=document_id,
+            permissions=permissions,
+        )
+    )
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.delete(
+    "/knowledge-bases/{knowledge_base_id}/documents/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_document(
+    tenant_id: str,
+    knowledge_base_id: str,
+    document_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    """Removes a document, its chunks, its vectors and its stored bytes."""
+    use_case = DeleteDocument(
+        container.ai_resource_uow_factory,
+        container.object_storage_client,
+        container.vector_search_client,
+        container.clock,
+    )
+    await use_case.execute(
+        DocumentActionCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            document_id=document_id,
+            permissions=permissions,
+        )
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

@@ -323,6 +323,32 @@ class IngestionSettings(BaseModel):
     #: and one of those should not force a 100-page report through OCR.
     pdf_min_text_page_ratio: float = 0.6
 
+    #: How many pages docling holds in memory at once, per stage.
+    #:
+    #: **This is a memory ceiling, not a throughput knob.** Docling's defaults
+    #: batch 4 pages through layout, OCR and table detection simultaneously,
+    #: and its OCR path renders each page at 3x scale -- roughly 8.7 megapixels
+    #: for A4, several times that again as float tensors. Four of those at once
+    #: across four threads is enough to exhaust the heap on a CPU worker: a
+    #: 40-page scanned PDF failed with `std::bad_alloc` on pages 4 through 13,
+    #: which is exactly the batch boundary.
+    #:
+    #: One page at a time is slower and *finishes*. Deliberately bounded here
+    #: rather than by lowering the OCR scale: scale is what makes small print
+    #: legible, so reducing it would trade a crash for silently worse text.
+    docling_batch_size: int = 1
+    #: Worker threads inside docling. Multiplies the above -- each thread can
+    #: hold its own page tensors.
+    docling_num_threads: int = 2
+    #: Wall-clock ceiling for one document, in seconds. `None` means unbounded,
+    #: which is docling's default and lets a pathological file occupy a worker
+    #: indefinitely. 20 minutes is generous for a large scan and still bounded.
+    docling_timeout_seconds: float | None = 1200.0
+    #: Refuse a PDF longer than this rather than starting work that will not
+    #: finish. Scanned pages cost roughly a second each even when nothing goes
+    #: wrong, so a 2,000-page scan is not a document, it is an outage.
+    docling_max_pages: int = 500
+
 
 class CrawlSettings(BaseModel):
     """Bounds on URL and website ingestion (Phase 12).

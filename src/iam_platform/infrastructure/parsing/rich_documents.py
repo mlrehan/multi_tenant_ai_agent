@@ -20,11 +20,29 @@ coroutine in the worker; `asyncio.to_thread` keeps the process responsive.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Any
 
 from iam_platform.application.ai_resources.exceptions import DocumentParseError
 from iam_platform.application.ai_resources.ports import ParsedBlock
+from iam_platform.core.config import IngestionSettings
+
+logger = logging.getLogger("iam_platform.infrastructure.parsing.rich_documents")
+
+
+def _first_error(result: Any) -> str:
+    """A short, tenant-safe summary of why docling struggled.
+
+    Only the first error: a 40-page document that ran out of memory produces
+    one per page, and a `failure_reason` column is not the place for forty
+    copies of the same sentence.
+    """
+    errors = getattr(result, "errors", None) or []
+    if not errors:
+        return "no further detail"
+    first = errors[0]
+    return str(getattr(first, "error_message", None) or first)[:300]
 
 _SUPPORTED_TYPES = {
     "application/pdf",
@@ -97,8 +115,14 @@ def _disable_torch_compilation() -> None:
 
 
 class DoclingDocumentParser:
-    def __init__(self, *, converter: Any | None = None) -> None:
+    def __init__(
+        self,
+        settings: IngestionSettings | None = None,
+        *,
+        converter: Any | None = None,
+    ) -> None:
         self._converter = converter
+        self._settings = settings or IngestionSettings()
 
     def supports(self, *, content_type: str, filename: str) -> bool:
         return (
@@ -109,10 +133,42 @@ class DoclingDocumentParser:
     def _get_converter(self) -> Any:
         if self._converter is None:  # pragma: no cover - loads ML models
             _disable_torch_compilation()
-            from docling.document_converter import DocumentConverter
-
-            self._converter = DocumentConverter()
+            self._converter = self._build_bounded_converter()
         return self._converter
+
+    def _build_bounded_converter(self) -> Any:  # pragma: no cover - loads ML models
+        """A converter with an explicit memory ceiling.
+
+        Docling's defaults are tuned for a machine with room to spare: four
+        pages through each stage at once, four threads, no document timeout.
+        On a CPU worker parsing a scanned PDF -- where every page is rendered
+        at 3x scale and pushed through OCR, layout and table models -- that
+        combination exhausts the heap and raises `std::bad_alloc` part-way
+        through, which docling reports per stage and then *continues past*,
+        finishing "successfully" with nothing extracted.
+
+        Bounding the batch size is the fix rather than lowering `ocr scale`,
+        because scale is what makes small print legible: reducing it would
+        swap a visible crash for quietly worse text, which is the harder
+        failure to notice. Slower and complete beats faster and empty.
+        """
+        from docling.datamodel.accelerator_options import AcceleratorOptions
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        batch = max(1, self._settings.docling_batch_size)
+        options = PdfPipelineOptions()
+        options.layout_batch_size = batch
+        options.ocr_batch_size = batch
+        options.table_batch_size = batch
+        options.document_timeout = self._settings.docling_timeout_seconds
+        options.accelerator_options = AcceleratorOptions(
+            num_threads=max(1, self._settings.docling_num_threads)
+        )
+        return DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+        )
 
     async def parse(self, *, data: bytes, content_type: str, filename: str) -> list[ParsedBlock]:
         try:
@@ -130,10 +186,40 @@ class DoclingDocumentParser:
         return _markdown_to_blocks(markdown)
 
     def _convert_sync(self, data: bytes, filename: str) -> str:
-        from docling.datamodel.base_models import DocumentStream
+        from docling.datamodel.base_models import ConversionStatus, DocumentStream
 
         stream = DocumentStream(name=filename, stream=__import__("io").BytesIO(data))
-        result = self._get_converter().convert(stream)
+        result = self._get_converter().convert(
+            stream,
+            # Refuse an unreasonably long document up front rather than
+            # discovering it page by page. Docling raises here, and the caller
+            # turns that into a `failure_reason` the tenant can act on.
+            max_num_pages=self._settings.docling_max_pages,
+        )
+
+        # **Docling reports per-stage failures and keeps going.** A scanned PDF
+        # whose pages ran out of memory comes back with status
+        # `PARTIAL_SUCCESS`, a populated `errors` list, and a document
+        # containing only the pages that survived -- often none. Nothing here
+        # used to look at either field, so "Stage preprocess failed for pages
+        # [4..13]: std::bad_alloc" ended as a `ready` document with no chunks
+        # and no error recorded anywhere.
+        status = getattr(result, "status", None)
+        if status is ConversionStatus.FAILURE:
+            raise DocumentParseError(
+                f"{filename}: could not be parsed ({_first_error(result)})"
+            )
+        if status is ConversionStatus.PARTIAL_SUCCESS:
+            # Not raised: partial extraction is still worth indexing, and the
+            # caller fails the document anyway if the surviving text chunks to
+            # nothing. Logged so the cause is recoverable from the worker log
+            # when a tenant asks why a document is thin.
+            logger.warning(
+                "docling partially converted %s -- some pages were lost: %s",
+                filename,
+                _first_error(result),
+            )
+
         return str(result.document.export_to_markdown())
 
 

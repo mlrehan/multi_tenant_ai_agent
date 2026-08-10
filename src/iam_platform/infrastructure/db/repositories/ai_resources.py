@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from iam_platform.domain.ai_resources.entities import (
@@ -43,6 +43,7 @@ from iam_platform.infrastructure.db.models.ai_resources import (
     ChatWidgetModel,
     ConversationModel,
     DataSourceModel,
+    DocumentChunkModel,
     DocumentModel,
     KnowledgeBaseModel,
     ModelConfigurationModel,
@@ -297,8 +298,39 @@ class SqlDocumentRepository:
         await self._session.execute(
             update(DocumentModel)
             .where(DocumentModel.id == document.id)
-            .values(status=document.status.value, deleted_at=document.deleted_at)
+            .values(
+                status=document.status.value,
+                deleted_at=document.deleted_at,
+                # `failure_reason` was previously omitted, so every entity
+                # transition that sets or clears it (`mark_failed`,
+                # `mark_ready`, `mark_processing`) was silently discarded here.
+                # It went unnoticed because the ingestion worker writes the
+                # column with its own SQL and never goes through this method --
+                # a retry from the console would have left the old error
+                # sitting beside a running job.
+                failure_reason=document.failure_reason,
+            )
         )
+
+    async def delete_chunks(self, document_id: UUID) -> int:
+        # Counted before deleting rather than from `rowcount`: the async
+        # `Result` protocol does not expose it, and the count is only used for
+        # the audit record.
+        removed = await self.count_chunks(document_id)
+        await self._session.execute(
+            delete(DocumentChunkModel).where(DocumentChunkModel.document_id == document_id)
+        )
+        return removed
+
+    async def count_chunks(self, document_id: UUID) -> int:
+        count = (
+            await self._session.execute(
+                select(func.count())
+                .select_from(DocumentChunkModel)
+                .where(DocumentChunkModel.document_id == document_id)
+            )
+        ).scalar_one()
+        return int(count)
 
 
 def _conversation_to_domain(m: ConversationModel) -> Conversation:

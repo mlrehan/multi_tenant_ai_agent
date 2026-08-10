@@ -202,7 +202,7 @@ async def _ingest(
         data=data, content_type=document.content_type, filename=document.filename
     )
 
-    await index_blocks(
+    chunk_count = await index_blocks(
         session,
         target=IndexingTarget(
             tenant_id=context.tenant_id,
@@ -215,6 +215,27 @@ async def _ingest(
         embedding_client=dependencies.embedding_client,
         vector_search=dependencies.vector_search,
     )
+
+    # **Zero chunks is a failure, not a quiet success.** The tenant uploaded
+    # this file in order to search it; a document with nothing indexed answers
+    # no question, and `ready` would tell them the opposite. Raising here means
+    # the existing handler records it as `failed` with this message, which the
+    # console already renders and which a retry can act on.
+    #
+    # The distinction in the message matters because the two causes need
+    # different responses: a file that parsed to nothing is usually a scan
+    # whose OCR failed or produced nothing, while a file that chunked to
+    # nothing is one whose text was all whitespace or boilerplate.
+    if chunk_count == 0:
+        if not blocks:
+            raise DocumentParseError(
+                f"no text could be extracted from {document.filename}. If it is a "
+                "scanned document, the page images may be too large or too "
+                "complex to read on this worker; try a smaller or text-based file."
+            )
+        raise DocumentParseError(
+            f"{document.filename} was read but contained no indexable text."
+        )
 
 
 async def _mark_ready(session: AsyncSession, *, document_id: UUID) -> None:

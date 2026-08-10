@@ -229,7 +229,7 @@ async def _crawl_and_index(
     ):
         discovered += 1
         try:
-            await _index_one_page(
+            chunk_count = await _index_one_page(
                 session_factory,
                 dependencies,
                 tenant_id=tenant_id,
@@ -238,7 +238,10 @@ async def _crawl_and_index(
                 source=source,
                 page=page,
             )
-            indexed += 1
+            # Only pages that produced something searchable count as indexed.
+            # A page fetched but empty has already recorded its own reason.
+            if chunk_count > 0:
+                indexed += 1
         except JobAuthorizationError:
             # Authorization revoked mid-crawl -- stop, do not keep indexing.
             raise
@@ -260,8 +263,13 @@ async def _index_one_page(
     data_source_id: UUID,
     source: _DataSourceRow,
     page: CrawledPage,
-) -> None:
-    """One page, one transaction. See the module docstring for why."""
+) -> int:
+    """One page, one transaction. Returns the chunk count it indexed.
+
+    Zero means the page was fetched but held nothing searchable; the caller
+    counts only non-zero pages as indexed. See the module docstring for why
+    each page gets its own transaction.
+    """
     body = page.markdown.encode("utf-8")
     checksum = hashlib.sha256(body).hexdigest()
 
@@ -289,7 +297,7 @@ async def _index_one_page(
             path=storage_path, data=body, content_type=_CRAWLED_CONTENT_TYPE
         )
 
-        await index_blocks(
+        chunk_count = await index_blocks(
             session,
             target=IndexingTarget(
                 tenant_id=context.tenant_id,
@@ -307,6 +315,32 @@ async def _index_one_page(
             vector_search=dependencies.vector_search,
         )
 
+        # A page that indexed nothing is *not* ready -- there is nothing in it
+        # to find. Unlike an upload this does not fail the whole job: a login
+        # wall, a redirect stub or a pure navigation page is a normal thing to
+        # meet while crawling a real site, and abandoning the other 499 pages
+        # over one of them would be worse. It is recorded on the page and
+        # excluded from `pages_indexed`, so the console's "indexed N of M" is
+        # a count of pages that can actually answer something.
+        #
+        # Recorded by *returning*, never by raising: an exception here would
+        # unwind this `session.begin()` block and roll back the very status
+        # write that records it -- docs/18's rollback pitfall, which this
+        # codebase has already been bitten by twice.
+        if chunk_count == 0:
+            await session.execute(
+                text(
+                    "UPDATE documents SET status = 'failed', failure_reason = :why "
+                    "WHERE id = :did"
+                ),
+                {
+                    "did": str(document_id),
+                    "why": "this page had no indexable text (it may be a "
+                    "navigation page, a redirect, or behind a login)",
+                },
+            )
+            return 0
+
         await session.execute(
             text(
                 "UPDATE documents SET status = 'ready', failure_reason = NULL "
@@ -314,6 +348,7 @@ async def _index_one_page(
             ),
             {"did": str(document_id)},
         )
+        return chunk_count
 
 
 async def _upsert_document_row(

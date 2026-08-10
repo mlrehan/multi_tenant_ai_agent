@@ -73,6 +73,25 @@ class DocumentRepository(Protocol):
     async def add(self, document: Document) -> None: ...
     async def save(self, document: Document) -> None: ...
 
+    async def delete_chunks(self, document_id: UUID) -> int:
+        """Removes a document's chunk rows. Returns how many were deleted.
+
+        On the document repository rather than a `DocumentChunkRepository` of
+        its own: chunks have no identity apart from the document they were cut
+        from, are never listed or fetched individually by the application, and
+        exist so the vector index can be rebuilt without re-parsing. A separate
+        repository would be a second way to reach the same rows.
+        """
+        ...
+
+    async def count_chunks(self, document_id: UUID) -> int:
+        """How many chunks a document currently has indexed.
+
+        The honest measure of whether a document is usable: `status = 'ready'`
+        says the pipeline finished, this says it produced something to search.
+        """
+        ...
+
 
 class DataSourceRepository(Protocol):
     async def add(self, source: DataSource) -> None: ...

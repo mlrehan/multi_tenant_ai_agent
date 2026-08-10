@@ -175,6 +175,25 @@ class Document(Entity):
         self.status = DocumentStatus.FAILED
         self.failure_reason = reason
 
+    def mark_processing(self) -> None:
+        """Puts a document back in the queue's hands, for a retry.
+
+        The reverse of `mark_ready`/`mark_failed`, and the transition that
+        makes a failed ingestion recoverable without re-uploading the file --
+        the bytes are still in object storage, so only the parse needs
+        repeating.
+
+        Deliberately *not* guarded on the current status. Retrying a `failed`
+        document is the obvious case, but re-ingesting a `ready` one is just as
+        legitimate (a chunk-size change, a new embedding model), and a
+        `processing` one is already where this would put it. There is no
+        status from which "try again" is meaningless, so there is nothing to
+        refuse. The failure reason is cleared because it describes the previous
+        attempt, and leaving it would show a stale error beside a running job.
+        """
+        self.status = DocumentStatus.PROCESSING
+        self.failure_reason = None
+
     def soft_delete(self, *, now: datetime) -> None:
         if self.deleted_at is not None:
             raise InvalidStateTransitionError("document already deleted")
