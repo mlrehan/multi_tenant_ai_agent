@@ -371,6 +371,84 @@ The reasoning is that the person embedding the widget is already editing that li
 
 ---
 
+---
+
+## Performance pass — after Phase 14
+
+Two defects raised in review after the pipeline was complete. Both were settled by
+measurement rather than argument, and neither touches the security model.
+
+### Docling ran on every rich document, including text-native PDFs
+
+Docling infers text from a **rendered image** of each page using ML layout models
+(DocLayNet, TableFormer) through torch. That is exactly right for a scanned document and
+exactly wrong for a PDF exported from Word, which already carries the author's own text in
+an embedded layer — reading that layer is a *parse*, not an inference. This deployment made
+it worse still: the hardened image ships no C++ compiler, so `TORCH_COMPILE_DISABLE=1`
+forces eager execution.
+
+Measured on a one-page PDF, warm process:
+
+| | |
+|---|---|
+| docling (ML layout models) | **14,789.7 ms** |
+| pypdfium2 text layer | **10.9 ms** |
+| | **1,351×** |
+
+`infrastructure/parsing/fast_pdf.py` reads the text layer first and **declines** when there
+is none, so scans still reach docling's OCR. Three decisions worth not re-litigating:
+
+1. **Declining is a distinct signal from failing.** `ParserDeclined` means "this file is
+   fine, another parser suits it better" and the dispatcher falls through. A
+   `DocumentParseError` deliberately does *not* fall through — a broken file must report its
+   own reason rather than be retried by a parser that will also fail, hiding the real cause.
+2. **The coverage ratio is 0.6, not 1.0.** Real reports contain full-page diagrams and blank
+   separators; one of those must not push a 100-page document through OCR. A *mostly*
+   scanned document still goes to docling whole, rather than silently losing its image pages.
+3. **pypdfium2, not PyMuPDF.** PyMuPDF is the better-known choice and is AGPL-3.0 or paid
+   commercial — network copyleft, which is a real liability for a hosted multi-tenant
+   product. pypdfium2 wraps PDFium (the engine in Chrome), is BSD-3-Clause/Apache-2.0, and
+   was already an indirect dependency via docling. It is now declared **directly**: relying
+   on a transitive dependency for something load-bearing is one upstream refactor from
+   breaking.
+
+**Citations improved, not just speed.** Page numbers come free from the text layer, so a
+passage cites `"page 7"`; the docling path falls back to headings because it reports pages
+inconsistently across formats. Confirmed in the live worker — `pdf parsed via text layer
+(1 pages, 1 blocks)`, document `ready`, `source_location = "page 1"`.
+
+### The answer path had an unbounded reasoning tail
+
+`OPENAI__CHAT_REASONING_EFFORT` is sent only when set — the same opt-in shape as
+`chat_temperature`, and for the same reason: a non-reasoning model rejects the parameter
+outright. `gpt-5.5` accepts `"low"` and **rejects `"minimal"`**, which is why the value is
+passed through unvalidated: a local allowlist would go stale and start refusing values the
+API accepts.
+
+The first measurement was a single sample pair and overstated this as "4.4× faster". Six
+questions each, real prompt, time-to-first-token:
+
+| | min | median | max |
+|---|---|---|---|
+| unset | 1.03s | 2.11s | **10.80s** |
+| `"low"` | 0.83s | 1.24s | **1.58s** |
+
+**The median barely moves; the tail collapses.** Left unset, the model occasionally spends
+eleven seconds thinking about a question the retriever had already answered — and a
+reasoning model emits nothing at all while thinking, so that is a visitor watching an empty
+bubble. One such wait is what closes a tab, which makes the worst case the number that
+matters here.
+
+### What this did not fix
+
+Retrieval is now the dominant term: **~2.5s of a ~5.6s answer**, spent on three serial
+network hops (OpenAI embedding → Qdrant → Cohere rerank) with no caching of any kind. The
+remaining items from the same review, in impact order: HTTP-first crawling with concurrency
+(the crawl loop is still strictly sequential behind a full Chromium), an evaluation harness
+before any further retrieval change, hybrid BM25 + dense retrieval, structure-aware chunking
+that actually uses docling's output, and splitting the Celery queues so a two-hour site
+crawl cannot block document parsing.
+
 ## Decisions I'm assuming — flag any of these you want changed
 
 Stated up front per this project's own rule ("state assumptions before implementing anything non-obvious" — CLAUDE.md ground rules):

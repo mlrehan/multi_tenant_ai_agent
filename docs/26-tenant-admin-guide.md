@@ -111,9 +111,23 @@ Paste one or more addresses and press **Start**.
 
 ### Step 3 — wait for it to be ready
 
-Uploading is instant. **Being searchable is not.** Behind the scenes each document is read,
-split into pieces, and indexed. You'll see it as **Processing**, then **Ready** — the list
+Uploading is instant. **Being searchable is not** — behind the scenes each document is read,
+split into pieces, and indexed. You'll see it as **Processing**, then **Ready**. The list
 refreshes itself, so just leave it open.
+
+How long that takes depends almost entirely on **whether your PDF is a real document or a
+photograph of one**:
+
+| What you uploaded | Roughly how long |
+|---|---|
+| A PDF made by Word, Google Docs, or a report tool | A moment — the text is already inside it |
+| Word, Excel, PowerPoint, CSV, JSON, XML | A moment |
+| A **scanned** PDF or photographed pages | Much slower — the words have to be read out of the image |
+
+If a scanned document seems to take forever, it isn't stuck. Reading text out of pictures is
+genuinely slow work. If you have a choice, export the original as a PDF rather than scanning
+a printout: it will index in a fraction of the time and the text will be exact rather than
+recognised, which also makes answers more accurate.
 
 If something fails, the reason appears next to it, so you can fix the file and try again.
 

@@ -471,6 +471,16 @@ JWT_PRIVATE_KEY_PEM=secret://prod/iam-platform/jwt-private-key
 JWT_PUBLIC_KEY_PEM=secret://prod/iam-platform/jwt-public-key
 ENCRYPTION_DATA_KEY=secret://prod/iam-platform/encryption-data-key
 
+# --- AI answering ---
+# Only needed if you use the knowledge-base / chat features.
+# CHAT_REASONING_EFFORT matters more than it looks: on a reasoning model, left
+# unset the model decides how long to think and occasionally spends ten seconds
+# on a question -- emitting nothing at all meanwhile, so a visitor watches an
+# empty chat bubble. Measured on gpt-5.5: unset gave a 2.11s median and a
+# 10.80s worst case; "low" gave 1.24s and 1.58s. Leave it BLANK on a
+# non-reasoning model, which rejects the parameter outright.
+OPENAI__CHAT_REASONING_EFFORT=low
+
 # --- Everything else ---
 CORS_ALLOWED_ORIGINS=["https://yourdomain.com"]
 
