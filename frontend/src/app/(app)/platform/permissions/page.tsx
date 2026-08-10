@@ -76,7 +76,7 @@ export default function PlatformPermissionsPage() {
             <CardContent>
               {catalog.isLoading && <TableSkeleton rows={6} columns={1} />}
               {catalog.error && (
-                <ErrorState error={catalog.error} resource="the permission catalog" />
+                <ErrorState error={catalog.error} resource="the permission catalog" scope="platform" />
               )}
               {catalog.data && (
                 <PermissionList
@@ -105,7 +105,7 @@ export default function PlatformPermissionsPage() {
               )}
               {rolePermissions.error && (
                 <div className="p-6">
-                  <ErrorState error={rolePermissions.error} resource="role permissions" />
+                  <ErrorState error={rolePermissions.error} resource="role permissions" scope="platform" />
                 </div>
               )}
               {roles.data && rolePermissions.data && (

@@ -74,7 +74,7 @@ export default function PlatformOverviewPage() {
           that case as "you don't have access", not as a failure. */}
       {users.error && (
         <div className="mt-6">
-          <ErrorState error={users.error} resource="the user directory" />
+          <ErrorState error={users.error} resource="the user directory" scope="platform" />
         </div>
       )}
 
@@ -86,7 +86,7 @@ export default function PlatformOverviewPage() {
           </CardHeader>
           <CardContent>
             {tenants.isLoading && <Skeleton className="h-24 w-full" />}
-            {tenants.error && <ErrorState error={tenants.error} resource="tenants" />}
+            {tenants.error && <ErrorState error={tenants.error} resource="tenants" scope="platform" />}
             {tenants.data && tenants.data.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 No tenants yet.{" "}

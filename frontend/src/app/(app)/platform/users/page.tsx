@@ -131,7 +131,7 @@ export default function PlatformUsersPage() {
       </div>
 
       {users.isLoading && <TableSkeleton rows={6} columns={5} />}
-      {users.error && <ErrorState error={users.error} resource="the user directory" />}
+      {users.error && <ErrorState error={users.error} resource="the user directory" scope="platform" />}
 
       {users.data &&
         (users.data.users.length === 0 ? (
@@ -527,7 +527,7 @@ function UserDetailSheet({ userId, onClose }: { userId: string | null; onClose: 
 
         <div className="space-y-6 px-4 pb-8">
           {detail.isLoading && <TableSkeleton rows={4} columns={2} />}
-          {detail.error && <ErrorState error={detail.error} resource="this user" />}
+          {detail.error && <ErrorState error={detail.error} resource="this user" scope="platform" />}
 
           {detail.data && (
             <>

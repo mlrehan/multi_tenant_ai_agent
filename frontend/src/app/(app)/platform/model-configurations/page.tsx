@@ -65,7 +65,7 @@ export default function ModelConfigurationsPage() {
       />
 
       {isLoading && <TableSkeleton rows={3} columns={4} />}
-      {error && <ErrorState error={error} resource="model configurations" />}
+      {error && <ErrorState error={error} resource="model configurations" scope="platform" />}
 
       {configurations && configurations.length === 0 && (
         <EmptyState

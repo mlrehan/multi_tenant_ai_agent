@@ -62,7 +62,7 @@ export default function PlatformTenantsPage() {
       />
 
       {isLoading && <TableSkeleton rows={4} columns={5} />}
-      {error && <ErrorState error={error} resource="tenants" />}
+      {error && <ErrorState error={error} resource="tenants" scope="platform" />}
 
       {tenants && tenants.length === 0 && (
         <EmptyState

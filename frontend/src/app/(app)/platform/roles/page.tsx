@@ -88,7 +88,7 @@ export default function PlatformRolesPage() {
 
         <TabsContent value="roles" className="mt-4">
           {roles.isLoading && <TableSkeleton rows={4} columns={4} />}
-          {roles.error && <ErrorState error={roles.error} resource="platform roles" />}
+          {roles.error && <ErrorState error={roles.error} resource="platform roles" scope="platform" />}
           {roles.data && (
             <Card>
               <CardContent className="p-0">
@@ -124,7 +124,7 @@ export default function PlatformRolesPage() {
             </CardHeader>
             <CardContent>
               {mine.isLoading && <TableSkeleton rows={4} columns={1} />}
-              {mine.error && <ErrorState error={mine.error} resource="your permissions" />}
+              {mine.error && <ErrorState error={mine.error} resource="your permissions" scope="platform" />}
               {mine.data && catalog.data && (
                 <PermissionList
                   permissions={catalog.data.filter((p) => mine.data.permissions.includes(p.code))}
@@ -143,7 +143,7 @@ export default function PlatformRolesPage() {
             </CardHeader>
             <CardContent>
               {catalog.isLoading && <TableSkeleton rows={5} columns={1} />}
-              {catalog.error && <ErrorState error={catalog.error} resource="the permission catalog" />}
+              {catalog.error && <ErrorState error={catalog.error} resource="the permission catalog" scope="platform" />}
               {catalog.data && <PermissionList permissions={catalog.data} />}
             </CardContent>
           </Card>

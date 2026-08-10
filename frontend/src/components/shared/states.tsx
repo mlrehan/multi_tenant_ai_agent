@@ -47,14 +47,29 @@ export function EmptyState({
  * "you don't have that permission" -- so it gets its own presentation
  * rather than being reported as a failure.
  */
-export function ErrorState({ error, resource }: { error: unknown; resource: string }) {
+export function ErrorState({
+  error,
+  resource,
+  scope = "tenant",
+}: {
+  error: unknown;
+  resource: string;
+  /** Which permission system governs this resource, and therefore who can
+   *  grant it. Platform and tenant permissions live in separate tables and a
+   *  tenant role can never hold a platform one, so telling someone denied a
+   *  *platform* permission to "ask a tenant administrator" sends them to a
+   *  person who structurally cannot help. */
+  scope?: "tenant" | "platform";
+}) {
   if (isApiError(error) && error.isForbidden) {
     return (
       <Alert>
         <Lock className="size-4" />
         <AlertTitle>You don&apos;t have access to {resource}</AlertTitle>
         <AlertDescription>
-          Ask a tenant administrator to grant you the required permission.
+          {scope === "platform"
+            ? "This is a platform-scope permission. Ask a platform administrator to grant it — a tenant administrator cannot."
+            : "Ask a tenant administrator to grant you the required permission."}
         </AlertDescription>
       </Alert>
     );
