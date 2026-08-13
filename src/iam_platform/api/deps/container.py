@@ -30,6 +30,7 @@ from iam_platform.application.ai_resources.ports import (
     ObjectStoragePathFactory,
     PublicWidgetLookup,
     Reranker,
+    TokenUsageStore,
     UrlValidator,
     VectorNamespaceFactory,
     VectorSearchClient,
@@ -97,6 +98,8 @@ class AppContainer:
     widget_quota: WidgetQuotaStore
     widget_token_service: WidgetSessionIssuer
     chat_model: ChatModel
+    #: Monthly spend against `model_configurations.token_budget_per_month`.
+    token_usage: TokenUsageStore
     #: The SSRF guard, as a port -- `api` may not import `infrastructure`.
     url_validator: UrlValidator
 

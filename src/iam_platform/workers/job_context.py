@@ -128,8 +128,16 @@ async def establish_job_context(
     account_status, deleted_at = account
     if deleted_at is not None:
         raise JobAuthorizationError(f"user {actor_user_id} is deleted")
-    if account_status != "active":
-        raise JobAuthorizationError(f"user {actor_user_id} is {account_status}, not active")
+    # The revocation states, mirroring `User.can_authenticate` -- the same
+    # question login and the API's per-request check ask. Demanding `active`
+    # here also refused `pending_verification`, which this deployment can
+    # never leave (no email provider), so a self-registered tenant's uploads
+    # were accepted with a 201 and then sat in `processing` for ever: the job
+    # died before it had a document row to mark failed, so nothing anywhere
+    # said why. Suspended, deactivated and deleted accounts are still refused,
+    # which is what threat-model scenario 8 requires.
+    if account_status in ("suspended", "deactivated"):
+        raise JobAuthorizationError(f"user {actor_user_id} is {account_status}")
 
     return VerifiedJobContext(
         tenant_id=tenant_id,

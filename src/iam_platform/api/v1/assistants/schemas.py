@@ -84,6 +84,32 @@ class ModelConfigurationResponse(BaseModel):
 
     id: UUID
     model_name: str
+    #: The monthly cap on this model, if the platform set one, and what this
+    #: tenant has spent against it. Shown to the tenant deliberately -- unlike
+    #: `tenant_id`/`is_platform_default`, which were removed because they only
+    #: invited a client to re-derive a server-side rule, a budget is something
+    #: the tenant *hits*: without it the first sign of a cap is a 429 mid-answer.
+    token_budget_per_month: int | None = None
+    #: `None` means the counter could not be read -- never rendered as 0, which
+    #: would claim nothing has been spent.
+    tokens_used_this_month: int | None = None
+    #: This tenant's own provider key for this model, if they attached one.
+    #: `None` means the platform's key answers and the platform is billed --
+    #: the default for every grant. Only the id: a `key_hint` belongs to the
+    #: credential list, and the ciphertext belongs nowhere near a response.
+    provider_credential_id: UUID | None = None
+
+
+class SetModelCredentialRequest(BaseModel):
+    """Attach a credential, or detach with an explicit null.
+
+    Only an id: the plaintext key is never accepted here. It enters once,
+    through the credential-creation endpoint, and is envelope-encrypted
+    immediately -- letting a second route take a raw secret would be a second
+    place for one to be logged.
+    """
+
+    provider_credential_id: UUID | None = None
 
 
 class ModelConfigurationListResponse(BaseModel):
@@ -273,13 +299,22 @@ class ChatWidgetListResponse(BaseModel):
 class AnswerQuestionRequest(BaseModel):
     """A question to answer from this knowledge base.
 
-    No `top_k`, no model name, no temperature: how many passages ground an
-    answer and which model writes it are platform decisions, not caller input.
-    A caller who could raise `top_k` could raise this deployment's per-question
-    cost at will.
+    No `top_k`, no raw model name, no temperature: how many passages ground an
+    answer and which model writes it are platform decisions, not free-form
+    caller input. A caller who could raise `top_k` could raise this
+    deployment's per-question cost at will.
+
+    `assistant_id` is the one exception, and only in appearance: it does not
+    let the caller name a model directly, it lets them point at one of *their
+    own tenant's* assistants -- a resource whose model was already chosen and
+    entitlement-checked ahead of time by whoever created it, and which the
+    visibility check refuses to resolve for anyone else's. Omit it and the
+    platform default model answers, exactly as it did before this field
+    existed.
     """
 
     question: str = Field(min_length=1, max_length=2000)
+    assistant_id: UUID | None = None
 
 
 class SearchHitResponse(BaseModel):

@@ -233,10 +233,43 @@ class FakeModelConfigurationRepository:
     def __init__(self) -> None:
         self.by_id: dict[UUID, ModelConfiguration] = {}
         self.grants: set[tuple[UUID, UUID]] = set()
+        # Keyed by the same pair as `grants`, because a BYOK credential belongs
+        # to the grant rather than to the shared configuration -- modelling it
+        # on `by_id` would let a test pass while the real column could not
+        # express whose key pays.
+        self.grant_credentials: dict[tuple[UUID, UUID], UUID] = {}
 
     def grant(self, *, tenant_id: UUID, model_configuration_id: UUID) -> None:
         """Test helper -- the equivalent of a platform admin granting access."""
         self.grants.add((tenant_id, model_configuration_id))
+
+    async def credential_for_tenant(
+        self, *, tenant_id: UUID, model_configuration_id: UUID
+    ) -> UUID | None:
+        return self.grant_credentials.get((tenant_id, model_configuration_id))
+
+    async def credentials_for_tenant(self, tenant_id: UUID) -> dict[UUID, UUID]:
+        return {
+            config_id: credential_id
+            for (t, config_id), credential_id in self.grant_credentials.items()
+            if t == tenant_id
+        }
+
+    async def set_credential_for_tenant(
+        self,
+        *,
+        tenant_id: UUID,
+        model_configuration_id: UUID,
+        provider_credential_id: UUID | None,
+    ) -> int:
+        pair = (tenant_id, model_configuration_id)
+        if pair not in self.grants:
+            return 0
+        if provider_credential_id is None:
+            self.grant_credentials.pop(pair, None)
+        else:
+            self.grant_credentials[pair] = provider_credential_id
+        return 1
 
     async def get_by_id(self, model_configuration_id: UUID) -> ModelConfiguration | None:
         return self.by_id.get(model_configuration_id)

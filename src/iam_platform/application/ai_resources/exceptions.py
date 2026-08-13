@@ -41,6 +41,20 @@ class ModelConfigurationInUseError(AiResourceError):
     """Revoking would strand assistants that still use this configuration."""
 
 
+class TokenBudgetExceededError(AiResourceError):
+    """This month's token budget for the chosen model is spent.
+
+    A 429, not a 403: the caller's permissions are fine and the same request
+    will succeed next month or once the platform raises the budget. Telling
+    them "forbidden" would send them looking for a permission problem that
+    does not exist.
+
+    Also raised when the counter cannot be *read*, deliberately: an
+    unconfirmable budget must not silently become an unlimited one, and the
+    tenant sees the same "try later" either way, which is true in both cases.
+    """
+
+
 class ConversationNotFoundError(AiResourceError):
     pass
 
@@ -51,6 +65,22 @@ class ModelConfigurationNotFoundError(AiResourceError):
 
 class ProviderCredentialNotFoundError(AiResourceError):
     pass
+
+
+class ProviderCredentialUnusableError(AiResourceError):
+    """A model configuration names a provider credential that cannot be used --
+    revoked, missing, undecryptable, or rejected by the provider.
+
+    **Raised rather than falling back to the platform's own key**, which is the
+    entire point. A silent fallback would keep answering while quietly moving
+    the bill from the tenant's provider account to the platform's, and nothing
+    in the response would say so. Failing loudly is the only version of this
+    an operator can notice.
+
+    A 409, not a 404 or 403: the request is well-formed and the caller is
+    entitled to make it; the *configuration* is in a state that prevents it,
+    and someone with access to the console can fix it.
+    """
 
 
 class DocumentContentNotFoundError(AiResourceError):

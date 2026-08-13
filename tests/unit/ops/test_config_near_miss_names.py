@@ -88,17 +88,32 @@ def test_the_guard_covers_every_group_not_just_openai(
         Settings(_env_file=str(env))
 
 
-def test_a_stray_variable_is_tolerated_when_the_correct_one_is_also_set(
+def test_the_near_miss_guard_stays_quiet_when_the_correct_name_is_also_set(
     tmp_path: Path,
 ) -> None:
-    """Exporting `OPENAI_API_KEY` for some other tool is common. If the
-    correctly-spelled name is also present it wins, there is no ambiguity, and
-    refusing to boot the whole API over an unrelated variable would be a worse
-    failure than the one this guard prevents."""
+    """The guard itself tolerates a stray `OPENAI_API_KEY` when the correct
+    name is present -- there is no ambiguity about which value would win.
+
+    **`extra="forbid"` then refuses the boot anyway**, and this test asserts
+    that rather than the tolerance the guard intends, because it is what a
+    deployment actually does. Newer pydantic-settings collects the stray under
+    the `openai` group, cannot place it, and surfaces it as an extra field.
+
+    The friction is real -- exporting `OPENAI_API_KEY` for the OpenAI CLI is
+    common, and such a machine cannot start this API even with the correct name
+    also set. Relaxing it would mean changing `extra="forbid"`, which
+    docs/21-configuration-and-secrets.md records as a confirmed decision, so it
+    is stated here rather than quietly weakened. The error names the offending
+    variable and unsetting it is the fix.
+    """
     env = _write_env(
         tmp_path, "OPENAI_API_KEY=sk-for-some-other-tool\nOPENAI__API_KEY=sk-ours\n"
     )
 
-    settings = Settings(_env_file=str(env))
+    with pytest.raises(ValueError) as excinfo:
+        Settings(_env_file=str(env))
 
-    assert settings.openai.api_key.get_secret_value() == "sk-ours"
+    message = str(excinfo.value)
+    # pydantic's message, not the guard's -- the guard deliberately said nothing.
+    assert "openai_api_key" in message
+    assert "OPENAI__API_KEY" not in message

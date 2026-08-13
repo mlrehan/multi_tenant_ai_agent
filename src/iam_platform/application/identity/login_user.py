@@ -27,7 +27,6 @@ from iam_platform.domain.identity.entities import (
     AccountLockout,
     IdentityKind,
     User,
-    UserStatus,
 )
 from iam_platform.domain.identity.policies import (
     compute_lockout_expiry,
@@ -134,10 +133,13 @@ class LoginUser:
             # would lock out every self-registered account with no way back --
             # see docs/22's known gaps. Blocking it belongs with wiring a real
             # provider, not here.
-            account_revoked = user is not None and (
-                user.status in (UserStatus.SUSPENDED, UserStatus.DEACTIVATED)
-                or user.deleted_at is not None
-            )
+            #
+            # The rule itself now lives on the entity as `can_authenticate`,
+            # so the per-request freshness check in `api/deps/authn.py` asks
+            # the identical question. It previously asked a stricter one, and
+            # a self-registered account could sign in here and then be refused
+            # on every request it made.
+            account_revoked = user is not None and not user.can_authenticate
 
             if user is None or not password_ok or account_revoked:
                 await self._record_failure(uow, command, user, now)

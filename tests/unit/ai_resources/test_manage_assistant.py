@@ -555,7 +555,7 @@ class TestListModelConfigurations:
                 actor_user_id=str(user_id), tenant_id=str(tenant_id), permissions=frozenset()
             )
         )
-        assert {c.id for c in result} == {granted.id}
+        assert {o.configuration.id for o in result} == {granted.id}
 
     async def test_an_archived_configuration_is_not_offered(self) -> None:
         """Archiving withdraws a model from new assignments while leaving
@@ -573,7 +573,7 @@ class TestListModelConfigurations:
                 actor_user_id=str(user_id), tenant_id=str(tenant_id), permissions=frozenset()
             )
         )
-        assert {c.id for c in result} == {live.id}
+        assert {o.configuration.id for o in result} == {live.id}
 
     async def test_non_member_gets_empty_list(self) -> None:
         uow = FakeAiResourceUnitOfWork()

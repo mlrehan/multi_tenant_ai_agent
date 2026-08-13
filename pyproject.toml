@@ -23,29 +23,65 @@ dependencies = [
     "httpx>=0.27",
     "celery[redis]>=5.6.3",
     "crawl4ai>=0.9.2",
+
+    # RAG / agent orchestration
     "langchain-text-splitters>=1.1.2",
-    "tiktoken>=0.13.0",
+    "langgraph>=1.2.10",
+    "langchain-core>=1.5.3",
+
+    # Fast tokenization
+    "tiktoken>=0.13.0,<1",
+
     "playwright>=1.62.0",
-    "docling>=2.118.0",
-    # PDF text-layer extraction (infrastructure/parsing/fast_pdf.py). Docling
-    # already pulls this in, but relying on that is fragile -- it would vanish
-    # the day docling swapped its PDF backend, and the fast path is not an
-    # optional nicety: without it every text-native PDF goes back through the
+
+    # Main structured document engine + RapidOCR
+    "docling[rapidocr]>=2.119.0,<3.0.0",
+    
+    # Fast native PDF text-layer extraction (infrastructure/parsing/fast_pdf.py).
+    # Docling already pulls this in, but relying on that is fragile -- it would
+    # vanish the day docling swapped its PDF backend, and the fast path is not
+    # an optional nicety: without it every text-native PDF goes back through the
     # ML pipeline at roughly 1,300x the cost.
     #
     # pypdfium2 (PDFium, BSD-3-Clause/Apache-2.0) rather than the better-known
     # PyMuPDF, which is AGPL-3.0 or paid commercial -- network copyleft is not
     # something to take on for a hosted multi-tenant product.
-    "pypdfium2>=4",
-    "beautifulsoup4>=4.15.0",
-    "lxml>=6.1.1",
-    "openai>=2.53.0",
-    "qdrant-client>=1.19.0",
-    "cohere>=7.0.8",
-    "langgraph>=1.2.10",
-    "langchain-core>=1.5.3",
+    "pypdfium2>=4.30.0,!=4.30.1,<6.0.0",
+
+    # HTML parsing
+    "beautifulsoup4>=4.15.0,<5",
+    "lxml>=6.1.1,<7",
+
+    # XML entity-expansion / XXE defence (infrastructure/parsing/structured.py).
+    # The stdlib parser does not resolve *external* entities but does expand
+    # internal ones: measured at 30,006 characters from a ~400-byte file.
+    "defusedxml>=0.7.1,<0.8",
+
+    # Encoding detection
+    "charset-normalizer>=3.4,<4",
+
+    # Embeddings / vector DB / reranking
+    "openai>=2.53.0,<3",
+    "qdrant-client>=1.19.0,<2",
+    "cohere>=7.0.8,<8",
+
+    # Web/search/storage
     "tavily-python>=0.7.27",
     "boto3>=1.43.66",
+    
+    "python-dotenv>=1.2.2",
+    
+    # OCR inference backend
+    "onnxruntime>=1.28.0,<2",
+
+    # Native Word parsing
+    "python-docx>=1.2,<2",
+
+    # Native PowerPoint parsing
+    "python-pptx>=1.0.2,<2",
+
+    # Native Excel parsing
+    "openpyxl>=3.1.5,<4",
 ]
 
 [project.optional-dependencies]
@@ -119,6 +155,14 @@ module = [
     # adapter (infrastructure/parsing/fast_pdf.py), so the untyped surface is
     # three calls wide.
     "pypdfium2.*",
+    # Spreadsheet reader with no stubs. Touched only inside
+    # `NativeXlsxParser._parse_sync`, which converts every cell to `str`
+    # immediately, so nothing untyped escapes that method.
+    "openpyxl.*",
+    # Hardened XML parser with no stubs. Touched by exactly one call and one
+    # exception class in `XmlParser.parse`; the value it returns is a stdlib
+    # `ElementTree.Element`, which *is* typed, so nothing untyped escapes.
+    "defusedxml.*",
 ]
 ignore_missing_imports = true
 

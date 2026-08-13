@@ -25,10 +25,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
+  useModelConfigurations,
+  useSetModelCredential,
   useProviderCredentials,
   useRevokeProviderCredential,
   useRotateProviderCredential,
@@ -36,6 +45,10 @@ import {
 } from "@/features/ai-resources/hooks";
 import { isApiError } from "@/lib/api-client";
 import type { ProviderCredential } from "@/lib/types";
+
+/** Sentinel for "no attachment". A Select cannot carry null as an item value,
+ *  and an empty string is indistinguishable from unset. */
+const PLATFORM_KEY = "__platform__";
 
 export default function CredentialsPage({ params }: { params: Promise<{ tenantId: string }> }) {
   const { tenantId } = usePromise(params);
@@ -108,7 +121,105 @@ export default function CredentialsPage({ params }: { params: Promise<{ tenantId
           </CardContent>
         </Card>
       )}
+
+      <ModelBillingCard tenantId={tenantId} credentials={credentials ?? []} />
     </div>
+  );
+}
+
+/** Which provider account pays for each model this tenant may use.
+ *
+ *  This is what makes a stored credential do anything. Without an attachment a
+ *  key sits encrypted in the database and every question is still billed to the
+ *  platform -- which was the state of this feature until now. */
+function ModelBillingCard({
+  tenantId,
+  credentials,
+}: {
+  tenantId: string;
+  credentials: ProviderCredential[];
+}) {
+  const { data, isLoading } = useModelConfigurations(tenantId);
+  const setCredential = useSetModelCredential(tenantId);
+  const models = data?.model_configurations ?? [];
+  // Only a live key can be attached; the API refuses a revoked one, and
+  // offering it here would just produce an error the person cannot act on.
+  const usable = credentials.filter((c) => !c.revoked_at);
+
+  async function handleChange(modelConfigurationId: string, value: string) {
+    try {
+      await setCredential.mutateAsync({
+        modelConfigurationId,
+        providerCredentialId: value === PLATFORM_KEY ? null : value,
+      });
+      toast.success(
+        value === PLATFORM_KEY ? "Billing returned to the platform." : "Your key now pays for this model.",
+      );
+    } catch (err) {
+      toast.error(isApiError(err) ? err.message : "Couldn't change billing for this model.");
+    }
+  }
+
+  if (isLoading || models.length === 0) return null;
+
+  return (
+    <Card className="mt-8">
+      <CardContent className="p-0">
+        <div className="border-b px-4 py-3">
+          <h2 className="font-medium">Which key pays for each model</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            By default the platform&apos;s own key answers and the platform is billed. Attach one
+            of your keys to send that model&apos;s usage to your own provider account instead.
+          </p>
+        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Model</TableHead>
+              <TableHead>Billed to</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {models.map((model) => (
+              <TableRow key={model.id}>
+                <TableCell className="font-medium">{model.model_name}</TableCell>
+                <TableCell>
+                  <Select
+                    value={model.provider_credential_id ?? PLATFORM_KEY}
+                    onValueChange={(v) => void handleChange(model.id, v as string)}
+                  >
+                    <SelectTrigger className="w-[260px]">
+                      {/* Render-prop form: the label is looked up directly rather
+                          than read off a mounted <SelectItem>, which is not
+                          guaranteed to exist yet when the options come from an
+                          async query. Same defect this console hit once before. */}
+                      <SelectValue placeholder="Platform's key">
+                        {(v: string | null) =>
+                          !v || v === PLATFORM_KEY
+                            ? "Platform's key"
+                            : (() => {
+                                const c = usable.find((x) => x.id === v);
+                                return c ? `Your ${c.provider} key ····${c.key_hint}` : v;
+                              })()
+                        }
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={PLATFORM_KEY}>Platform&apos;s key</SelectItem>
+                      {usable.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          Your {c.provider} key ····{c.key_hint}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }
 

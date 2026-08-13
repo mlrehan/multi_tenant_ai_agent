@@ -166,12 +166,29 @@ class GrantModelConfigurationRequest(BaseModel):
     tenant_id: UUID
 
 
+class TenantTokenUsageResponse(BaseModel):
+    """What one tenant has spent against one configuration this month.
+
+    Per *tenant*, not a total across them, because that is the number actually
+    enforced -- a combined figure would read like the thing being checked while
+    being a different quantity, which is the worst kind of dashboard.
+    """
+
+    tenant_id: UUID
+    #: `None` means the counter could not be read, which is deliberately not
+    #: rendered as 0: "unknown" and "nothing spent" are a whole budget apart.
+    tokens_used_this_month: int | None
+
+
 class PlatformModelConfigurationResponse(BaseModel):
     id: UUID
     model_name: str
     parameters: dict[str, Any]
     token_budget_per_month: int | None
     provider_credential_id: UUID | None
+    #: Current-month spend per granted tenant, so a budget can be seen working
+    #: rather than merely being set.
+    tenant_usage: list[TenantTokenUsageResponse] = []
     #: True for rows created before entitlements existed, which belong to one
     #: tenant. Surfaced so an operator can tell them apart rather than
     #: wondering why a configuration they did not create is in the list.

@@ -168,6 +168,81 @@ class TestReasoningEffortIsOptional:
         assert tokens == ["real", " text"]
 
 
+class TestPerCallModelOverride:
+    """`model_name`/`model_parameters` are what makes an assistant's own
+    `model_configuration` actually change which model answers -- see
+    `application/ai_resources/answer_question.py`. Every other test in this
+    class calls `stream_answer` without them and must be unaffected; these
+    prove the override path itself."""
+
+    async def test_model_name_overrides_the_configured_default(self) -> None:
+        client = _FakeOpenAI()
+        model = OpenAIChatModel(_settings(chat_model="gpt-5.5"), client=client)
+
+        [t async for t in model.stream_answer(
+            question="q", context=_context(), system_prompt="s", model_name="gpt-5.5-mini",
+        )]
+
+        assert client.last_request()["model"] == "gpt-5.5-mini"
+
+    async def test_omitted_model_name_falls_back_to_the_configured_default(self) -> None:
+        client = _FakeOpenAI()
+        model = OpenAIChatModel(_settings(chat_model="gpt-5.5"), client=client)
+
+        [t async for t in model.stream_answer(question="q", context=_context(), system_prompt="s")]
+
+        assert client.last_request()["model"] == "gpt-5.5"
+
+    async def test_model_parameters_temperature_overrides_the_platform_setting(self) -> None:
+        client = _FakeOpenAI()
+        model = OpenAIChatModel(_settings(chat_temperature=0), client=client)
+
+        [t async for t in model.stream_answer(
+            question="q", context=_context(), system_prompt="s",
+            model_parameters={"temperature": 0.7},
+        )]
+
+        assert client.last_request()["temperature"] == 0.7
+
+    async def test_model_parameters_reasoning_effort_overrides_the_platform_setting(self) -> None:
+        client = _FakeOpenAI()
+        model = OpenAIChatModel(_settings(chat_reasoning_effort="low"), client=client)
+
+        [t async for t in model.stream_answer(
+            question="q", context=_context(), system_prompt="s",
+            model_parameters={"reasoning_effort": "high"},
+        )]
+
+        assert client.last_request()["reasoning_effort"] == "high"
+
+    async def test_a_malformed_temperature_degrades_to_the_platform_default_rather_than_failing(
+        self,
+    ) -> None:
+        """`parameters` comes from a tenant-editable row. A bad value there
+        must not take down every answer through that assistant."""
+        client = _FakeOpenAI()
+        model = OpenAIChatModel(_settings(chat_temperature=0), client=client)
+
+        [t async for t in model.stream_answer(
+            question="q", context=_context(), system_prompt="s",
+            model_parameters={"temperature": "not-a-number"},
+        )]
+
+        assert client.last_request()["temperature"] == 0
+
+    async def test_an_unrecognised_parameter_key_is_ignored_not_rejected(self) -> None:
+        client = _FakeOpenAI()
+        model = OpenAIChatModel(_settings(), client=client)
+
+        [t async for t in model.stream_answer(
+            question="q", context=_context(), system_prompt="s",
+            model_parameters={"top_p": 0.5},
+        )]
+
+        assert "top_p" not in client.last_request()
+        assert "temperature" not in client.last_request()
+
+
 class TestPromptStructure:
     def test_sources_precede_the_question(self) -> None:
         """A model that reads the question first is likelier to go looking for

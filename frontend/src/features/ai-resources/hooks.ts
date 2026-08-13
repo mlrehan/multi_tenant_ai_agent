@@ -276,6 +276,16 @@ export function useRevokeProviderCredential(tenantId: string) {
   });
 }
 
+export function useSetModelCredential(tenantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { modelConfigurationId: string; providerCredentialId: string | null }) =>
+      api.setModelCredential(tenantId, vars.modelConfigurationId, vars.providerCredentialId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["model-configurations", tenantId] }),
+  });
+}
+
 export function useChatWidgets(tenantId: string | null) {
   return useQuery({
     queryKey: ["chat-widgets", tenantId],

@@ -126,7 +126,7 @@ async function forward(
   request: NextRequest,
   joinedPath: string,
   accessToken: string | undefined,
-  body: string | undefined,
+  body: ArrayBuffer | string | undefined,
 ): Promise<Response> {
   const url = new URL(request.url);
   const target = `${BACKEND_API_URL}/${joinedPath}${url.search}`;
@@ -177,13 +177,32 @@ async function handle(request: NextRequest, pathSegments: string[]): Promise<Nex
   const accessToken = cookieStore.get(ACCESS_TOKEN_COOKIE)?.value;
   const sessionRefreshToken = cookieStore.get(REFRESH_TOKEN_COOKIE)?.value;
 
-  // Read the request body once -- a NextRequest body is a stream and can only
-  // be consumed a single time, but the 401-refresh path below has to replay
-  // the same request.
+  // Read the request body once, **as bytes** -- a NextRequest body is a stream
+  // and can only be consumed a single time, but the 401-refresh path below has
+  // to replay the same request.
+  //
+  // `request.text()` here was silently destroying every binary upload. It
+  // decodes the body as UTF-8 with `errors="replace"`, so each byte that is
+  // not valid UTF-8 became U+FFFD and was then re-encoded as three bytes on
+  // the way upstream. Multipart boundaries and headers are ASCII, so the
+  // request still looked perfectly well-formed and the file still arrived,
+  // saved and processed -- it was the *contents* that were gone. A 792 KB PDF
+  // was stored as 1.43 MB of which 95% of the non-ASCII bytes were
+  // replacement characters, its pages rendering blank, which reads exactly
+  // like an unreadable scan rather than like a bug in the proxy.
+  //
+  // Text bodies are unaffected either way; bytes are correct for both.
   const hasBody = !["GET", "HEAD", "DELETE"].includes(request.method);
-  let outboundBody = hasBody ? await request.text() : undefined;
+  let outboundBody: ArrayBuffer | string | undefined = hasBody
+    ? await request.arrayBuffer()
+    : undefined;
   if (joinedPath === "v1/auth/logout") {
-    outboundBody = substituteRefreshToken(outboundBody, sessionRefreshToken);
+    // The one path that has to look inside the body. It is always small JSON,
+    // so decoding it is safe and deliberate rather than incidental.
+    outboundBody = substituteRefreshToken(
+      outboundBody === undefined ? undefined : new TextDecoder().decode(outboundBody),
+      sessionRefreshToken,
+    );
   }
 
   let upstream = await forward(request, joinedPath, accessToken, outboundBody);

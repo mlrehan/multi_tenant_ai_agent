@@ -591,6 +591,81 @@ possible (that is why it is stored) and it is the right response to an embedding
 change, but it needs a job that reads `document_chunks` and re-embeds in place rather than
 re-running the parse.
 
+## Text-extraction rebuild — after the model-configuration pass
+
+The ingestion pipeline's parsing layer, rebuilt around one rule: **the cheapest parser that
+can read this format well, with the layout models reserved for documents whose structure
+exists only as pixels.** Docling infers structure from a *rendered page*; an OOXML file
+already states in XML that this run is Heading 2 and that this cell belongs to that column,
+so rendering it is slower and *loses* information. Phase 11's `fast_pdf.py` proved the
+principle for text-layer PDFs (1,351×); this extends it to every declared-structure format.
+
+Three tiers, decided from magic bytes rather than the extension or `Content-Type` (both
+caller-controlled):
+
+1. **Declared structure** — CSV, JSON, XML, HTML, EML, DOCX, PPTX, XLSX, and PDFs with a
+   text layer. Real provenance survives into `source_location`: `slide 7`,
+   `Sheet1 rows 41-80`, `Refunds > Eligibility`.
+2. **Drawn structure** — scans, images, text-layer-less PDFs, EPUB, OpenDocument, pre-2007
+   Office. Docling with OCR.
+3. **Ambiguous** — an Office file whose native parse came back nearly empty *and* which
+   contains pictures. That is a scan pasted into Word.
+
+HTML and `.eml` were previously refused at upload with a 415 while the crawler ingested the
+same HTML from a URL — the same content accepted or refused depending on how it arrived.
+
+**ZIP-based documents get bounded before any parser opens them.** OOXML, ODF and EPUB are
+ZIPs, and a ZIP is a decompression instruction written by a stranger; the worker holds
+database credentials and shares a host with other tenants' jobs. Identification reads only
+the central directory (so it can never be made expensive), and expansion is bounded by entry
+count, total uncompressed size and per-entry ratio — small entries exempt from the ratio
+check, because a 40-byte stub expanding to 40 KB is 1000× and harmless.
+
+**Declining is not failing.** The dispatcher falls through on `ParserDeclined` and
+deliberately not on `DocumentParseError`. A file that is not a PDF at all now answers 415
+rather than 422 — a different and more actionable fact than "could not be parsed".
+
+**XML gets the same treatment, and it was not safe.** `structured.py` carried a comment
+asserting that billion-laughs "does not apply" to `ElementTree`. External entities are
+indeed not resolved; internal ones are expanded. Measured against the real parser: a
+~400-byte file with four entity levels produced 30,006 characters, ×10 per further level.
+`_MAX_XML_ELEMENTS` cannot help, because expansion completes during parsing. Now parsed
+with `defusedxml`, which refuses entity declarations outright; XXE `file://` references go
+with it. Ordinary XML is unaffected, which is the half that could have regressed silently.
+
+**`decode_text` consults the file's own declaration** (HTML `<meta charset>`, an email part's
+`charset=`) before falling back to statistical detection, and UTF-8 still wins over both.
+Measured: charset-normalizer decodes a twelve-byte French `café` into an Arabic presentation
+form, and short documents are ordinary here.
+
+### The upload path was destroying binary files
+
+The "unreadable scanned PDF" that motivated the OCR hardening was not scanned. **95% of its
+non-ASCII bytes were U+FFFD.** The Next.js BFF proxy read every request body with
+`await request.text()` — UTF-8 with `errors="replace"` — and re-encoded it upstream.
+Multipart boundaries are ASCII, so the request stayed well-formed and the file arrived,
+saved and processed with only its *contents* gone. A 792 KB PDF became 1.43 MB (1 byte → 3)
+whose pages rendered pure white; the stored file's stale `startxref 792600` still points at
+the original's xref, which confirms the arithmetic independently.
+
+Text-only PDFs and every JSON body survive a UTF-8 round trip unharmed, which is exactly why
+it stayed hidden. Fixed with `request.arrayBuffer()`. Verified by hash: a purpose-built
+799-byte PDF with Flate-compressed streams (a UTF-8 round trip inflates it to 1017 bytes and
+changes its SHA-256) now stores byte-identical and reaches `ready` with its text extracted.
+
+### "Is this account usable?" was written three times and disagreed three ways
+
+`LoginUser` admits `PENDING_VERIFICATION` deliberately (no email provider exists, so nobody
+can ever leave that state). `api/deps/authn.py` asked `is_active`, which does not.
+`workers/job_context.py` demanded `status = 'active'` in raw SQL. Net effect: a
+self-registered account signed in, was refused on every subsequent request, and its uploads
+returned 201 and then sat in `processing` for ever — the job died before it had a document
+row to mark failed. Now one `User.can_authenticate`, asked by all three; suspended,
+deactivated and deleted remain refused everywhere, so scenario 8 is unchanged.
+
+Every pre-existing auth test verified the email first, so the suite never left an account in
+the one state that was broken.
+
 ## Decisions I'm assuming — flag any of these you want changed
 
 Stated up front per this project's own rule ("state assumptions before implementing anything non-obvious" — CLAUDE.md ground rules):

@@ -71,7 +71,10 @@ async def _assert_session_is_live(container: AppContainer, claims: AccessTokenCl
     """
     async with container.uow_factory() as uow:
         user = await uow.users.get_by_id(claims.user_id)
-        if user is None or not user.is_active:
+        # `can_authenticate`, not `is_active`: the same question `LoginUser`
+        # asks when it issues the token. Asking a stricter one here refused
+        # every request from an account that had just signed in successfully.
+        if user is None or not user.can_authenticate:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="session is no longer valid"
             )

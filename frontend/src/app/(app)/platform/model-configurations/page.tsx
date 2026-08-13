@@ -106,6 +106,19 @@ export default function ModelConfigurationsPage() {
   );
 }
 
+/** This month's spend for one tenant against one configuration.
+ *
+ * `undefined` means the API returned no row for this tenant; `null` means it
+ * returned one it could not read. Both render as "?" rather than "0" — a
+ * counter that is merely unavailable must not be shown as "nothing spent",
+ * which is the reading an operator would act on. */
+function formatSpend(used: number | null | undefined, budget: number | null): string {
+  if (used === undefined || used === null) return "?";
+  return budget === null
+    ? used.toLocaleString()
+    : `${used.toLocaleString()}/${budget.toLocaleString()}`;
+}
+
 function ConfigurationRow({ configuration }: { configuration: PlatformModelConfiguration }) {
   const { data: tenantData } = useTenants();
   const archive = useArchiveModelConfiguration();
@@ -141,6 +154,10 @@ function ConfigurationRow({ configuration }: { configuration: PlatformModelConfi
     }
   }
 
+  const usageByTenant = new Map(
+    configuration.tenant_usage.map((u) => [u.tenant_id, u.tokens_used_this_month]),
+  );
+
   return (
     <TableRow>
       <TableCell className="align-top">
@@ -164,6 +181,13 @@ function ConfigurationRow({ configuration }: { configuration: PlatformModelConfi
             {configuration.tenant_ids.map((tenantId) => (
               <Badge key={tenantId} variant="secondary" className="gap-1">
                 {tenantName.get(tenantId) ?? tenantId.slice(0, 8)}
+                {/* Spend sits on the grant, because that is the pair the
+                    budget is actually enforced against -- a per-configuration
+                    total would read like the enforced number while being a
+                    different quantity. */}
+                <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {formatSpend(usageByTenant.get(tenantId), configuration.token_budget_per_month)}
+                </span>
                 <button
                   type="button"
                   aria-label={`Revoke from ${tenantName.get(tenantId) ?? tenantId}`}

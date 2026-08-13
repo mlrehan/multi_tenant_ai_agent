@@ -19,8 +19,10 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from iam_platform.application.ai_resources.exceptions import (
+    ModelConfigurationNotFoundError,
     PermissionDeniedError,
     ProviderCredentialNotFoundError,
+    ProviderCredentialUnusableError,
 )
 from iam_platform.application.ai_resources.ports import (
     AiResourceUowFactory,
@@ -229,4 +231,95 @@ class RevokeProviderCredential:
                 resource_id=credential.id,
                 result="success",
                 metadata={"provider": credential.provider},
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SetModelCredentialCommand:
+    actor_user_id: str
+    tenant_id: str
+    model_configuration_id: str
+    permissions: frozenset[str]
+    #: None detaches, returning this model to the platform's own key.
+    provider_credential_id: str | None
+
+
+class SetModelCredential:
+    """Points one entitled model at this tenant's own provider key -- BYOK.
+
+    **The attachment lives on the grant, not on the configuration**, because a
+    configuration is platform-owned and granted to many tenants: a credential
+    column on it could only ever name one key for everyone, which is the
+    opposite of "bill me for my own questions". `answer_question.py`'s
+    `_resolve_credential` reads it back from the same place.
+
+    Three checks, and the database independently enforces the one that matters
+    most:
+    1. **`tenant.provider_credentials.manage`** -- the same permission that
+       creates the credential. Deciding a key pays for something is the same
+       authority as holding the key; a separate permission would imply the two
+       could sensibly be held apart.
+    2. **The credential must exist, be this tenant's, and not be revoked.**
+       Attaching a revoked credential would produce a model that fails on its
+       next question, discovered by a customer rather than here.
+    3. **The tenant must actually hold the grant** -- a zero-row update is
+       reported as *not found*, never as a failed write, so a configuration
+       they were never granted stays unprovable.
+
+    Cross-tenant attachment is refused by `fk_tenant_model_configurations_provider_credential`
+    even if all three checks above were somehow bypassed: the FK is composite on
+    `(tenant_id, provider_credential_id)` and `tenant_id` here is NOT NULL, so
+    another tenant's credential -- and a platform-owned one -- cannot be
+    referenced at all.
+    """
+
+    def __init__(self, uow_factory: AiResourceUowFactory) -> None:
+        self._uow_factory = uow_factory
+
+    async def execute(self, command: SetModelCredentialCommand) -> None:
+        actor_id = UUID(command.actor_user_id)
+        tenant_id = UUID(command.tenant_id)
+        model_configuration_id = UUID(command.model_configuration_id)
+
+        async with self._uow_factory(actor_id, tenant_id) as uow:
+            if MANAGE_CREDENTIALS_PERMISSION not in command.permissions:
+                raise PermissionDeniedError(MANAGE_CREDENTIALS_PERMISSION)
+
+            credential_id: UUID | None = None
+            if command.provider_credential_id is not None:
+                credential_id = UUID(command.provider_credential_id)
+                # RLS scopes this read to the tenant, so another tenant's
+                # credential is simply absent -- reported as *not found*, which
+                # is also what a deleted one looks like. Neither is provable.
+                credential = await uow.provider_credentials.get_by_id(credential_id)
+                if credential is None or credential.tenant_id != tenant_id:
+                    raise ProviderCredentialNotFoundError(str(credential_id))
+                if not credential.is_active:
+                    raise ProviderCredentialUnusableError(
+                        "this provider credential has been revoked and cannot be "
+                        "attached to a model"
+                    )
+
+            matched = await uow.model_configurations.set_credential_for_tenant(
+                tenant_id=tenant_id,
+                model_configuration_id=model_configuration_id,
+                provider_credential_id=credential_id,
+            )
+            if matched == 0:
+                raise ModelConfigurationNotFoundError(str(model_configuration_id))
+            await uow.audit.record(
+                actor_user_id=actor_id,
+                effective_user_id=actor_id,
+                tenant_id=tenant_id,
+                action="ai_resources.model_credential_set",
+                resource_type="model_configuration",
+                resource_id=model_configuration_id,
+                result="success",
+                # Which credential, never any part of it. Recorded because
+                # this is the moment the payer for a model changes hands.
+                metadata={
+                    "provider_credential_id": (
+                        str(credential_id) if credential_id else None
+                    )
+                },
             )

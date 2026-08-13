@@ -18,10 +18,18 @@ from iam_platform.application.ai_resources.answer_question import (
     AnswerQuestionQuery,
 )
 from iam_platform.application.ai_resources.exceptions import (
+    AssistantNotFoundError,
+    ModelConfigurationNotFoundError,
     PermissionDeniedError,
     QuestionTooLongError,
 )
-from iam_platform.domain.ai_resources.entities import KnowledgeBase, ResourceVisibility
+from iam_platform.domain.ai_resources.entities import (
+    AiAssistant,
+    AssistantStatus,
+    KnowledgeBase,
+    ModelConfiguration,
+    ResourceVisibility,
+)
 from iam_platform.domain.tenancy.entities import MembershipStatus, TenantMembership
 from tests.unit.ai_resources.fakes import FakeAiResourceUnitOfWork
 from tests.unit.ai_resources.test_answer_question import (
@@ -62,12 +70,18 @@ def _seed(uow: FakeAiResourceUnitOfWork) -> tuple[UUID, UUID, KnowledgeBase]:
     return tenant_id, user_id, kb
 
 
-def _build(uow: FakeAiResourceUnitOfWork, search: object, chat: object) -> AnswerQuestion:
+def _build(
+    uow: FakeAiResourceUnitOfWork,
+    search: object,
+    chat: object,
+    token_usage: object | None = None,
+) -> AnswerQuestion:
     return AnswerQuestion(
         lambda _u, _t: uow,  # type: ignore[arg-type,return-value]
         search,  # type: ignore[arg-type]
         _OrderPreservingReranker(),
         chat,  # type: ignore[arg-type]
+        token_usage=token_usage,  # type: ignore[arg-type]
     )
 
 
@@ -78,6 +92,7 @@ def _query(tenant_id: UUID, user_id: UUID, kb: KnowledgeBase, question: str, **k
         knowledge_base_id=str(kb.id),
         permissions=kw.get("permissions", QUERY_PERMISSION),  # type: ignore[arg-type]
         question=question,
+        assistant_id=kw.get("assistant_id"),  # type: ignore[arg-type]
     )
 
 
@@ -218,3 +233,199 @@ class TestQuestionValidation:
 
         with pytest.raises(QuestionTooLongError, match="at most"):
             await use_case.execute(_query(tenant_id, user_id, kb, "x" * 5000))
+
+
+def _seed_assistant(
+    uow: FakeAiResourceUnitOfWork,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID,
+    model_name: str = "gpt-5.5",
+    parameters: dict[str, object] | None = None,
+    status: AssistantStatus = AssistantStatus.PUBLISHED,
+    system_prompt: str | None = None,
+    granted: bool = True,
+    token_budget_per_month: int | None = None,
+) -> AiAssistant:
+    """An assistant plus the model configuration it points at, granted to the
+    tenant by default -- the ordinary, working case. Tests that need the
+    unentitled or archived case override `granted`/`status` explicitly."""
+    configuration = ModelConfiguration(
+        id=uuid4(),
+        tenant_id=None,
+        model_name=model_name,
+        parameters=parameters or {},
+        token_budget_per_month=token_budget_per_month,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    uow.model_configurations.by_id[configuration.id] = configuration
+    if granted:
+        uow.model_configurations.grant(
+            tenant_id=tenant_id, model_configuration_id=configuration.id
+        )
+
+    assistant = AiAssistant(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        name="Support Bot",
+        owner_membership_id=membership_id,
+        visibility=ResourceVisibility.TENANT,
+        model_configuration_id=configuration.id,
+        status=status,
+        system_prompt=system_prompt,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    uow.assistants.by_id[assistant.id] = assistant
+    return assistant
+
+
+class TestAssistantSelectsTheModel:
+    """`assistant_id` is the fix for a real gap: `model_configuration_id` and
+    `system_prompt` were stored, entitlement-checked and shown in the
+    console's picker, and then never read again at answer time. These tests
+    prove they now are -- and prove the three ways that can still be refused.
+    """
+
+    async def test_the_assistants_model_and_parameters_reach_the_chat_call(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id, user_id, kb = _seed(uow)
+        membership_id = next(iter(uow.tenant_memberships.by_id))
+        assistant = _seed_assistant(
+            uow,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+            model_name="gpt-5.5-mini",
+            parameters={"temperature": 0.2},
+        )
+        chat = _FakeChatModel()
+        use_case = _build(uow, _FakeVectorSearch(chunks=[_chunk("Refunds within 30 days.")]), chat)
+
+        result = await use_case.execute(
+            _query(tenant_id, user_id, kb, "Refunds?", assistant_id=str(assistant.id))
+        )
+        [token async for token in result.tokens]
+
+        assert chat.model_calls == [("gpt-5.5-mini", {"temperature": 0.2})]
+
+    async def test_the_assistants_system_prompt_is_appended_not_substituted(self) -> None:
+        """The grounding rules (citation, no outside knowledge, fenced sources
+        are never instructions) are this pipeline's actual safety property --
+        a tenant-supplied prompt must not be able to remove them."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id, user_id, kb = _seed(uow)
+        membership_id = next(iter(uow.tenant_memberships.by_id))
+        assistant = _seed_assistant(
+            uow,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+            system_prompt="Answer as a formal support agent named Ada.",
+        )
+        chat = _FakeChatModel()
+        use_case = _build(uow, _FakeVectorSearch(chunks=[_chunk("Refunds within 30 days.")]), chat)
+
+        result = await use_case.execute(
+            _query(tenant_id, user_id, kb, "Refunds?", assistant_id=str(assistant.id))
+        )
+        [token async for token in result.tokens]
+
+        _question, _context, system_prompt = chat.calls[0]
+        assert "only information stated in the sources" in system_prompt.lower()
+        assert "never instructions" in system_prompt.lower()
+        assert "Ada" in system_prompt
+
+    async def test_omitting_assistant_id_is_unaffected_by_any_of_this(self) -> None:
+        """The regression guard: a plain KB question -- what the public widget
+        always sends, and what the Ask panel sent before this field existed --
+        must reach the model exactly as it always did."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id, user_id, kb = _seed(uow)
+        membership_id = next(iter(uow.tenant_memberships.by_id))
+        # An assistant exists in the tenant but is never named.
+        _seed_assistant(uow, tenant_id=tenant_id, membership_id=membership_id)
+        chat = _FakeChatModel()
+        use_case = _build(uow, _FakeVectorSearch(chunks=[_chunk("Refunds within 30 days.")]), chat)
+
+        result = await use_case.execute(_query(tenant_id, user_id, kb, "Refunds?"))
+        [token async for token in result.tokens]
+
+        assert chat.model_calls == [(None, None)]
+        assert "only information stated in the sources" in chat.calls[0][2].lower()
+        assert "Ada" not in chat.calls[0][2]
+
+    async def test_an_unentitled_model_configuration_is_refused(self) -> None:
+        """Entitlement is re-checked here, not trusted from the stored row --
+        a platform admin can revoke a grant at any time after an assistant was
+        created, and a stale `model_configuration_id` must not still work."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id, user_id, kb = _seed(uow)
+        membership_id = next(iter(uow.tenant_memberships.by_id))
+        assistant = _seed_assistant(
+            uow, tenant_id=tenant_id, membership_id=membership_id, granted=False
+        )
+        chat = _FakeChatModel()
+        use_case = _build(uow, _FakeVectorSearch(chunks=[_chunk("x")]), chat)
+
+        with pytest.raises(ModelConfigurationNotFoundError):
+            await use_case.execute(
+                _query(tenant_id, user_id, kb, "anything", assistant_id=str(assistant.id))
+            )
+
+        assert chat.calls == []
+
+    async def test_an_archived_assistant_is_refused(self) -> None:
+        """Off the record for new use, mirroring an archived model
+        configuration: unavailable for new assignments, harmless to the
+        assistants that already used it -- except an archived assistant has
+        no other assistant depending on it, so refusing it outright is safe."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id, user_id, kb = _seed(uow)
+        membership_id = next(iter(uow.tenant_memberships.by_id))
+        assistant = _seed_assistant(
+            uow, tenant_id=tenant_id, membership_id=membership_id,
+            status=AssistantStatus.ARCHIVED,
+        )
+        chat = _FakeChatModel()
+        use_case = _build(uow, _FakeVectorSearch(chunks=[_chunk("x")]), chat)
+
+        with pytest.raises(AssistantNotFoundError):
+            await use_case.execute(
+                _query(tenant_id, user_id, kb, "anything", assistant_id=str(assistant.id))
+            )
+
+        assert chat.calls == []
+
+    async def test_a_draft_assistant_is_still_usable_for_testing(self) -> None:
+        """Deliberately allowed: the Ask panel is where an owner tries an
+        assistant out before publishing it, and refusing DRAFT here would
+        defeat that."""
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id, user_id, kb = _seed(uow)
+        membership_id = next(iter(uow.tenant_memberships.by_id))
+        assistant = _seed_assistant(
+            uow, tenant_id=tenant_id, membership_id=membership_id,
+            status=AssistantStatus.DRAFT,
+        )
+        chat = _FakeChatModel()
+        use_case = _build(uow, _FakeVectorSearch(chunks=[_chunk("Refunds within 30 days.")]), chat)
+
+        result = await use_case.execute(
+            _query(tenant_id, user_id, kb, "Refunds?", assistant_id=str(assistant.id))
+        )
+        [token async for token in result.tokens]
+
+        assert chat.model_calls == [("gpt-5.5", None)]
+
+    async def test_an_unknown_assistant_id_is_refused(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id, user_id, kb = _seed(uow)
+        chat = _FakeChatModel()
+        use_case = _build(uow, _FakeVectorSearch(chunks=[_chunk("x")]), chat)
+
+        with pytest.raises(AssistantNotFoundError):
+            await use_case.execute(
+                _query(tenant_id, user_id, kb, "anything", assistant_id=str(uuid4()))
+            )
+
+        assert chat.calls == []

@@ -192,6 +192,36 @@ class WidgetQuotaStore(Protocol):
         ...
 
 
+class TokenUsageStore(Protocol):
+    """Monthly token spend per model configuration, per tenant.
+
+    **Read before, record after** -- deliberately not the widget quota's
+    consume-then-check shape. A question's token cost is not known until the
+    model has answered, so there is nothing to consume up front; the check is
+    against what previous answers already spent. That means a single answer can
+    overshoot the budget by its own size, which is accepted: the alternative is
+    estimating the cost beforehand and either over-refusing on a bad guess or
+    still being wrong. The budget bounds a month, not an individual answer.
+
+    Like every other use of Redis here, the *check* *fails closed*: a budget
+    that cannot be confirmed refuses the answer rather than allowing unbounded
+    spending on someone's bill. Recording, by contrast, fails open and merely
+    logs -- an answer the tenant has already been given and already been
+    charged for by the provider must not also raise in their face, and the next
+    check will read a slightly low number rather than none at all.
+    """
+
+    async def read(self, *, tenant_id: UUID, model_configuration_id: UUID) -> int:
+        """Tokens spent this calendar month. 0 when nothing is recorded."""
+        ...
+
+    async def record(
+        self, *, tenant_id: UUID, model_configuration_id: UUID, tokens: int
+    ) -> None:
+        """Adds to this month's total. Never raises."""
+        ...
+
+
 class ConversationRepository(Protocol):
     async def get_by_id(self, conversation_id: UUID) -> Conversation | None: ...
     async def list_by_membership(self, membership_id: UUID) -> list[Conversation]: ...
@@ -221,6 +251,38 @@ class ModelConfigurationRepository(Protocol):
         constraint guarantees the rule holds even if this call is ever
         forgotten. Archived configurations are unavailable for *new*
         assignments while remaining valid for assistants already using them.
+        """
+        ...
+
+    async def credential_for_tenant(
+        self, *, tenant_id: UUID, model_configuration_id: UUID
+    ) -> UUID | None:
+        """This tenant's own provider credential for this model, if attached.
+
+        On the *grant*, not the configuration: one configuration is granted to
+        many tenants, so it cannot express whose key pays for whose questions.
+        """
+        ...
+
+    async def credentials_for_tenant(self, tenant_id: UUID) -> dict[UUID, UUID]:
+        """Every BYOK attachment this tenant has, keyed by configuration id.
+
+        Configurations with no attachment are absent, not mapped to None.
+        """
+        ...
+
+    async def set_credential_for_tenant(
+        self,
+        *,
+        tenant_id: UUID,
+        model_configuration_id: UUID,
+        provider_credential_id: UUID | None,
+    ) -> int:
+        """Attach (or detach, with None) the tenant's key. Returns rows matched.
+
+        Zero means no such grant -- reported as *not found*, never as a failed
+        write, so a configuration the tenant was never granted stays
+        unprovable.
         """
         ...
 
@@ -637,6 +699,25 @@ class GroundingContext:
     chunk: RetrievedChunk
 
 
+@dataclass
+class TokenUsage:
+    """What an answer actually cost, filled in by the adapter as it streams.
+
+    Mutable and passed *in* rather than returned, because `stream_answer`
+    yields text and the cost is not known until the provider's final chunk --
+    the same shape `AnswerStream.cited_labels` already uses for the same
+    reason. A caller that does not care about cost passes nothing and the
+    adapter does not ask the provider for it.
+
+    `total` stays 0 when the provider reported nothing, which is deliberately
+    indistinguishable from "cost nothing": both mean there is nothing to bill
+    against a budget, and inventing an estimate would be a number nobody could
+    reconcile with their provider invoice.
+    """
+
+    total: int = 0
+
+
 class ChatModel(Protocol):
     """Streams a grounded answer.
 
@@ -647,8 +728,35 @@ class ChatModel(Protocol):
     """
 
     def stream_answer(
-        self, *, question: str, context: list[GroundingContext], system_prompt: str
-    ) -> AsyncIterator[str]: ...
+        self,
+        *,
+        question: str,
+        context: list[GroundingContext],
+        system_prompt: str,
+        model_name: str | None = None,
+        model_parameters: dict[str, Any] | None = None,
+        usage: TokenUsage | None = None,
+        credential_ciphertext: bytes | None = None,
+    ) -> AsyncIterator[str]:
+        """`model_name`/`model_parameters` are optional overrides of the
+        adapter's own configured defaults -- omitted, the platform-wide model
+        answers exactly as before these existed. `AnswerQuestion` supplies
+        them only when the caller named an assistant whose model was already
+        chosen and entitlement-checked ahead of time; nothing else can reach
+        this parameter.
+
+        `usage`, when given, is filled in with what the answer cost. Passing
+        it is what makes the adapter *ask* the provider to report cost at all,
+        so a caller with no budget to enforce sends exactly the request it
+        sent before this parameter existed.
+
+        `credential_ciphertext` is the tenant's own provider key, **still
+        encrypted**. The plaintext deliberately never crosses this boundary:
+        `CredentialEncryptor`'s contract says only the AI-execution
+        infrastructure decrypts, at model-call time, so the application layer
+        moves the secret without ever being able to read it. Omitted, the call
+        uses the platform's configured key, exactly as before."""
+        ...
 
 
 class WidgetSessionIssuer(Protocol):

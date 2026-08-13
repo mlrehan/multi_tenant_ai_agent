@@ -38,7 +38,34 @@ class User(Entity):
 
     @property
     def is_active(self) -> bool:
+        """Fully activated. Read by callers that need "a finished account",
+        not by callers deciding whether a request may proceed -- see
+        `can_authenticate`, which is a strictly weaker and different question.
+        """
         return self.status == UserStatus.ACTIVE and self.deleted_at is None
+
+    @property
+    def can_authenticate(self) -> bool:
+        """Whether this account may hold a session at all.
+
+        Deliberately admits `PENDING_VERIFICATION`: this deployment's email
+        sender only logs, so nobody can complete verification, and refusing
+        unverified accounts would lock out every self-registered user with no
+        way back. `mark_email_verified` promotes them if a real provider is
+        ever wired in.
+
+        **This exists because login and the per-request check disagreed.**
+        `LoginUser` allowed a pending account through and the freshness check
+        in `api/deps/authn.py` used `is_active`, which does not -- so a
+        self-registered user signed in successfully and was then refused on
+        every subsequent request with an opaque "session is no longer valid".
+        Both paths now ask this one question, so they cannot drift apart
+        again; that drift, not either rule on its own, was the bug.
+        """
+        return (
+            self.status not in (UserStatus.SUSPENDED, UserStatus.DEACTIVATED)
+            and self.deleted_at is None
+        )
 
     def mark_email_verified(self, *, now: datetime) -> None:
         self.email_verified_at = now

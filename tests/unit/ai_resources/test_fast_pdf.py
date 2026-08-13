@@ -185,7 +185,7 @@ class _Recording:
 class TestDispatcherFallthrough:
     async def test_a_decline_falls_through_to_the_next_parser(self) -> None:
         docling = _Recording()
-        dispatcher = ParserDispatcher([FastPdfParser(), docling])  # type: ignore[list-item]
+        dispatcher = ParserDispatcher(docling=docling)
 
         blocks = await dispatcher.parse(
             data=_pdf(["", ""]), content_type="application/pdf", filename="scan.pdf"
@@ -198,7 +198,7 @@ class TestDispatcherFallthrough:
         """The whole point: the expensive parser must not run when the cheap
         one succeeded. Measured at ~11ms versus ~15s on a one-page file."""
         docling = _Recording()
-        dispatcher = ParserDispatcher([FastPdfParser(), docling])  # type: ignore[list-item]
+        dispatcher = ParserDispatcher(docling=docling)
 
         await dispatcher.parse(
             data=_pdf(["Real text, comfortably above the threshold for a page."]),
@@ -208,19 +208,40 @@ class TestDispatcherFallthrough:
 
         assert not docling.called
 
-    async def test_a_broken_file_is_not_retried_by_the_next_parser(self) -> None:
+    async def test_a_corrupt_pdf_is_not_retried_by_the_next_parser(self) -> None:
+        """Truncated *after* the signature, so it really is a PDF and really
+        is broken. It must fail with its own reason rather than be handed to
+        OCR, which would also fail, slowly, and report something less
+        useful."""
         docling = _Recording()
-        dispatcher = ParserDispatcher([FastPdfParser(), docling])  # type: ignore[list-item]
+        dispatcher = ParserDispatcher(docling=docling)
 
         with pytest.raises(DocumentParseError):
             await dispatcher.parse(
-                data=b"not a pdf", content_type="application/pdf", filename="broken.pdf"
+                data=b"%PDF-1.7\n" + b"garbage" * 50,
+                content_type="application/pdf",
+                filename="broken.pdf",
+            )
+
+        assert not docling.called
+
+    async def test_a_file_that_is_not_a_pdf_at_all_is_refused_as_unsupported(self) -> None:
+        """Distinct from the case above, and the distinction is the point of
+        content-based detection: this file is not a damaged PDF, it is not a
+        PDF. Saying "unsupported" is both truthful and more actionable than
+        "could not be parsed"."""
+        docling = _Recording()
+        dispatcher = ParserDispatcher(docling=docling)
+
+        with pytest.raises(UnsupportedDocumentTypeError):
+            await dispatcher.parse(
+                data=b"not a pdf", content_type="application/pdf", filename="mislabelled.pdf"
             )
 
         assert not docling.called
 
     async def test_an_unclaimed_format_still_raises(self) -> None:
-        dispatcher = ParserDispatcher([FastPdfParser()])
+        dispatcher = ParserDispatcher()
 
         with pytest.raises(UnsupportedDocumentTypeError):
             await dispatcher.parse(

@@ -421,6 +421,20 @@ class ListModelConfigurationsQuery:
     permissions: frozenset[str]
 
 
+@dataclass(frozen=True, slots=True)
+class TenantModelOption:
+    """One assignable model, plus whose key pays for it.
+
+    The credential is carried here rather than on `ModelConfiguration` because
+    it is a property of *this tenant's grant*, not of the shared configuration
+    -- the same model answers on a different account for a different tenant.
+    """
+
+    configuration: ModelConfiguration
+    #: None means the platform's key answers, which is every grant's default.
+    provider_credential_id: UUID | None
+
+
 class ListModelConfigurations:
     """Exactly what this tenant may assign -- nothing decorative.
 
@@ -434,7 +448,9 @@ class ListModelConfigurations:
     def __init__(self, uow_factory: AiResourceUowFactory) -> None:
         self._uow_factory = uow_factory
 
-    async def execute(self, query: ListModelConfigurationsQuery) -> list[ModelConfiguration]:
+    async def execute(
+        self, query: ListModelConfigurationsQuery
+    ) -> list[TenantModelOption]:
         actor_id = UUID(query.actor_user_id)
         tenant_id = UUID(query.tenant_id)
 
@@ -444,4 +460,13 @@ class ListModelConfigurations:
             )
             if requester is None:
                 return []
-            return await uow.model_configurations.list_available_to_tenant(tenant_id)
+            configurations = await uow.model_configurations.list_available_to_tenant(
+                tenant_id
+            )
+            attached = await uow.model_configurations.credentials_for_tenant(tenant_id)
+            return [
+                TenantModelOption(
+                    configuration=c, provider_credential_id=attached.get(c.id)
+                )
+                for c in configurations
+            ]

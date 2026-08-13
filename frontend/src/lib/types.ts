@@ -261,6 +261,14 @@ export interface ChatWidget {
 export interface ModelConfiguration {
   id: string;
   model_name: string;
+  /** The platform's monthly cap on this model, and what this tenant has spent
+   *  against it. `tokens_used_this_month` is null when the counter could not
+   *  be read — deliberately distinct from 0. */
+  token_budget_per_month: number | null;
+  tokens_used_this_month: number | null;
+  /** This tenant's own provider key for this model (BYOK), if attached.
+   *  null means the platform's key answers and the platform is billed. */
+  provider_credential_id: string | null;
 }
 
 /** The platform-side view: the catalogue, plus who may use each entry. */
@@ -276,6 +284,10 @@ export interface PlatformModelConfiguration {
   archived_at: string | null;
   /** Tenants currently granted this configuration. */
   tenant_ids: string[];
+  /** Current-month spend, per granted tenant. `tokens_used_this_month` is
+   *  null when the counter could not be read — deliberately distinct from 0,
+   *  which would claim nothing has been spent. */
+  tenant_usage: { tenant_id: string; tokens_used_this_month: number | null }[];
   created_at: string;
 }
 

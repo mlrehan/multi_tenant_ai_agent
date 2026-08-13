@@ -15,6 +15,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -28,6 +29,7 @@ from iam_platform.application.ai_resources.answer_question import (
     AnswerQuestionQuery,
 )
 from iam_platform.application.ai_resources.exceptions import (
+    AiResourceError,
     DocumentTooLargeError,
     UnsupportedDocumentTypeError,
 )
@@ -46,6 +48,7 @@ from iam_platform.application.ai_resources.manage_assistant import (
     ListModelConfigurationsQuery,
     PublishAssistant,
     PublishAssistantCommand,
+    TenantModelOption,
     UpdateAssistant,
     UpdateAssistantCommand,
 )
@@ -107,6 +110,8 @@ from iam_platform.application.ai_resources.manage_provider_credential import (
     RevokeProviderCredentialCommand,
     RotateProviderCredential,
     RotateProviderCredentialCommand,
+    SetModelCredential,
+    SetModelCredentialCommand,
     StoreProviderCredential,
     StoreProviderCredentialCommand,
 )
@@ -116,7 +121,6 @@ from iam_platform.domain.ai_resources.entities import (
     ChatWidget,
     DataSource,
     KnowledgeBase,
-    ModelConfiguration,
 )
 
 logger = logging.getLogger("iam_platform.api.v1.assistants")
@@ -146,11 +150,40 @@ def _assistant_response(assistant: AiAssistant) -> schemas.AssistantResponse:
     )
 
 
-def _model_configuration_response(mc: ModelConfiguration) -> schemas.ModelConfigurationResponse:
+def _model_configuration_response(
+    option: TenantModelOption, used: int | None = None
+) -> schemas.ModelConfigurationResponse:
     return schemas.ModelConfigurationResponse(
-        id=mc.id,
-        model_name=mc.model_name,
+        id=option.configuration.id,
+        model_name=option.configuration.model_name,
+        token_budget_per_month=option.configuration.token_budget_per_month,
+        tokens_used_this_month=used,
+        provider_credential_id=option.provider_credential_id,
     )
+
+
+async def _tenant_spend(
+    container: AppContainer, tenant_id: str, option: TenantModelOption
+) -> int | None:
+    """This tenant's current-month spend against one model.
+
+    **Degrades instead of failing**, the same asymmetry as the platform screen
+    and for the same reason: refusing to *spend* on an unconfirmable budget
+    protects someone's bill, but refusing to render a list of models over an
+    unreadable counter protects nothing and takes the console down with Redis.
+    """
+    try:
+        return await container.token_usage.read(
+            tenant_id=UUID(tenant_id),
+            model_configuration_id=option.configuration.id,
+        )
+    except Exception:
+        logger.warning(
+            "token usage unavailable for tenant %s / configuration %s",
+            tenant_id,
+            option.configuration.id,
+        )
+        return None
 
 
 def _embed_snippet(widget: ChatWidget, base_url: str) -> str:
@@ -388,7 +421,37 @@ async def list_model_configurations(
         )
     )
     return schemas.ModelConfigurationListResponse(
-        model_configurations=[_model_configuration_response(c) for c in configs]
+        model_configurations=[
+            _model_configuration_response(c, await _tenant_spend(container, tenant_id, c))
+            for c in configs
+        ]
+    )
+
+
+@router.put(
+    "/model-configurations/{model_configuration_id}/credential",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def set_model_credential(
+    tenant_id: str,
+    model_configuration_id: str,
+    body: schemas.SetModelCredentialRequest,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> None:
+    """Bring-your-own-key: bill this tenant's own provider account for this model."""
+    use_case = SetModelCredential(container.ai_resource_uow_factory)
+    await use_case.execute(
+        SetModelCredentialCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            model_configuration_id=model_configuration_id,
+            permissions=permissions,
+            provider_credential_id=(
+                str(body.provider_credential_id) if body.provider_credential_id else None
+            ),
+        )
     )
 
 
@@ -953,6 +1016,7 @@ async def answer_question(
         container.vector_search_client,
         container.reranker,
         container.chat_model,
+        token_usage=container.token_usage,
     )
     result = await use_case.execute(
         AnswerQuestionQuery(
@@ -961,6 +1025,7 @@ async def answer_question(
             knowledge_base_id=knowledge_base_id,
             permissions=permissions,
             question=body.question,
+            assistant_id=str(body.assistant_id) if body.assistant_id else None,
         )
     )
 
@@ -982,10 +1047,24 @@ async def answer_question(
         try:
             async for token in result.tokens:
                 yield _sse("token", {"text": token})
+        except AiResourceError as exc:
+            # An application error mid-stream carries a message written *for*
+            # the caller and safe to show them -- "your provider credential was
+            # rejected" is the difference between a tenant admin fixing a key in
+            # thirty seconds and opening a support ticket. These are the same
+            # messages `exception_handlers.py` would have returned had the
+            # failure happened before the response began; the only reason they
+            # arrive as an event is that some of them (a provider refusing a
+            # key) are unknowable until the provider is actually called.
+            logger.warning(
+                "answer stream failed for knowledge base %s: %s", knowledge_base_id, exc
+            )
+            yield _sse("error", {"detail": str(exc)})
         except Exception:
-            # The response has already begun, so the status code is long since
-            # sent -- an exception here cannot become a 500. Emitting an
-            # explicit error event is the only way the client learns the answer
+            # Anything else stays opaque. The response has already begun, so the
+            # status code is long since sent -- an exception here cannot become a
+            # 500, and an unexpected error's text is not written for a tenant to
+            # read. The explicit event is still how the client learns the answer
             # is incomplete rather than merely short.
             logger.exception("answer stream failed for knowledge base %s", knowledge_base_id)
             yield _sse("error", {"detail": "the answer could not be completed"})

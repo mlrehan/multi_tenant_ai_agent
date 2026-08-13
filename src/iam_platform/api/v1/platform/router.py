@@ -10,6 +10,8 @@ of that computation (Phase 6 scope note, CLAUDE.md).
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Response, status
 
 from iam_platform.api.deps.authn import get_container, get_current_claims
@@ -80,6 +82,8 @@ from iam_platform.application.platform_authz.manage_users import (
     UpdateUserCommand,
     UserSummary,
 )
+
+logger = logging.getLogger("iam_platform.api.v1.platform")
 
 router = APIRouter(prefix="/v1/platform", tags=["platform"])
 
@@ -457,6 +461,7 @@ async def get_my_effective_platform_permissions(
 
 def _platform_model_configuration_response(
     item: ModelConfigurationWithAccess,
+    usage: list[schemas.TenantTokenUsageResponse] | None = None,
 ) -> schemas.PlatformModelConfigurationResponse:
     configuration = item.configuration
     return schemas.PlatformModelConfigurationResponse(
@@ -468,8 +473,41 @@ def _platform_model_configuration_response(
         owning_tenant_id=configuration.tenant_id,
         archived_at=configuration.archived_at,
         tenant_ids=item.tenant_ids,
+        tenant_usage=usage or [],
         created_at=configuration.created_at,
     )
+
+
+async def _tenant_usage(
+    container: AppContainer, item: ModelConfigurationWithAccess
+) -> list[schemas.TenantTokenUsageResponse]:
+    """This month's spend for each tenant granted this configuration.
+
+    **Degrades instead of failing, unlike the enforcement path**, and the
+    asymmetry is deliberate: refusing to *spend* on an unconfirmable budget
+    protects someone's bill, but refusing to *render a page* over the same
+    unavailable counter protects nothing and takes the console down with
+    Redis. An unreadable figure is reported as `None` and shown as unknown.
+    """
+    results: list[schemas.TenantTokenUsageResponse] = []
+    for tenant_id in item.tenant_ids:
+        try:
+            used: int | None = await container.token_usage.read(
+                tenant_id=tenant_id, model_configuration_id=item.configuration.id
+            )
+        except Exception:
+            logger.warning(
+                "token usage unavailable for tenant %s / configuration %s",
+                tenant_id,
+                item.configuration.id,
+            )
+            used = None
+        results.append(
+            schemas.TenantTokenUsageResponse(
+                tenant_id=tenant_id, tokens_used_this_month=used
+            )
+        )
+    return results
 
 
 @router.get(
@@ -489,7 +527,10 @@ async def list_platform_model_configurations(
         )
     )
     return schemas.PlatformModelConfigurationListResponse(
-        model_configurations=[_platform_model_configuration_response(i) for i in items]
+        model_configurations=[
+            _platform_model_configuration_response(i, await _tenant_usage(container, i))
+            for i in items
+        ]
     )
 
 

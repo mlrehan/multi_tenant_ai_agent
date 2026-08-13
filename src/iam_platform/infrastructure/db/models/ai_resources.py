@@ -118,6 +118,18 @@ class TenantModelConfigurationModel(Base):
             # archiving is the supported way to retire one.
             ondelete="RESTRICT",
         ),
+        # Composite on purpose, and this is what confines BYOK to its owner:
+        # `tenant_id` here is NOT NULL, so a row can only ever match a
+        # credential of the *same* tenant. Another tenant's credential, and a
+        # platform-owned one (`tenant_id IS NULL`), are both unreachable no
+        # matter what id a request carries -- enforced by Postgres rather than
+        # by remembering to check (docs/18).
+        ForeignKeyConstraint(
+            ["tenant_id", "provider_credential_id"],
+            ["provider_credentials.tenant_id", "provider_credentials.id"],
+            name="fk_tenant_model_configurations_provider_credential",
+            ondelete="RESTRICT",
+        ),
         Index("ix_tenant_model_configurations_tenant_id", "tenant_id"),
         Index(
             "ix_tenant_model_configurations_model_configuration_id",
@@ -127,6 +139,12 @@ class TenantModelConfigurationModel(Base):
 
     id: Mapped[uuid.UUID] = _pk()
     tenant_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    #: The tenant's own provider key for this model, if they supplied one.
+    #: NULL -- the default and the state of every pre-existing grant -- means
+    #: the platform's key answers and the platform is billed.
+    provider_credential_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
     model_configuration_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), nullable=False
     )

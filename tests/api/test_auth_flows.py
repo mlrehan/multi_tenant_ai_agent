@@ -65,6 +65,40 @@ async def test_login_with_wrong_password_returns_401(client: httpx.AsyncClient, 
     assert resp.status_code == 401
 
 
+async def test_an_unverified_account_can_actually_use_its_token(client: httpx.AsyncClient) -> None:
+    """The account a real person gets by signing up, used the way they would.
+
+    `LoginUser` deliberately admits `PENDING_VERIFICATION` -- this deployment
+    has no email provider, so requiring verification would lock out every
+    self-registered user permanently. But the per-request freshness check in
+    `api/deps/authn.py` asked `is_active`, which requires `ACTIVE`, so login
+    handed back a token that every subsequent request refused with an opaque
+    "session is no longer valid". Signing up through the console produced an
+    account that appeared to work and then did nothing.
+
+    Nothing caught it because every other test in this file verifies the email
+    first -- so the bug lived in the one state the suite never left an account
+    in. This test deliberately does **not** verify.
+    """
+    resp = await client.post(
+        "/v1/auth/register",
+        json={"email": "unverified-usable@example.com", "password": "Correct-Horse-9!"},
+    )
+    assert resp.status_code == 202
+
+    resp = await client.post(
+        "/v1/auth/login",
+        json={"email": "unverified-usable@example.com", "password": "Correct-Horse-9!"},
+    )
+    assert resp.status_code == 200
+    access_token = resp.json()["tokens"]["access_token"]
+
+    # The point of the test: the token login just issued must be accepted.
+    resp = await client.get("/v1/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["email"] == "unverified-usable@example.com"
+
+
 async def test_login_with_nonexistent_email_returns_401_not_500(client: httpx.AsyncClient) -> None:
     """Regression test for a real bug found while building the admin-panel
     frontend against this backend: `login_user.py`'s account-enumeration

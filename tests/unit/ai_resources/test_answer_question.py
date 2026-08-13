@@ -35,15 +35,31 @@ QUERY_PERMISSION = frozenset({"tenant.knowledge_bases.query"})
 
 @dataclass
 class _FakeChatModel:
-    """Records everything it was asked to answer from."""
+    """Records everything it was asked to answer from, including the
+    per-call model overrides an assistant may supply."""
 
     reply: str = "The refund window is 30 days [1]."
     calls: list[tuple[str, list[GroundingContext], str]] = field(default_factory=list)
+    model_calls: list[tuple[str | None, dict[str, object] | None]] = field(
+        default_factory=list
+    )
 
     def stream_answer(
-        self, *, question: str, context: list[GroundingContext], system_prompt: str
+        self,
+        *,
+        question: str,
+        context: list[GroundingContext],
+        system_prompt: str,
+        model_name: str | None = None,
+        model_parameters: dict[str, object] | None = None,
+        # Accepted and ignored: the port grew these for budget metering and
+        # BYOK. A fake narrower than the Protocol it stands in for fails with a
+        # TypeError on every caller, which is how six unrelated tests broke.
+        usage: object | None = None,
+        credential_ciphertext: bytes | None = None,
     ) -> AsyncIterator[str]:
         self.calls.append((question, context, system_prompt))
+        self.model_calls.append((model_name, model_parameters))
         return self._stream()
 
     async def _stream(self) -> AsyncIterator[str]:

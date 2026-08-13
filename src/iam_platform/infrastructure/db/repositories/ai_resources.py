@@ -10,11 +10,12 @@ filter, not an isolation one, and has to be expressed in SQL.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from iam_platform.application.ai_resources.ports import StoredChunk
@@ -118,6 +119,15 @@ class SqlAiAssistantRepository:
                 team_id=assistant.team_id,
                 status=assistant.status.value,
                 system_prompt=assistant.system_prompt,
+                # Found by live-testing `AnswerQuestionQuery.assistant_id`,
+                # not by reading this file: `model_configuration_id` was
+                # missing from this statement, so `UpdateAssistant` -- and the
+                # console's "Edit assistant" model picker, wired to it --
+                # silently could not change an assistant's model after
+                # creation. The unit tests for `UpdateAssistant` all use an
+                # in-memory fake repository and could not have caught a
+                # missing column in a real SQL statement.
+                model_configuration_id=assistant.model_configuration_id,
             )
         )
 
@@ -480,6 +490,69 @@ class SqlModelConfigurationRepository:
             )
         )
         return bool((await self._session.execute(stmt)).scalar_one())
+
+    async def credential_for_tenant(
+        self, *, tenant_id: UUID, model_configuration_id: UUID
+    ) -> UUID | None:
+        """The tenant's own provider credential for this model, if attached.
+
+        Read from the *grant*, not the configuration: a configuration is shared
+        across tenants, so it cannot name whose key pays. Returns None both when
+        no grant exists and when the grant carries no credential -- the caller
+        has already established entitlement via `is_available_to_tenant`, and
+        "no credential" is the ordinary case for every pre-existing grant.
+        """
+        stmt = select(TenantModelConfigurationModel.provider_credential_id).where(
+            TenantModelConfigurationModel.tenant_id == tenant_id,
+            TenantModelConfigurationModel.model_configuration_id == model_configuration_id,
+        )
+        return (await self._session.execute(stmt)).scalars().first()
+
+    async def credentials_for_tenant(self, tenant_id: UUID) -> dict[UUID, UUID]:
+        """Every BYOK attachment this tenant has, keyed by configuration.
+
+        One query rather than a `credential_for_tenant` call per row: the list
+        screen would otherwise issue an N+1 that grows with the catalogue.
+        Configurations with no attachment are simply absent from the mapping.
+        """
+        stmt = select(
+            TenantModelConfigurationModel.model_configuration_id,
+            TenantModelConfigurationModel.provider_credential_id,
+        ).where(
+            TenantModelConfigurationModel.tenant_id == tenant_id,
+            TenantModelConfigurationModel.provider_credential_id.is_not(None),
+        )
+        return {
+            config_id: credential_id
+            for config_id, credential_id in (await self._session.execute(stmt)).all()
+        }
+
+    async def set_credential_for_tenant(
+        self,
+        *,
+        tenant_id: UUID,
+        model_configuration_id: UUID,
+        provider_credential_id: UUID | None,
+    ) -> int:
+        """Attach or detach the tenant's key for one model. Returns rows matched.
+
+        Zero means the tenant holds no grant for that configuration, which the
+        use case reports as *not found* rather than as a failed update -- a
+        configuration they were never granted must not be provable to exist.
+        """
+        stmt = (
+            update(TenantModelConfigurationModel)
+            .where(
+                TenantModelConfigurationModel.tenant_id == tenant_id,
+                TenantModelConfigurationModel.model_configuration_id
+                == model_configuration_id,
+            )
+            .values(provider_credential_id=provider_credential_id)
+        )
+        # `rowcount` lives on CursorResult, which is what an UPDATE returns
+        # even though `execute` is typed as returning the base `Result`.
+        result = cast("CursorResult[Any]", await self._session.execute(stmt))
+        return int(result.rowcount or 0)
 
     async def add(self, model_configuration: ModelConfiguration) -> None:
         self._session.add(

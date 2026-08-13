@@ -21,6 +21,9 @@ import json
 from typing import Any
 from xml.etree import ElementTree
 
+from defusedxml.common import EntitiesForbidden
+from defusedxml.ElementTree import fromstring as defused_fromstring
+
 from iam_platform.application.ai_resources.exceptions import DocumentParseError
 from iam_platform.application.ai_resources.ports import ParsedBlock
 
@@ -146,11 +149,25 @@ class XmlParser:
 
     async def parse(self, *, data: bytes, content_type: str, filename: str) -> list[ParsedBlock]:
         try:
-            # `ElementTree` does not expand external entities or resolve
-            # DOCTYPE references, so the classic XXE file-read and
-            # billion-laughs vectors do not apply here. Using `lxml` (also a
-            # project dependency) would require explicitly disabling both.
-            root = ElementTree.fromstring(data)
+            # `defusedxml`, not the stdlib parser. The comment that used to sit
+            # here claimed billion-laughs "does not apply" to `ElementTree`.
+            # Half true, and the wrong half: external entities are indeed not
+            # resolved, but *internal* ones are expanded. Measured against this
+            # exact parser, a ~400-byte file with four nested entity levels
+            # produced 30,006 characters; each further level multiplies by ten,
+            # so a small upload asks the worker for gigabytes. The
+            # `_MAX_XML_ELEMENTS` cap below cannot help -- the expansion happens
+            # during parsing, before there is anything to count.
+            #
+            # This is the same class of attack the archive guards in
+            # `file_kind.py` exist for: tenant-supplied input deciding what the
+            # worker allocates.
+            root = defused_fromstring(data)
+        except EntitiesForbidden as exc:
+            raise DocumentParseError(
+                f"{filename}: declares XML entities, which are refused because they can "
+                f"expand to an unbounded size"
+            ) from exc
         except ElementTree.ParseError as exc:
             raise DocumentParseError(f"{filename}: invalid XML ({exc})") from exc
 

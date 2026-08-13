@@ -288,19 +288,26 @@ export function setChatWidgetStatus(
  * and JSON-parses it, which would buffer the stream and defeat the point. The
  * BFF proxy passes `text/event-stream` through unbuffered; this reads it
  * frame by frame.
+ *
+ * `assistantId` is optional. Supplied, the answer uses that assistant's own
+ * model and persona instead of the platform default -- omitted, behaviour is
+ * unchanged from before this parameter existed.
  */
 export async function* streamAnswer(
   tenantId: string,
   knowledgeBaseId: string,
   question: string,
   signal?: AbortSignal,
+  assistantId?: string,
 ): AsyncGenerator<{ event: string; data: Record<string, unknown> }> {
   const response = await fetch(
     `/api/backend/v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/answer`,
     {
       method: "POST",
       headers: { "content-type": "application/json", "x-tenant-id": tenantId },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify(
+        assistantId ? { question, assistant_id: assistantId } : { question },
+      ),
       signal,
     },
   );
@@ -364,6 +371,22 @@ export function startConversation(tenantId: string, assistantId: string, title: 
 }
 
 // ---- Provider credentials ----
+
+/** Bring-your-own-key: bill this tenant's own provider account for one model.
+ *  Pass null to detach and return the model to the platform's key. */
+export function setModelCredential(
+  tenantId: string,
+  modelConfigurationId: string,
+  providerCredentialId: string | null,
+) {
+  return apiFetch<void>(
+    `v1/tenants/${tenantId}/model-configurations/${modelConfigurationId}/credential`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ provider_credential_id: providerCredentialId }),
+    },
+  );
+}
 
 export function listProviderCredentials(tenantId: string) {
   return apiFetch<{ credentials: ProviderCredential[] }>(`v1/tenants/${tenantId}/provider-credentials`, {

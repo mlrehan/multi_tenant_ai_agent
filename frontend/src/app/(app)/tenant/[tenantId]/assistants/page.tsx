@@ -73,12 +73,11 @@ const createSchema = z.object({
 });
 type CreateForm = z.infer<typeof createSchema>;
 
-/** `useModelConfigurations` returns platform defaults too, but
- * `fk_ai_assistants_model_configuration` requires the config's `tenant_id`
- * to match the assistant's (see CLAUDE.md's "known backend defect" note) --
- * a platform default (`tenant_id IS NULL`) is visible here but not usable
- * until that FK is fixed. Shown disabled rather than hidden, so the gap is
- * visible instead of silently absent. */
+/** Every option here is assignable: availability is an explicit platform grant
+ * (`tenant_model_configurations`), and the server returns only granted rows.
+ * This used to render platform defaults disabled with a note explaining a
+ * foreign key to a tenant administrator; the entitlement work removed both the
+ * constraint problem and the need to explain it. */
 function ModelConfigurationField({
   tenantId,
   value,
@@ -177,6 +176,7 @@ export default function AssistantsPage({ params }: { params: Promise<{ tenantId:
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
+                  <TableHead>Model</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Visibility</TableHead>
                   <TableHead>ID</TableHead>
@@ -191,6 +191,61 @@ export default function AssistantsPage({ params }: { params: Promise<{ tenantId:
             </Table>
           </CardContent>
         </Card>
+      )}
+    </div>
+  );
+}
+
+/** What choosing this assistant actually buys: which model answers, whose key
+ *  pays, and how much of the month's allowance is gone.
+ *
+ *  Worth a column rather than a detail pane -- a spent budget returns 429 on
+ *  the next question, and "why did the chat stop working" is exactly the
+ *  question this is here to pre-empt. */
+function AssistantModelCell({
+  tenantId,
+  assistant,
+}: {
+  tenantId: string;
+  assistant: Assistant;
+}) {
+  const { data } = useModelConfigurations(tenantId);
+  const model = data?.model_configurations.find(
+    (c) => c.id === assistant.model_configuration_id,
+  );
+
+  // Absent from the list means the grant was revoked after this assistant was
+  // created. Said plainly: the next question through it fails, and the fix is
+  // a platform admin's, not the tenant's.
+  if (!model) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        No longer available to this tenant
+      </span>
+    );
+  }
+
+  const budget = model.token_budget_per_month;
+  const used = model.tokens_used_this_month;
+  const spent = budget !== null && used !== null && used >= budget;
+
+  return (
+    <div>
+      <div className="font-mono text-xs">{model.model_name}</div>
+      {budget !== null && (
+        <p
+          className={`mt-0.5 text-xs tabular-nums ${
+            spent ? "text-destructive" : "text-muted-foreground"
+          }`}
+        >
+          {/* "?" not "0": an unreadable counter and an unspent one are a whole
+              budget apart, and only one of them means you have room left. */}
+          {used === null ? "?" : used.toLocaleString()} / {budget.toLocaleString()} tokens
+          {spent ? " — spent" : ""}
+        </p>
+      )}
+      {model.provider_credential_id && (
+        <p className="mt-0.5 text-xs text-muted-foreground">Billed to your own key</p>
       )}
     </div>
   );
@@ -226,6 +281,9 @@ function AssistantRow({ tenantId, assistant }: { tenantId: string; assistant: As
         {assistant.description && (
           <p className="mt-0.5 text-xs text-muted-foreground">{assistant.description}</p>
         )}
+      </TableCell>
+      <TableCell>
+        <AssistantModelCell tenantId={tenantId} assistant={assistant} />
       </TableCell>
       <TableCell>
         <StatusBadge status={assistant.status} />

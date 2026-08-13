@@ -173,6 +173,48 @@ class TestJobAuthorizationRevalidation:
         with pytest.raises(JobAuthorizationError, match="deleted"):
             await _run_in_transaction(engine, seeded["tenant_id"], seeded["user_id"])
 
+    async def test_a_deactivated_account_is_refused(
+        self, engine: AsyncEngine, migrator_engine: AsyncEngine, seeded: dict[str, UUID]
+    ) -> None:
+        """The other revocation state. Named explicitly because this check is
+        now an allow-by-default one -- it refuses the two revoked statuses
+        rather than demanding exactly `active` -- so a new revocation state
+        added to `UserStatus` without being listed here would pass silently.
+        Testing only `suspended` would not have surfaced that."""
+        async with migrator_engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE users SET status = 'deactivated' WHERE id = :uid"),
+                {"uid": str(seeded["user_id"])},
+            )
+
+        with pytest.raises(JobAuthorizationError, match="deactivated"):
+            await _run_in_transaction(engine, seeded["tenant_id"], seeded["user_id"])
+
+    async def test_an_unverified_account_is_allowed_to_have_its_job_run(
+        self, engine: AsyncEngine, migrator_engine: AsyncEngine, seeded: dict[str, UUID]
+    ) -> None:
+        """`pending_verification` is not a revoked state, and this deployment
+        can never leave it -- the email sender only logs, so no verification
+        link is ever delivered. Refusing it here meant a self-registered
+        tenant's upload was accepted with a 201 and then never processed: the
+        job died before it had a document row to mark failed, so the console
+        showed `processing` for ever with no reason given anywhere.
+        """
+        async with migrator_engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE users SET status = 'pending_verification' WHERE id = :uid"),
+                {"uid": str(seeded["user_id"])},
+            )
+
+        membership_id = await _run_in_transaction(
+            engine, seeded["tenant_id"], seeded["user_id"]
+        )
+
+        # Asserting on the resolved membership, not merely that nothing was
+        # raised: a helper that returned `None` on every path would satisfy
+        # "did not refuse" while proving the job had no context to run with.
+        assert membership_id == seeded["membership_id"]
+
     async def test_a_job_claiming_another_tenant_is_refused(
         self, engine: AsyncEngine, seeded: dict[str, UUID]
     ) -> None:

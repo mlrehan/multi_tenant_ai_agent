@@ -349,6 +349,31 @@ class IngestionSettings(BaseModel):
     #: wrong, so a 2,000-page scan is not a document, it is an outage.
     docling_max_pages: int = 500
 
+    #: OCR language(s) for RapidOCR. A single code; docling takes a list, and
+    #: the adapter wraps it. Kept configurable because OCR accuracy is
+    #: language-dependent and a deployment serving one region should say so.
+    ocr_language: str = "english"
+    #: Render scale for OCR. Higher reads smaller print and costs memory
+    #: quadratically -- 3x on A4 is roughly 8.7 megapixels per page. Lower this
+    #: only after the low-memory retry has proved insufficient, because the
+    #: failure it trades into (quietly worse text) is harder to notice than
+    #: the one it avoids.
+    ocr_scale: float = 3.0
+
+    #: Below this many characters, a natively-parsed Word or PowerPoint file
+    #: is treated as possibly a scan in a wrapper and re-read with OCR --
+    #: but only when the file also contains images. A short memo with no
+    #: pictures is simply short and is left alone.
+    native_office_min_chars: int = 200
+
+    #: Bounds on what a ZIP-based document (DOCX/PPTX/XLSX/EPUB/ODF) may
+    #: expand to. A ZIP is an attacker-controlled decompression instruction,
+    #: and the worker holding database credentials is not the place to find
+    #: out how far it expands. Generous for real documents: a 200-slide deck
+    #: full of photographs sits far inside both.
+    archive_max_entries: int = 5_000
+    archive_max_uncompressed_bytes: int = 512 * 1024 * 1024
+
 
 class CrawlSettings(BaseModel):
     """Bounds on URL and website ingestion (Phase 12).
@@ -532,8 +557,15 @@ class Settings(BaseSettings):
         # the guard has to be told which file was actually read rather than
         # assuming `.env`.
         env_file = values.get("_env_file", type(self).model_config.get("env_file"))
-        super().__init__(**values)
+        # **Before** `super().__init__`, not after. Newer pydantic-settings
+        # rejects a near miss itself with a generic `extra_forbidden` naming
+        # the lowercased field (`openai_api_key`), which meant this guard never
+        # ran and its whole contribution -- telling the operator the *correct*
+        # spelling, `OPENAI__API_KEY` -- was silently lost. The deployment
+        # still refused to start either way, so the regression was invisible
+        # except as a worse error message.
         _reject_near_miss_group_names(type(self), env_file)
+        super().__init__(**values)
 
     def model_post_init(self, __context: object) -> None:
         if self.environment == "production" and self.secret_provider == "env":

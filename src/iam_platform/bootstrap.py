@@ -27,6 +27,7 @@ from iam_platform.infrastructure.cache.mfa_challenge_store import RedisMfaChalle
 from iam_platform.infrastructure.cache.oauth_state_store import RedisOAuthStateStore
 from iam_platform.infrastructure.cache.rate_limiter import RedisRateLimiter
 from iam_platform.infrastructure.cache.redis_client import build_redis_client
+from iam_platform.infrastructure.cache.token_usage import RedisTokenUsageStore
 from iam_platform.infrastructure.cache.widget_quota import RedisWidgetQuotaStore
 from iam_platform.infrastructure.chat.openai_chat import (
     OpenAIChatModel,
@@ -105,6 +106,12 @@ async def build_container(settings: Settings) -> AppContainer:
     # the Celery worker reads them), so they are wired rather than held back.
     vector_search_client, _embedding_client = build_vector_stack(settings)
     object_storage_client = build_object_storage_client(settings)
+    # Built once and shared: the chat adapter needs it to decrypt a tenant's
+    # own provider key at model-call time, which is the only place in the
+    # system that ever sees one in plaintext.
+    credential_encryptor = FernetCredentialEncryptor(
+        settings.encryption.data_key.get_secret_value()
+    )
 
     oauth_providers: dict[str, OAuthProvider] = {}
     if settings.oauth_google.enabled:
@@ -134,9 +141,7 @@ async def build_container(settings: Settings) -> AppContainer:
         ai_resource_uow_factory=lambda user_id, tenant_id: SqlAiResourceUnitOfWork(
             session_factory, user_id=user_id, tenant_id=tenant_id
         ),
-        credential_encryptor=FernetCredentialEncryptor(
-            settings.encryption.data_key.get_secret_value()
-        ),
+        credential_encryptor=credential_encryptor,
         vector_namespace_factory=TenantScopedVectorNamespaceFactory(),
         storage_path_factory=TenantScopedStoragePathFactory(),
         vector_search_client=vector_search_client,
@@ -150,6 +155,9 @@ async def build_container(settings: Settings) -> AppContainer:
         # discovering and there is no RLS context to set yet.
         public_widget_lookup=SqlPublicWidgetLookup(platform_session_factory),
         widget_quota=RedisWidgetQuotaStore(redis),
+        # Wired unconditionally, like the widget quota: an unconfigured
+        # spending control is worse than none, because it looks configured.
+        token_usage=RedisTokenUsageStore(redis),
         widget_token_service=WidgetTokenService(settings.jwt),
         # Cohere absent degrades ranking quality; OpenAI absent makes an answer
         # impossible. Hence one falls back and the other raises -- see the
@@ -160,7 +168,7 @@ async def build_container(settings: Settings) -> AppContainer:
             else PassthroughReranker()
         ),
         chat_model=(
-            OpenAIChatModel(settings.openai)
+            OpenAIChatModel(settings.openai, credential_encryptor=credential_encryptor)
             if settings.openai.api_key.get_secret_value()
             else UnconfiguredChatModel()
         ),
