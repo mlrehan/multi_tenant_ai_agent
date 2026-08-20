@@ -9,6 +9,13 @@ importing ``OverrideEffect`` from ``domain.tenant_authz.entities``.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover -- avoids an application-layer import cycle
+    from iam_platform.application.ai_resources.ports import (
+        TenantEntitlementRepository,
+    )
+
 from collections.abc import Callable
 from datetime import datetime
 from types import TracebackType
@@ -104,6 +111,9 @@ class TenantUnitOfWork(Protocol):
     tenant_membership_roles: TenantMembershipRoleRepository
     role_hierarchy: RoleHierarchyRepository
     authorization_overrides: AuthorizationOverrideRepository
+    #: Read-only: the table grants `app_tenant` SELECT only, so a
+    #: tenant path physically cannot raise its own limits.
+    entitlements: TenantEntitlementRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 

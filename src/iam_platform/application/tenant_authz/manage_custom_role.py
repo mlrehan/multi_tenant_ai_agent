@@ -25,7 +25,29 @@ from iam_platform.domain.tenant_authz.entities import TenantRole
 _MANAGE_ROLES_PERMISSION = "tenant.roles.manage"
 
 
+async def _guard_entitlement(uow: object, *, tenant_id: object, capability: str) -> None:
+    """Refuses an action the platform has not enabled for this tenant.
+
+    Inlined here rather than importing `application.ai_resources.entitlements`:
+    that helper is typed against the AI-resource unit of work, and this module
+    runs on the tenant one. The read is the same row either way -- and either
+    way the tenant cannot write it, because the table grants `app_tenant`
+    SELECT only.
+
+    A missing row means the restrictive defaults, never "unlimited": a tenant
+    created between a deploy and an operator's first visit must not escape
+    every limit because nobody had filled a form in yet.
+    """
+    from iam_platform.application.ai_resources.exceptions import FeatureNotEntitledError
+
+    stored = await uow.entitlements.get_for_tenant(tenant_id)  # type: ignore[attr-defined]
+    allowed = getattr(stored, capability) if stored is not None else False
+    if not allowed:
+        raise FeatureNotEntitledError(capability)
+
+
 @dataclass(frozen=True, slots=True)
+
 class CreateCustomRoleCommand:
     actor_user_id: str
     tenant_id: str
@@ -50,6 +72,10 @@ class CreateCustomRole:
             actor_state = await compute_effective_tenant_state(uow, tenant_id, actor_id, now=now)
             if actor_state is None or _MANAGE_ROLES_PERMISSION not in actor_state.permissions:
                 raise PermissionDeniedError(_MANAGE_ROLES_PERMISSION)
+
+            await _guard_entitlement(
+                uow, tenant_id=tenant_id, capability="allow_create_roles"
+            )
 
             if await uow.tenant_roles.get_by_code(tenant_id, command.code) is not None:
                 raise DuplicateRoleCodeError(command.code)

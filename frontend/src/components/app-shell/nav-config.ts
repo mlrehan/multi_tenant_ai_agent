@@ -1,7 +1,9 @@
 import type { LucideIcon } from "lucide-react";
 import {
+  Bot,
   Building2,
   Cpu,
+  Inbox,
   Fingerprint,
   Gauge,
   KeyRound,
@@ -10,6 +12,7 @@ import {
   MessagesSquare,
   ShieldCheck,
   ShieldQuestion,
+  SlidersHorizontal,
   Sparkles,
   UserCircle,
   Users,
@@ -38,6 +41,14 @@ export const platformNavItems: NavItem[] = [
     label: "Model configurations",
     href: "/platform/model-configurations",
     icon: Cpu,
+    requiresPlatformPermission: "platform.model_configurations.manage",
+  },
+  {
+    label: "Tenant entitlements",
+    href: "/platform/entitlements",
+    icon: SlidersHorizontal,
+    // Same permission as the model catalogue: both are the platform deciding
+    // what a tenant may spend the platform's money on.
     requiresPlatformPermission: "platform.model_configurations.manage",
   },
   { label: "Platform roles", href: "/platform/roles", icon: ShieldCheck },
@@ -70,6 +81,17 @@ export function tenantNavItems(tenantId: string): NavItem[] {
       href: `/tenant/${tenantId}/rbac`,
       icon: KeySquare,
       requiresTenantPermission: "tenant.roles.manage",
+    },
+    {
+      label: "AI Chatbot",
+      href: `/tenant/${tenantId}/chatbot`,
+      icon: Bot,
+    },
+    {
+      label: "Inbox",
+      href: `/tenant/${tenantId}/inbox`,
+      icon: Inbox,
+      requiresTenantPermission: "tenant.conversations.view",
     },
     {
       label: "Assistants",

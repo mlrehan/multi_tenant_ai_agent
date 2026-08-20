@@ -23,13 +23,16 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     LargeBinary,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -76,6 +79,26 @@ class ModelConfigurationModel(TimestampMixin, Base):
     #: Withdrawn from new assignments. Not a delete -- assistants already
     #: using it keep working.
     archived_at: Mapped[datetime | None]
+
+    #: Provider configuration, replacing the deployment-wide `OPENAI__*`
+    #: environment variables. `.env` remains the fallback when these are null,
+    #: so an existing deployment keeps answering without an operator having to
+    #: fill this in first.
+    provider: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'openai'")
+    )
+    #: **Encrypted at rest, always.** Same envelope as `provider_credentials`
+    #: (Fernet: AES-128-CBC with an HMAC-SHA256 tag -- authenticated
+    #: encryption), under a master key held in the environment and never in
+    #: this database. No column here can hold a plaintext key.
+    api_key_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    api_key_hint: Mapped[str | None] = mapped_column(Text)
+    embedding_model: Mapped[str | None] = mapped_column(Text)
+    embedding_dimensions: Mapped[int | None] = mapped_column(Integer)
+    chat_model: Mapped[str | None] = mapped_column(Text)
+    request_timeout_seconds: Mapped[int | None] = mapped_column(Integer)
+    chat_reasoning_effort: Mapped[str | None] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
 
 
 class TenantModelConfigurationModel(Base):
@@ -234,6 +257,27 @@ class AiAssistantModel(TimestampMixin, Base):
     model_configuration_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
     system_prompt: Mapped[str | None] = mapped_column(Text)
+
+    #: The assistant's brief, in the structured form the chatbot console
+    #: edits. `system_prompt` is kept and still appended -- these are the
+    #: guided fields, that is the escape hatch, and both are tenant-editable
+    #: and therefore fenced as untrusted by the prompt builder.
+    #:
+    #: The length caps are CHECK constraints as well as domain validation:
+    #: the prompt builder must never have to silently truncate, and a
+    #: constraint is the only thing a migration or a direct write cannot
+    #: bypass.
+    role_instructions: Mapped[str | None] = mapped_column(Text)
+    avoid_instructions: Mapped[str | None] = mapped_column(Text)
+    #: Enum-backed. The stored label never reaches the model -- it selects one
+    #: of four fixed instruction strings -- so this column is not a prompt
+    #: injection surface even if a row is written by hand.
+    personality: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'neutral'")
+    )
+    response_length: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'balanced'")
+    )
 
 
 class AssistantMemberModel(Base):
@@ -434,7 +478,16 @@ class DataSourceModel(TimestampMixin, Base):
     __tablename__ = "data_sources"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('upload','url_crawl','integration_sync')", name="kind_valid"
+            "kind IN ('upload','url_crawl','integration_sync','direct_text')",
+            name="kind_valid",
+        ),
+        # Direct text with no text is a source that can never index anything.
+        # Enforced here as well as in the entity so a fixture cannot create
+        # one -- the same reasoning as `url_crawl_needs_urls` below.
+        CheckConstraint(
+            "kind <> 'direct_text' OR (direct_text IS NOT NULL "
+            "AND length(direct_text) BETWEEN 1 AND 5000)",
+            name="direct_text_bounded",
         ),
         CheckConstraint(
             "sync_status IN ('idle','syncing','ready','error')", name="sync_status_valid"
@@ -496,6 +549,13 @@ class DataSourceModel(TimestampMixin, Base):
     created_by_membership_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), nullable=False
     )
+    #: Display name for any source kind; for `direct_text` it also names the
+    #: document produced.
+    name: Mapped[str | None] = mapped_column(Text)
+    #: `direct_text` only. A real column rather than a key in `config` so the
+    #: length CHECK above can exist at all -- a bound expressed only in
+    #: application code is a bound a direct write ignores.
+    direct_text: Mapped[str | None] = mapped_column(Text)
 
 
 class ChatWidgetModel(TimestampMixin, Base):
@@ -554,11 +614,46 @@ class ChatWidgetModel(TimestampMixin, Base):
         PgUUID(as_uuid=True), nullable=False
     )
 
+    #: Which assistant answers here. Nullable, and that is not laziness:
+    #: every widget created before this column existed has none, and those
+    #: widgets must keep answering exactly as they did (platform default
+    #: model, no persona). A NOT NULL with a backfilled default would have
+    #: invented an assistant for each of them.
+    assistant_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+
+    #: Presentation, per embed. A tenant may run one widget on a parent
+    #: portal and another on a public site with different names.
+    chatbot_name: Mapped[str | None] = mapped_column(Text)
+    chatbot_title: Mapped[str | None] = mapped_column(Text)
+    #: An asset *key*, never a URL -- the widget maps it to an inline SVG it
+    #: already ships. Storing a URL would let a tenant point every visitor's
+    #: browser at an arbitrary third-party origin from their customers' pages.
+    avatar_key: Mapped[str | None] = mapped_column(Text)
+    greeting: Mapped[str | None] = mapped_column(Text)
+    show_quick_reply_suggestions: Mapped[bool] = mapped_column(
+        nullable=False, server_default=text("true")
+    )
+
 
 class ConversationModel(TimestampMixin, Base):
     __tablename__ = "conversations"
     __table_args__ = (
         CheckConstraint("status IN ('active','archived')", name="status_valid"),
+        CheckConstraint(
+            "state IN ('ai_active','handoff_requested','unassigned','assigned',"
+            "'human_active','resolved')",
+            name="state_valid",
+        ),
+        # **Exactly one owner.** This replaces `membership_id NOT NULL`, which
+        # had to go so a visitor's thread could live in the same table as a
+        # member's rather than in a second chat system. It is a stricter
+        # statement than the constraint it replaces: NOT NULL allowed a row to
+        # claim a member *and* a visitor session, this does not.
+        CheckConstraint(
+            "(membership_id IS NOT NULL AND visitor_session_id IS NULL) OR "
+            "(membership_id IS NULL AND visitor_session_id IS NOT NULL)",
+            name="exactly_one_owner",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "assistant_id"],
             ["ai_assistants.tenant_id", "ai_assistants.id"],
@@ -568,6 +663,31 @@ class ConversationModel(TimestampMixin, Base):
             ["tenant_id", "membership_id"],
             ["tenant_memberships.tenant_id", "tenant_memberships.id"],
             name="fk_conversations_membership",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "assigned_team_id"],
+            ["tenant_teams.tenant_id", "tenant_teams.id"],
+            name="fk_conversations_assigned_team",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "assigned_membership_id"],
+            ["tenant_memberships.tenant_id", "tenant_memberships.id"],
+            name="fk_conversations_assigned_membership",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "widget_id"],
+            ["chat_widgets.tenant_id", "chat_widgets.id"],
+            name="fk_conversations_widget",
+        ),
+        # The Unassigned inbox's only query: this tenant, waiting, oldest
+        # first. Partial, because the inbox never asks about any other state
+        # and an index over every conversation would be mostly dead weight.
+        Index(
+            "ix_conversations_unassigned",
+            "tenant_id",
+            "assigned_team_id",
+            "handoff_at",
+            postgresql_where=text("state = 'unassigned'"),
         ),
         Index(
             "ix_conversations_tenant_membership",
@@ -579,8 +699,76 @@ class ConversationModel(TimestampMixin, Base):
 
     id: Mapped[uuid.UUID] = _pk()
     tenant_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
-    assistant_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
-    membership_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    assistant_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    membership_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    #: A widget session. Not an identity -- it dies with the token, and there
+    #: is deliberately no user behind it.
+    visitor_session_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    widget_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
     title: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
     last_message_at: Mapped[datetime | None]
+    summary: Mapped[str | None] = mapped_column(Text)
+    summary_through_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    #: Who answers next. One column rather than a set of booleans, so the
+    #: illegal combinations are unrepresentable (see `ConversationState`).
+    state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'ai_active'")
+    )
+    assigned_team_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    assigned_membership_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    handoff_reason: Mapped[str | None] = mapped_column(Text)
+    handoff_at: Mapped[datetime | None]
+    handoff_initiated_by: Mapped[str | None] = mapped_column(Text)
+    claimed_at: Mapped[datetime | None]
+    ai_fallback_disabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+
+class ConversationMessageModel(Base):
+    """One turn. No `TimestampMixin`: a message is never updated, so an
+    `updated_at` would be a column that can only ever equal `created_at`."""
+
+    __tablename__ = "conversation_messages"
+    __table_args__ = (
+        # `user`/`assistant` are kept as the existing names for a visitor
+        # message and an AI message -- renaming them would rewrite every
+        # stored row to say the same thing differently. The three additions
+        # are genuinely new kinds of turn.
+        CheckConstraint(
+            "role IN ('user','assistant','agent_message','internal_comment',"
+            "'system_event')",
+            name="role_valid",
+        ),
+        # Composite, so a message cannot be attached to another tenant's
+        # conversation whatever id a caller supplies.
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id"],
+            ["conversations.tenant_id", "conversations.id"],
+            name="fk_conversation_messages_conversation",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("conversation_id", "seq", name="uq_conversation_messages_seq"),
+        Index(
+            "ix_conversation_messages_thread", "tenant_id", "conversation_id", "seq"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: The agent who wrote an `agent_message` or `internal_comment`. Null for
+    #: visitor, AI and system turns, which have no member behind them.
+    author_membership_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        nullable=False, server_default=func.now()
+    )

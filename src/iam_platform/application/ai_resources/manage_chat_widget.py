@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 from iam_platform.application.ai_resources.authorize import load_visible_knowledge_base
+from iam_platform.application.ai_resources.entitlements import (
+    guard_chat_widget_quota,
+)
 from iam_platform.application.ai_resources.exceptions import (
     ChatWidgetNotFoundError,
     KnowledgeBaseNotFoundError,
@@ -68,6 +71,11 @@ class CreateChatWidget:
         async with self._uow_factory(actor_id, tenant_id) as uow:
             if MANAGE_WIDGET_PERMISSION not in command.permissions:
                 raise PermissionDeniedError(MANAGE_WIDGET_PERMISSION)
+
+            # Permission first, then plan: a caller who lacks the permission
+            # must be told that, not that they are at a limit -- the two send
+            # them to different people for a fix.
+            await guard_chat_widget_quota(uow, tenant_id=tenant_id, clock=self._clock)
 
             requester = await build_requester_context(
                 uow, tenant_id=tenant_id, user_id=actor_id, permissions=command.permissions

@@ -26,6 +26,9 @@ from iam_platform.api.middleware.metrics import (
 from iam_platform.api.middleware.public_cors import PublicChatCorsMiddleware
 from iam_platform.api.middleware.rate_limit import RateLimitMiddleware
 from iam_platform.api.middleware.security_headers import SecurityHeadersMiddleware
+from iam_platform.api.v1.assistants.chatbot_router import (
+    router as chatbot_router,
+)
 from iam_platform.api.v1.assistants.router import router as assistants_router
 from iam_platform.api.v1.auth.router import router as auth_router
 from iam_platform.api.v1.impersonation.router import router as impersonation_router
@@ -85,6 +88,12 @@ def create_app(container: AppContainer) -> FastAPI:
     app.include_router(tenants_router)
     app.include_router(memberships_router)
     app.include_router(rbac_router)
+    # **Mounted before `assistants_router`, deliberately.** FastAPI matches
+    # in definition order, and that router's `/conversations/{conversation_id}`
+    # would otherwise swallow `/conversations/unassigned` and fail parsing
+    # "unassigned" as a UUID -- the same trap that produced a 500 on
+    # `/conversations/search`.
+    app.include_router(chatbot_router)
     app.include_router(assistants_router)
     app.include_router(impersonation_router)
     # Last, and visibly separate: this is the unauthenticated surface. It

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from iam_platform.application.ai_resources.ports import (
     AiResourceUowFactory,
     ChatModel,
+    ConversationEventPublisher,
     CrawlJobQueue,
     CredentialEncryptor,
     DocumentIngestionQueue,
@@ -30,10 +31,14 @@ from iam_platform.application.ai_resources.ports import (
     ObjectStoragePathFactory,
     PublicWidgetLookup,
     Reranker,
+    TenantQuotaStore,
     TokenUsageStore,
+    TypingIndicatorStore,
     UrlValidator,
     VectorNamespaceFactory,
     VectorSearchClient,
+    WebPushSender,
+    WidgetMemoryStore,
     WidgetQuotaStore,
     WidgetSessionIssuer,
 )
@@ -96,10 +101,25 @@ class AppContainer:
     #: `infrastructure` imports (docs/20).
     public_widget_lookup: PublicWidgetLookup
     widget_quota: WidgetQuotaStore
+    widget_memory: WidgetMemoryStore
     widget_token_service: WidgetSessionIssuer
+    #: Ephemeral 'is typing' state for both ends of a conversation.
+    typing_indicators: TypingIndicatorStore
     chat_model: ChatModel
     #: Monthly spend against `model_configurations.token_budget_per_month`.
     token_usage: TokenUsageStore
+    #: Per-*tenant* AI spending: daily messages and monthly tokens. Distinct
+    #: from `token_usage`, which bounds one model configuration -- a tenant
+    #: granted three models must not be able to spend three budgets' worth.
+    tenant_quota: TenantQuotaStore
+    #: Realtime fan-out for the Unassigned inbox, over SSE (this platform has
+    #: no WebSocket layer -- see the port docstring).
+    conversation_events: ConversationEventPublisher
+
+    #: Reaches an agent whose console is closed. Always present -- an
+    #: unconfigured deployment gets a sender that reports `is_configured` as
+    #: False and refuses to pretend it delivered anything.
+    web_push: WebPushSender
     #: The SSRF guard, as a port -- `api` may not import `infrastructure`.
     url_validator: UrlValidator
 

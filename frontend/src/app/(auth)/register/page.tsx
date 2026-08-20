@@ -79,7 +79,7 @@ export default function RegisterPage() {
         <CardDescription>Register to get started with the console.</CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <form method="post" onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           {formError && (
             <Alert variant="destructive">
               <AlertDescription>{formError}</AlertDescription>

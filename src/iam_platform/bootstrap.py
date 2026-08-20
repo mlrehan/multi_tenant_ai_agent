@@ -23,11 +23,17 @@ from iam_platform.api.main import create_app
 from iam_platform.application.identity.ports import OAuthProvider
 from iam_platform.core.clock import SystemClock
 from iam_platform.core.config import Settings
+from iam_platform.infrastructure.cache.conversation_events import (
+    RedisConversationEventPublisher,
+)
 from iam_platform.infrastructure.cache.mfa_challenge_store import RedisMfaChallengeStore
 from iam_platform.infrastructure.cache.oauth_state_store import RedisOAuthStateStore
 from iam_platform.infrastructure.cache.rate_limiter import RedisRateLimiter
 from iam_platform.infrastructure.cache.redis_client import build_redis_client
+from iam_platform.infrastructure.cache.tenant_quota import RedisTenantQuotaStore
 from iam_platform.infrastructure.cache.token_usage import RedisTokenUsageStore
+from iam_platform.infrastructure.cache.typing_indicator import RedisTypingIndicatorStore
+from iam_platform.infrastructure.cache.widget_memory import RedisWidgetMemoryStore
 from iam_platform.infrastructure.cache.widget_quota import RedisWidgetQuotaStore
 from iam_platform.infrastructure.chat.openai_chat import (
     OpenAIChatModel,
@@ -60,6 +66,7 @@ from iam_platform.infrastructure.oauth.facebook import FacebookOAuthProvider
 from iam_platform.infrastructure.oauth.google import GoogleOAuthProvider
 from iam_platform.infrastructure.ops.health import DependencyHealthCheck
 from iam_platform.infrastructure.parsing.dispatcher import ParserDispatcher
+from iam_platform.infrastructure.push.web_push import build_web_push_sender
 from iam_platform.infrastructure.queue.celery_ingestion_queue import (
     CeleryCrawlJobQueue,
     CeleryDocumentIngestionQueue,
@@ -155,9 +162,20 @@ async def build_container(settings: Settings) -> AppContainer:
         # discovering and there is no RLS context to set yet.
         public_widget_lookup=SqlPublicWidgetLookup(platform_session_factory),
         widget_quota=RedisWidgetQuotaStore(redis),
+        # TTL matched to the session token, so a visitor's memory cannot
+        # outlive the credential that is allowed to read it.
+        widget_memory=RedisWidgetMemoryStore(
+            redis, ttl_seconds=settings.jwt.widget_session_ttl_seconds
+        ),
         # Wired unconditionally, like the widget quota: an unconfigured
         # spending control is worse than none, because it looks configured.
+        # No configuration knob: an indicator that silently did nothing would
+        # be indistinguishable from nobody typing.
+        typing_indicators=RedisTypingIndicatorStore(redis),
         token_usage=RedisTokenUsageStore(redis),
+        tenant_quota=RedisTenantQuotaStore(redis),
+        conversation_events=RedisConversationEventPublisher(redis),
+        web_push=build_web_push_sender(settings.push),
         widget_token_service=WidgetTokenService(settings.jwt),
         # Cohere absent degrades ranking quality; OpenAI absent makes an answer
         # impossible. Hence one falls back and the other raises -- see the

@@ -16,6 +16,11 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from iam_platform.domain.ai_resources.chatbot import (
+    MAX_DIRECT_TEXT_CHARS,
+    Personality,
+    ResponseLength,
+)
 from iam_platform.domain.shared.entity import Entity
 from iam_platform.domain.shared.exceptions import InvalidStateTransitionError
 
@@ -45,6 +50,18 @@ class AiAssistant(Entity):
     model_configuration_id: UUID
     status: AssistantStatus = AssistantStatus.DRAFT
     system_prompt: str | None = None
+
+    #: The guided brief the chatbot console edits. `system_prompt` is kept as
+    #: the free-form escape hatch and both are appended to the platform's own
+    #: rules, never substituted for them -- these are tenant input, and the
+    #: grounding rules are the guarantee this platform advertises.
+    role_instructions: str | None = None
+    avoid_instructions: str | None = None
+    #: Enum-backed. The stored label never reaches the model; it selects one of
+    #: four fixed instruction strings, so this is not an injection surface even
+    #: if a row is written by hand.
+    personality: Personality = Personality.NEUTRAL
+    response_length: ResponseLength = ResponseLength.BALANCED
     created_at: datetime
     updated_at: datetime
 
@@ -216,6 +233,12 @@ class DataSourceKind(StrEnum):
     UPLOAD = "upload"
     URL_CRAWL = "url_crawl"
     INTEGRATION_SYNC = "integration_sync"
+    #: Text pasted straight into the console. Still a *source*, not a shortcut
+    #: past one: it produces a `documents` row and flows through the same
+    #: parse-free chunk -> embed -> upsert path as everything else, so
+    #: retrieval, citation, re-index and delete all work without a second
+    #: implementation.
+    DIRECT_TEXT = "direct_text"
 
 
 class SyncStatus(StrEnum):
@@ -254,6 +277,14 @@ class DataSource(Entity):
     urls: list[str]
     mode: CrawlMode
     created_by_membership_id: UUID
+    #: Display name, used by every kind. For DIRECT_TEXT it is what the
+    #: console lists and what the resulting document is called.
+    name: str | None = None
+    #: DIRECT_TEXT only: the pasted content. Held on the entity rather than in
+    #: `config` so the length invariant below is enforceable, and so the
+    #: re-index path has somewhere to read the current text from without
+    #: re-fetching anything.
+    text: str | None = None
     sync_status: SyncStatus = SyncStatus.IDLE
     failure_reason: str | None = None
     pages_discovered: int = 0
@@ -263,6 +294,16 @@ class DataSource(Entity):
     updated_at: datetime
 
     def __post_init__(self) -> None:
+        if self.kind is DataSourceKind.DIRECT_TEXT:
+            if not (self.text or "").strip():
+                raise ValueError("direct text cannot be empty")
+            if len(self.text or "") > MAX_DIRECT_TEXT_CHARS:
+                raise ValueError(
+                    f"direct text must be {MAX_DIRECT_TEXT_CHARS} characters or fewer"
+                )
+            # A direct-text source crawls nothing, so the URL invariants below
+            # do not apply and the site-crawl check would reject it outright.
+            return
         if self.kind is DataSourceKind.URL_CRAWL and not self.urls:
             raise ValueError("a url_crawl data source needs at least one URL")
         if self.mode is CrawlMode.SITE and len(self.urls) != 1:
@@ -313,6 +354,19 @@ class ChatWidget(Entity):
     status: WidgetStatus = WidgetStatus.ACTIVE
     daily_question_limit: int = 500
     created_by_membership_id: UUID
+
+    #: Which assistant answers here. `None` keeps the pre-existing behaviour
+    #: exactly: platform default model, no persona.
+    assistant_id: UUID | None = None
+    #: How this embed introduces itself. Per-widget, because a tenant may run
+    #: one on a parent portal and another on a public site.
+    chatbot_name: str | None = None
+    chatbot_title: str | None = None
+    #: An asset *key* from a fixed allowlist, never a URL -- see
+    #: `domain.ai_resources.chatbot.DEFAULT_AVATAR_KEY`.
+    avatar_key: str | None = None
+    greeting: str | None = None
+    show_quick_reply_suggestions: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -360,21 +414,274 @@ class ConversationStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class ConversationState(StrEnum):
+    """Who is answering right now.
+
+    Deliberately **one column, not a spread of booleans.** `is_handed_off`,
+    `is_claimed` and `is_resolved` as separate flags admit combinations that
+    mean nothing (handed off but not claimed and also resolved), and every
+    reader then has to invent its own precedence rule. A single state makes the
+    illegal combinations unrepresentable and the transitions reviewable.
+
+    `status` (active/archived) is kept and is orthogonal: it answers "is this
+    thread in the list?", this answers "who replies next?".
+    """
+
+    #: The AI answers. The state every new conversation starts in when the
+    #: tenant has the chatbot enabled.
+    AI_ACTIVE = "ai_active"
+    #: A handoff has been asked for but no team is chosen yet -- the visitor
+    #: has been offered the team buttons and has not pressed one.
+    HANDOFF_REQUESTED = "handoff_requested"
+    #: Waiting in a team's queue. This is the state the Unassigned inbox lists
+    #: and the one that raises a notification.
+    UNASSIGNED = "unassigned"
+    #: An agent has claimed it but has not spoken yet.
+    ASSIGNED = "assigned"
+    #: An agent is answering.
+    HUMAN_ACTIVE = "human_active"
+    RESOLVED = "resolved"
+
+
+#: Once a human owns the conversation the AI must not speak again on its own.
+#: Held as a frozenset rather than checked inline because three separate call
+#: sites depend on it and a fourth will be added by whoever adds the next
+#: entry point -- a rule spread across call sites is a rule that drifts.
+HUMAN_OWNED_STATES = frozenset(
+    {
+        ConversationState.HANDOFF_REQUESTED,
+        ConversationState.UNASSIGNED,
+        ConversationState.ASSIGNED,
+        ConversationState.HUMAN_ACTIVE,
+    }
+)
+
+
+class HandoffInitiator(StrEnum):
+    VISITOR = "visitor"
+    AI = "ai"
+    AGENT = "agent"
+
+
+class MessageRole(StrEnum):
+    """What kind of turn this is, and therefore who may read it.
+
+    `USER`/`ASSISTANT` are the platform's existing vocabulary and are kept as
+    the equivalents of "visitor message" and "AI message" -- renaming them
+    would rewrite every stored row to say the same thing in different words.
+    The three new members are genuinely new kinds of turn that had nowhere to
+    live before.
+
+    **`INTERNAL_COMMENT` is the privacy-critical one.** It is staff-only by
+    construction: `visible_to_visitor` is the single predicate every visitor
+    -facing read path filters on, so a new surface cannot forget the rule by
+    forgetting to add a condition.
+    """
+
+    USER = "user"
+    ASSISTANT = "assistant"
+    AGENT = "agent_message"
+    INTERNAL_COMMENT = "internal_comment"
+    SYSTEM_EVENT = "system_event"
+
+    @property
+    def visible_to_visitor(self) -> bool:
+        return self not in (MessageRole.INTERNAL_COMMENT,)
+
+
+@dataclass(kw_only=True)
+class ConversationMessage(Entity):
+    """One turn. Append-only: a thing that was said cannot be un-said, only the
+    whole conversation deleted (the table revokes UPDATE from the app role)."""
+
+    tenant_id: UUID
+    conversation_id: UUID
+    #: 1-based position, so "everything after the summary" is an index range.
+    seq: int
+    role: MessageRole
+    content: str
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    token_count: int = 0
+    created_at: datetime
+
+
 @dataclass(kw_only=True)
 class Conversation(Entity):
+    """One thread, whoever is on the other end of it.
+
+    **A conversation has exactly one owner, and it is either a member or a
+    visitor.** `membership_id` was NOT NULL until widget conversations needed
+    persisting, which would have meant either a second chat system (rejected:
+    the handoff inbox, the message types and the audit trail would all have had
+    to be built twice) or a nullable owner. The constraint is not weakened but
+    *moved*: a database CHECK enforces that exactly one of `membership_id` and
+    `visitor_session_id` is set, which is strictly more precise than "not
+    null" -- it also rules out a row claiming to be both.
+    """
+
     tenant_id: UUID
-    assistant_id: UUID
-    membership_id: UUID
+    #: Nullable because a widget conversation has no assistant when the widget
+    #: predates assistant binding. Answering then uses the platform default,
+    #: exactly as it did before.
+    assistant_id: UUID | None = None
+    #: The member who owns this thread. `None` for a visitor conversation.
+    membership_id: UUID | None = None
+    #: The widget session that owns this thread. `None` for a member's.
+    #: Not a user id and not stable across sessions -- a visitor has no
+    #: identity, by construction (see `WidgetSessionClaims`).
+    visitor_session_id: UUID | None = None
+    widget_id: UUID | None = None
     title: str | None = None
     status: ConversationStatus = ConversationStatus.ACTIVE
+    state: ConversationState = ConversationState.AI_ACTIVE
+    assigned_team_id: UUID | None = None
+    assigned_membership_id: UUID | None = None
+    handoff_reason: str | None = None
+    handoff_at: datetime | None = None
+    handoff_initiated_by: HandoffInitiator | None = None
+    claimed_at: datetime | None = None
+    #: Set by an agent who wants to keep this thread, overriding the automatic
+    #: return-to-AI. It is a *decision*, not a timer state, which is why it is
+    #: stored on the row: a refresh, a second tab, or a different agent picking
+    #: the conversation up must all see the same answer.
+    ai_fallback_disabled: bool = False
     created_at: datetime
     updated_at: datetime
     last_message_at: datetime | None = None
+    #: A rolling precis of turns already compacted, and how far it reaches.
+    #: Together they bound the prompt: context is the summary plus the
+    #: messages after `summary_through_seq`, never the whole thread.
+    summary: str | None = None
+    summary_through_seq: int = 0
 
     def archive(self, *, now: datetime) -> None:
         if self.status == ConversationStatus.ARCHIVED:
             raise InvalidStateTransitionError("conversation already archived")
         self.status = ConversationStatus.ARCHIVED
+        self.updated_at = now
+
+    def rename(self, title: str, *, now: datetime) -> None:
+        cleaned = title.strip()
+        if not cleaned:
+            raise InvalidStateTransitionError("a conversation title cannot be empty")
+        self.title = cleaned[:200]
+        self.updated_at = now
+
+    def record_turn(self, *, now: datetime) -> None:
+        self.last_message_at = now
+        self.updated_at = now
+
+    def compact(self, *, summary: str, through_seq: int, now: datetime) -> None:
+        """Replaces the compacted prefix with a precis.
+
+        Refuses to move backwards: a stale job finishing after a newer one
+        would otherwise re-expose turns the newer summary already covered.
+        """
+        if through_seq <= self.summary_through_seq:
+            return
+        self.summary = summary
+        self.summary_through_seq = through_seq
+        self.updated_at = now
+
+    # -- handoff -------------------------------------------------------------
+
+    @property
+    def ai_may_reply(self) -> bool:
+        """Whether the AI is still the one answering.
+
+        **This is the guard behind requirement "AI must not automatically
+        resume".** Once a human owns the thread, only an explicit
+        `return_to_ai()` puts the AI back -- nothing about the visitor sending
+        another message does, which is precisely the case that would otherwise
+        let the AI talk over an agent mid-conversation.
+        """
+        return self.state is ConversationState.AI_ACTIVE
+
+    def request_handoff(
+        self, *, reason: str | None, initiated_by: HandoffInitiator, now: datetime
+    ) -> None:
+        """Asks for a human, without yet choosing a team.
+
+        Idempotent for a thread already awaiting or receiving human attention:
+        a visitor pressing "talk to a person" twice must not reset an
+        already-claimed conversation back into the queue and strand the agent
+        who claimed it.
+        """
+        if self.state in HUMAN_OWNED_STATES:
+            return
+        self.state = ConversationState.HANDOFF_REQUESTED
+        self.handoff_reason = (reason or "").strip()[:500] or None
+        self.handoff_initiated_by = initiated_by
+        self.handoff_at = now
+        self.updated_at = now
+
+    def route_to_team(
+        self,
+        *,
+        team_id: UUID,
+        reason: str | None = None,
+        initiated_by: HandoffInitiator | None = None,
+        now: datetime,
+    ) -> None:
+        """Places the thread in a team's queue. The AI stops here."""
+        if self.state in (ConversationState.ASSIGNED, ConversationState.HUMAN_ACTIVE):
+            raise InvalidStateTransitionError(
+                "this conversation is already with an agent"
+            )
+        self.state = ConversationState.UNASSIGNED
+        self.assigned_team_id = team_id
+        self.assigned_membership_id = None
+        if reason is not None:
+            self.handoff_reason = reason.strip()[:500] or None
+        if initiated_by is not None:
+            self.handoff_initiated_by = initiated_by
+        if self.handoff_at is None:
+            self.handoff_at = now
+        self.updated_at = now
+
+    def claim(self, *, membership_id: UUID, now: datetime) -> None:
+        """One agent takes ownership.
+
+        **This entity method is not what makes claiming safe.** Two agents can
+        both load an UNASSIGNED conversation and both call this. The race is
+        settled in the repository by a conditional `UPDATE ... WHERE state =
+        'unassigned'`, which Postgres serialises; the loser sees zero rows
+        affected and is told someone else got there first. This method exists
+        so the in-memory object matches what was written -- it is the
+        bookkeeping, not the lock.
+        """
+        if self.state not in (
+            ConversationState.UNASSIGNED,
+            ConversationState.HANDOFF_REQUESTED,
+        ):
+            raise InvalidStateTransitionError(
+                "only an unassigned conversation can be claimed"
+            )
+        self.state = ConversationState.ASSIGNED
+        self.assigned_membership_id = membership_id
+        self.claimed_at = now
+        self.updated_at = now
+
+    def record_agent_reply(self, *, now: datetime) -> None:
+        self.state = ConversationState.HUMAN_ACTIVE
+        self.last_message_at = now
+        self.updated_at = now
+
+    def resolve(self, *, now: datetime) -> None:
+        self.state = ConversationState.RESOLVED
+        self.updated_at = now
+
+    def return_to_ai(self, *, now: datetime) -> None:
+        """The explicit, supported way back to the AI.
+
+        Required to exist as its own transition rather than falling out of some
+        other action: "the AI resumed because the agent went quiet" is exactly
+        the accident requirement 10 forbids, and only a deliberate call can be
+        audited as a deliberate decision.
+        """
+        self.state = ConversationState.AI_ACTIVE
+        self.assigned_membership_id = None
+        self.assigned_team_id = None
         self.updated_at = now
 
 
@@ -396,9 +703,62 @@ class ModelConfiguration(Entity):
     #: working, and the audit trail keeps its referent.
     archived_at: datetime | None = None
 
+    # -- provider configuration ---------------------------------------------
+    #
+    # These replace the single set of `OPENAI__*` environment variables that
+    # every tenant on the deployment previously shared. `.env` remains the
+    # fallback for a deployment that has configured nothing, so upgrading does
+    # not require an operator to fill this in before the platform answers a
+    # question -- but a configured row wins, and it is per-configuration.
+
+    provider: str = "openai"
+    #: **Ciphertext only.** The plaintext key never occupies a field on this
+    #: entity, so no response DTO built from it can leak one by accident --
+    #: the same "a DTO with no field capable of carrying the secret" argument
+    #: that `ProviderCredentialSummary` rests on. Decryption happens in the
+    #: chat/embedding adapter at call time and nowhere else.
+    api_key_ciphertext: bytes | None = None
+    #: Last four characters, for the console to show which key is in place.
+    api_key_hint: str | None = None
+    embedding_model: str | None = None
+    embedding_dimensions: int | None = None
+    #: The model actually called. `model_name` stays the human-facing label,
+    #: which is what the tenant's assistant picker shows; a platform operator
+    #: may well name a configuration "Fast (nursery)" while pointing it at
+    #: `gpt-5.4-mini`.
+    chat_model: str | None = None
+    request_timeout_seconds: int | None = None
+    chat_reasoning_effort: str | None = None
+    #: A disabled configuration answers nothing. Distinct from archived:
+    #: archiving withdraws it from *new* assignments and leaves working
+    #: assistants alone, disabling stops it being used at all -- the switch an
+    #: operator reaches for when a key is leaking.
+    enabled: bool = True
+
     @property
     def is_platform_owned(self) -> bool:
         return self.tenant_id is None
+
+    @property
+    def has_own_credential(self) -> bool:
+        return self.api_key_ciphertext is not None
+
+    def set_api_key(self, *, ciphertext: bytes, hint: str, now: datetime) -> None:
+        """Replaces the stored key. Rotation is this, not a separate path.
+
+        Takes ciphertext rather than plaintext deliberately: the entity is the
+        wrong place to hold an encryptor, and a method taking a plaintext key
+        is a method whose arguments show up in a traceback.
+        """
+        self.api_key_ciphertext = ciphertext
+        self.api_key_hint = hint
+        self.updated_at = now
+
+    def clear_api_key(self, *, now: datetime) -> None:
+        """Falls back to the deployment's own key for this configuration."""
+        self.api_key_ciphertext = None
+        self.api_key_hint = None
+        self.updated_at = now
 
     @property
     def is_archived(self) -> bool:
@@ -430,11 +790,30 @@ class ModelConfiguration(Entity):
         token_budget_per_month: int | None,
         provider_credential_id: UUID | None,
         now: datetime,
+        provider: str | None = None,
+        embedding_model: str | None = None,
+        embedding_dimensions: int | None = None,
+        chat_model: str | None = None,
+        request_timeout_seconds: int | None = None,
+        chat_reasoning_effort: str | None = None,
+        enabled: bool | None = None,
     ) -> None:
         self.model_name = model_name
         self.parameters = parameters
         self.token_budget_per_month = token_budget_per_month
         self.provider_credential_id = provider_credential_id
+        # The provider block is keyword-optional so the pre-existing callers
+        # (and their tests) keep working unchanged; passing nothing leaves the
+        # stored provider configuration exactly as it was.
+        if provider is not None:
+            self.provider = provider
+        if enabled is not None:
+            self.enabled = enabled
+        self.embedding_model = embedding_model
+        self.embedding_dimensions = embedding_dimensions
+        self.chat_model = chat_model
+        self.request_timeout_seconds = request_timeout_seconds
+        self.chat_reasoning_effort = chat_reasoning_effort
         self.updated_at = now
 
 

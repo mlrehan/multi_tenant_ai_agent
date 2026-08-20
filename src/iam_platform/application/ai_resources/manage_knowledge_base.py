@@ -16,6 +16,9 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 from iam_platform.application.ai_resources.authorize import load_visible_knowledge_base
+from iam_platform.application.ai_resources.entitlements import (
+    guard_knowledge_base_quota,
+)
 from iam_platform.application.ai_resources.exceptions import (
     KnowledgeBaseNotFoundError,
     PermissionDeniedError,
@@ -78,6 +81,13 @@ class CreateKnowledgeBase:
         async with self._uow_factory(actor_id, tenant_id) as uow:
             if CREATE_KNOWLEDGE_BASE_PERMISSION not in command.permissions:
                 raise PermissionDeniedError(CREATE_KNOWLEDGE_BASE_PERMISSION)
+
+            # Permission first, then plan. A caller who lacks the permission
+            # must be told that, not that they are at a limit -- the two send
+            # them to different people for a fix.
+            await guard_knowledge_base_quota(
+                uow, tenant_id=tenant_id, clock=self._clock
+            )
 
             requester = await build_requester_context(
                 uow, tenant_id=tenant_id, user_id=actor_id, permissions=command.permissions

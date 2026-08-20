@@ -181,6 +181,14 @@ export interface Assistant {
   owner_membership_id: string;
   model_configuration_id: string;
   system_prompt: string | null;
+  /** The guided brief the AI Chatbot console edits. Returned so an edit form
+   *  is populated with what is stored — the failure this response already had
+   *  once, when `system_prompt` was missing and every save silently
+   *  overwrote the existing prompt with an empty string. */
+  role_instructions: string | null;
+  avoid_instructions: string | null;
+  personality: Personality;
+  response_length: ResponseLength;
   status: AssistantStatus;
   created_at: string;
   updated_at: string;
@@ -302,12 +310,55 @@ export interface KnowledgeBase {
 
 export interface Conversation {
   id: string;
-  assistant_id: string;
-  membership_id: string;
+  // Both nullable: a widget/visitor conversation has no assistant bound and
+  // is owned by a visitor session, not a membership.
+  assistant_id: string | null;
+  membership_id: string | null;
   title?: string | null;
   status: ConversationStatus;
   created_at: string;
   last_message_at: string | null;
+}
+
+/** Mirrors `MessageRole` in domain/ai_resources/entities.py. `user`/`assistant`
+ *  are the visitor and the AI; `agent_message`/`internal_comment` are a human
+ *  reply and a staff-only note; `system_event` is a transfer/handoff marker. */
+export type MessageRole =
+  | "user"
+  | "assistant"
+  | "agent_message"
+  | "internal_comment"
+  | "system_event";
+
+export interface ConversationMessage {
+  id: string;
+  seq: number;
+  role: MessageRole;
+  content: string;
+  /** Only what this answer cited -- label, document id and location. */
+  citations: { label: string; document_id: string; source_location: string | null }[];
+  /** The exchange's token cost, on the answer that incurred it. 0 on a
+   *  question, and on any answer the provider reported no usage for. */
+  token_count: number;
+  created_at: string;
+}
+
+export interface ConversationThread {
+  conversation: Conversation;
+  /** False when reached through the oversight permission -- the UI shows a
+   *  banner and hides the owner-only rename/delete controls. */
+  is_owner: boolean;
+  messages: ConversationMessage[];
+  /** The visitor is composing something right now. Ephemeral state read from a
+   *  short-lived cache key, deliberately not a `ConversationMessage`: it is not
+   *  something anybody said and has no place in a transcript. */
+  visitor_typing?: boolean;
+  /** Turns in the whole thread, not in this page. */
+  total_messages?: number;
+  /** Older turns exist above this page. Derived server-side: a page that
+   *  happens to be exactly `limit` long is otherwise indistinguishable from
+   *  the last one. */
+  has_more?: boolean;
 }
 
 export interface ProviderCredential {
@@ -330,4 +381,126 @@ export interface KnowledgeBaseQueryHit {
   document_id: string;
   filename: string;
   score: number;
+}
+
+// ---- Chatbot configuration, plan and handoff ----
+
+export type Personality = "neutral" | "friendly" | "reassuring" | "professional";
+export type ResponseLength = "concise" | "balanced" | "detailed";
+export type ConversationState =
+  | "ai_active"
+  | "handoff_requested"
+  | "unassigned"
+  | "assigned"
+  | "human_active"
+  | "resolved";
+
+/** Avatar *keys*, never URLs — the widget maps each to an inline SVG it already
+ *  ships. A URL would let a tenant point every visitor's browser at an
+ *  arbitrary third-party origin from their own customers' pages. */
+export const AVATAR_KEYS = [
+  "nursery-default",
+  "nursery-bear",
+  "nursery-star",
+  "nursery-leaf",
+] as const;
+export type AvatarKey = (typeof AVATAR_KEYS)[number];
+
+export interface ChatbotSettings {
+  ai_chatbot_enabled: boolean;
+  company_name: string | null;
+  company_description: string;
+  industry: string;
+  allow_human_handoff: boolean;
+  add_ai_summary_as_internal_comment: boolean;
+  allow_ai_for_unassigned_conversations: boolean;
+  /** What the tenant asked for. null = inherit the platform ceiling. */
+  daily_message_limit: number | null;
+  /** What is actually enforced after clamping. Shown beside the request so an
+   *  admin sees their 5,000 applied as 1,000 rather than meeting it as a 429. */
+  effective_daily_message_limit: number | null;
+  share_visitor_location: boolean;
+  updated_at: string;
+}
+
+/** The tenant's own plan. Usage fields are `number | null`: null means the
+ *  counter could not be read — deliberately distinct from 0, which would claim
+ *  nothing has been spent. Render `?`, never a reassuring zero. */
+export interface TenantPlan {
+  max_knowledge_bases: number | null;
+  max_chat_widgets: number | null;
+  max_messages_per_day: number | null;
+  max_tokens_per_month: number | null;
+  allow_own_provider_credentials: boolean;
+  allow_create_assistant: boolean;
+  allow_invite_members: boolean;
+  allow_create_roles: boolean;
+  knowledge_bases_used: number;
+  chat_widgets_used: number;
+  assistants_used: number;
+  messages_used_today: number | null;
+  tokens_used_this_month: number | null;
+  effective_daily_message_limit: number | null;
+}
+
+export interface TenantEntitlements {
+  tenant_id: string;
+  max_knowledge_bases: number | null;
+  max_chat_widgets: number | null;
+  max_messages_per_day: number | null;
+  max_tokens_per_month: number | null;
+  allow_own_provider_credentials: boolean;
+  allow_create_assistant: boolean;
+  allow_invite_members: boolean;
+  allow_create_roles: boolean;
+  updated_at: string;
+}
+
+export interface ProviderCapability {
+  provider: string;
+  label: string;
+  /** False = this platform has no adapter. Configuration is refused server-side;
+   *  the UI disables it rather than hiding it, so an operator asking "why can't
+   *  I pick Gemini?" sees the answer. */
+  supported: boolean;
+  supports_embeddings: boolean;
+  supports_embedding_dimensions: boolean;
+  supports_reasoning_effort: boolean;
+  supports_request_timeout: boolean;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  member_ids: string[];
+}
+
+export interface AssistantBehaviour {
+  assistant_id: string;
+  role_instructions: string;
+  avoid_instructions: string;
+  personality: Personality;
+  response_length: ResponseLength;
+}
+
+export interface WidgetPresentation {
+  widget_id: string;
+  assistant_id: string | null;
+  chatbot_name: string;
+  chatbot_title: string;
+  avatar_key: AvatarKey;
+  greeting: string | null;
+  show_quick_reply_suggestions: boolean;
+}
+
+export interface UnassignedConversation {
+  id: string;
+  assigned_team_id: string | null;
+  handoff_reason: string | null;
+  handoff_at: string | null;
+  handoff_initiated_by: "visitor" | "ai" | "agent" | null;
+  title: string | null;
+  last_message_at: string | null;
 }

@@ -134,10 +134,28 @@ async function forward(
   const headers = new Headers();
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
-  const tenantId = request.headers.get("x-tenant-id");
+  // Header first, then the path. `EventSource` cannot set request headers at
+  // all, so an SSE subscription to `/v1/tenants/{id}/...` would otherwise be
+  // rejected by the backend's tenant resolver for a tenant plainly named in
+  // the URL it is calling.
+  //
+  // Deriving it from the path adds no trust: the backend re-validates whatever
+  // it is given against real membership rows before any query runs, so this
+  // only saves the client from restating a value the URL already carries.
+  const tenantId =
+    request.headers.get("x-tenant-id") ??
+    joinedPath.match(/^v1\/tenants\/([0-9a-f-]{36})\//i)?.[1];
   if (tenantId) headers.set("x-tenant-id", tenantId);
   const correlationId = request.headers.get("x-correlation-id");
   if (correlationId) headers.set("x-correlation-id", correlationId);
+  // Forwarded through, not left to `fetch`'s own default. This proxy runs
+  // server-side in Node, so an un-set User-Agent silently becomes Node's own
+  // string rather than the caller's browser -- harmless for auth (nothing
+  // here decides access on it) but it breaks any diagnostic that logs it,
+  // e.g. `push_subscriptions.user_agent`, which exists specifically to show
+  // an operator which browser a dead subscription belonged to.
+  const userAgent = request.headers.get("user-agent");
+  if (userAgent) headers.set("user-agent", userAgent);
   if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
 
   return fetch(target, {

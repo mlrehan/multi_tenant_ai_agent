@@ -65,6 +65,13 @@ dependencies = [
     "qdrant-client>=1.19.0,<2",
     "cohere>=7.0.8,<8",
 
+    # Web Push (RFC 8030/8291/8292) for agent notifications when the console
+    # is closed. Not hand-rolled: the payload encryption is ECDH + HKDF +
+    # AES128GCM with exact salt/nonce/info derivation, and a subtle mistake
+    # there produces pushes the browser silently discards rather than an error
+    # anyone can see.
+    "pywebpush>=2.0,<3",
+
     # Web/search/storage
     "tavily-python>=0.7.27",
     "boto3>=1.43.66",
@@ -151,6 +158,10 @@ mypy_path = "src"
 module = [
     "boto3.*", "botocore.*", "qdrant_client.*", "cohere.*", "celery.*",
     "crawl4ai.*",
+    # Web Push (RFC 8291/8292). No py.typed marker. Used behind the narrow,
+    # fully typed `PyWebPushSender` adapter, so the untyped surface is one
+    # function call wide.
+    "pywebpush.*",
     # PDFium bindings; no py.typed marker. Used behind a narrow, fully typed
     # adapter (infrastructure/parsing/fast_pdf.py), so the untyped surface is
     # three calls wide.

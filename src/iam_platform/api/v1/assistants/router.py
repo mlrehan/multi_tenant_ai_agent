@@ -67,10 +67,19 @@ from iam_platform.application.ai_resources.manage_chat_widget import (
     SetChatWidgetStatusCommand,
 )
 from iam_platform.application.ai_resources.manage_conversation import (
+    ConversationActionCommand,
+    ConversationMessagesQuery,
+    DeleteConversation,
     GetConversation,
+    GetConversationMessages,
     GetConversationQuery,
     ListMyConversations,
     ListMyConversationsQuery,
+    ListTenantConversations,
+    ListTenantConversationsQuery,
+    RenameConversation,
+    SearchConversations,
+    SearchConversationsQuery,
     StartConversation,
     StartConversationCommand,
 )
@@ -119,6 +128,7 @@ from iam_platform.application.identity.ports import AccessTokenClaims
 from iam_platform.domain.ai_resources.entities import (
     AiAssistant,
     ChatWidget,
+    Conversation,
     DataSource,
     KnowledgeBase,
 )
@@ -144,6 +154,10 @@ def _assistant_response(assistant: AiAssistant) -> schemas.AssistantResponse:
         owner_membership_id=assistant.owner_membership_id,
         model_configuration_id=assistant.model_configuration_id,
         system_prompt=assistant.system_prompt,
+        role_instructions=assistant.role_instructions,
+        avoid_instructions=assistant.avoid_instructions,
+        personality=assistant.personality.value,
+        response_length=assistant.response_length.value,
         status=assistant.status.value,
         created_at=assistant.created_at,
         updated_at=assistant.updated_at,
@@ -184,6 +198,18 @@ async def _tenant_spend(
             option.configuration.id,
         )
         return None
+
+
+def _conversation_response(c: Conversation) -> schemas.ConversationResponse:
+    return schemas.ConversationResponse(
+        id=c.id,
+        assistant_id=c.assistant_id,
+        membership_id=c.membership_id,
+        title=c.title,
+        status=c.status.value,
+        created_at=c.created_at,
+        last_message_at=c.last_message_at,
+    )
 
 
 def _embed_snippet(widget: ChatWidget, base_url: str) -> str:
@@ -1026,6 +1052,9 @@ async def answer_question(
             permissions=permissions,
             question=body.question,
             assistant_id=str(body.assistant_id) if body.assistant_id else None,
+            conversation_id=(
+                str(body.conversation_id) if body.conversation_id else None
+            ),
         )
     )
 
@@ -1184,6 +1213,52 @@ async def list_my_conversations(
     )
 
 
+@router.get("/conversations/search", response_model=schemas.ConversationListResponse)
+async def search_conversations(
+    tenant_id: str,
+    q: str,
+    all_members: bool = False,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> schemas.ConversationListResponse:
+    """Declared before `/conversations/{conversation_id}` on purpose -- FastAPI
+    matches in definition order, and `search` would otherwise be parsed as a
+    conversation id and answer 422 on a UUID parse."""
+    use_case = SearchConversations(container.ai_resource_uow_factory)
+    found = await use_case.execute(
+        SearchConversationsQuery(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            permissions=permissions,
+            text=q,
+            all_members=all_members,
+        )
+    )
+    return schemas.ConversationListResponse(
+        conversations=[_conversation_response(c) for c in found]
+    )
+
+
+@router.get("/conversations/all", response_model=schemas.ConversationListResponse)
+async def list_tenant_conversations(
+    tenant_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> schemas.ConversationListResponse:
+    """Every conversation in the tenant -- metadata only, oversight-gated."""
+    use_case = ListTenantConversations(container.ai_resource_uow_factory)
+    found = await use_case.execute(
+        ListTenantConversationsQuery(
+            actor_user_id=str(claims.user_id), tenant_id=tenant_id, permissions=permissions
+        )
+    )
+    return schemas.ConversationListResponse(
+        conversations=[_conversation_response(c) for c in found]
+    )
+
+
 @router.get(
     "/conversations/{conversation_id}",
     response_model=schemas.ConversationResponse | schemas.ConversationSummaryResponse,
@@ -1318,6 +1393,110 @@ async def revoke_provider_credential(
             actor_user_id=str(claims.user_id),
             tenant_id=tenant_id,
             credential_id=credential_id,
+            permissions=permissions,
+        )
+    )
+
+
+@router.get(
+    "/conversations/{conversation_id}/messages",
+    response_model=schemas.ConversationMessagesResponse,
+)
+async def get_conversation_messages(
+    tenant_id: str,
+    conversation_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    before_seq: int | None = None,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> schemas.ConversationMessagesResponse:
+    use_case = GetConversationMessages(container.ai_resource_uow_factory)
+    view, messages = await use_case.execute(
+        ConversationMessagesQuery(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            permissions=permissions,
+            limit=limit,
+            offset=offset,
+            before_seq=before_seq,
+        )
+    )
+    # Read after the use case authorized the conversation, and outside any
+    # transaction: it is cache state with a lifetime of seconds, allowed to be
+    # a moment stale, and worth no transaction cost.
+    visitor_typing = (
+        await container.typing_indicators.who_is_typing(
+            conversation_id=conversation_id, side="visitor"
+        )
+        is not None
+    )
+    return schemas.ConversationMessagesResponse(
+        conversation=_conversation_response(view.conversation),
+        is_owner=view.is_owner,
+        visitor_typing=visitor_typing,
+        total_messages=view.total_messages,
+        # True when turns exist above the page just returned. Derived here
+        # rather than left to the client to infer from a short page: a page
+        # that happens to be exactly `limit` long is indistinguishable from
+        # the last one otherwise.
+        has_more=bool(messages) and messages[0].seq > 1,
+        messages=[
+            schemas.ConversationMessageResponse(
+                id=m.id,
+                seq=m.seq,
+                role=m.role.value,
+                content=m.content,
+                citations=m.citations,
+                token_count=m.token_count,
+                created_at=m.created_at,
+            )
+            for m in messages
+        ],
+    )
+
+
+@router.patch(
+    "/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def rename_conversation(
+    tenant_id: str,
+    conversation_id: str,
+    body: schemas.RenameConversationRequest,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> None:
+    use_case = RenameConversation(container.ai_resource_uow_factory, container.clock)
+    await use_case.execute(
+        ConversationActionCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            permissions=permissions,
+            title=body.title,
+        )
+    )
+
+
+@router.delete(
+    "/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_conversation(
+    tenant_id: str,
+    conversation_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> None:
+    use_case = DeleteConversation(container.ai_resource_uow_factory)
+    await use_case.execute(
+        ConversationActionCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
             permissions=permissions,
         )
     )

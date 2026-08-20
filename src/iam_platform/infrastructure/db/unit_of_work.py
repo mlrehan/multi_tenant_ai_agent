@@ -21,12 +21,18 @@ from iam_platform.application.ai_resources.ports import (
     AiAssistantRepository,
     AssistantMemberRepository,
     ChatWidgetRepository,
+    ConversationHandoffRepository,
+    ConversationMessageRepository,
     ConversationRepository,
     DataSourceRepository,
     DocumentRepository,
     KnowledgeBaseRepository,
     ModelConfigurationRepository,
     ProviderCredentialRepository,
+    PushSubscriptionRepository,
+    TenantChatbotSettingsRepository,
+    TenantEntitlementRepository,
+    TenantTeamRepository,
 )
 from iam_platform.application.identity.ports import (
     AccountLockoutRepository,
@@ -68,6 +74,7 @@ from iam_platform.infrastructure.db.repositories.ai_resources import (
     SqlAiAssistantRepository,
     SqlAssistantMemberRepository,
     SqlChatWidgetRepository,
+    SqlConversationMessageRepository,
     SqlConversationRepository,
     SqlDataSourceRepository,
     SqlDocumentRepository,
@@ -82,6 +89,13 @@ from iam_platform.infrastructure.db.repositories.audit import (
     SqlAuditWriter,
     SqlLoginAttemptRepository,
     SqlSecurityEventWriter,
+)
+from iam_platform.infrastructure.db.repositories.governance import (
+    SqlConversationHandoffRepository,
+    SqlPushSubscriptionRepository,
+    SqlTenantChatbotSettingsRepository,
+    SqlTenantEntitlementRepository,
+    SqlTenantTeamRepository,
 )
 from iam_platform.infrastructure.db.repositories.identity import (
     SqlAuthIdentityRepository,
@@ -194,6 +208,9 @@ class SqlTenantUnitOfWork:
     tenant_membership_roles: TenantMembershipRoleRepository
     role_hierarchy: RoleHierarchyRepository
     authorization_overrides: AuthorizationOverrideRepository
+    #: Read-only here: `app_tenant` holds SELECT only on the table, so a
+    #: tenant path physically cannot raise its own limits.
+    entitlements: TenantEntitlementRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 
@@ -234,6 +251,7 @@ class SqlTenantUnitOfWork:
         self.tenant_membership_roles = SqlTenantMembershipRoleRepository(session)
         self.role_hierarchy = SqlRoleHierarchyRepository(session)
         self.authorization_overrides = SqlAuthorizationOverrideRepository(session)
+        self.entitlements = SqlTenantEntitlementRepository(session)
         self.audit = SqlAuditWriter(session)
         self.security_events = SqlSecurityEventWriter(session)
 
@@ -271,8 +289,14 @@ class SqlAiResourceUnitOfWork:
     data_sources: DataSourceRepository
     chat_widgets: ChatWidgetRepository
     conversations: ConversationRepository
+    conversation_messages: ConversationMessageRepository
     model_configurations: ModelConfigurationRepository
     provider_credentials: ProviderCredentialRepository
+    entitlements: TenantEntitlementRepository
+    chatbot_settings: TenantChatbotSettingsRepository
+    teams: TenantTeamRepository
+    handoff: ConversationHandoffRepository
+    push_subscriptions: PushSubscriptionRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 
@@ -307,8 +331,14 @@ class SqlAiResourceUnitOfWork:
         self.data_sources = SqlDataSourceRepository(session)
         self.chat_widgets = SqlChatWidgetRepository(session)
         self.conversations = SqlConversationRepository(session)
+        self.conversation_messages = SqlConversationMessageRepository(session)
         self.model_configurations = SqlModelConfigurationRepository(session)
         self.provider_credentials = SqlProviderCredentialRepository(session)
+        self.entitlements = SqlTenantEntitlementRepository(session)
+        self.chatbot_settings = SqlTenantChatbotSettingsRepository(session)
+        self.teams = SqlTenantTeamRepository(session)
+        self.handoff = SqlConversationHandoffRepository(session)
+        self.push_subscriptions = SqlPushSubscriptionRepository(session)
         self.audit = SqlAuditWriter(session)
         self.security_events = SqlSecurityEventWriter(session)
 
@@ -352,6 +382,7 @@ class SqlPlatformUnitOfWork:
     impersonation_sessions: ImpersonationSessionRepository
     model_configurations: PlatformModelConfigurationRepository
     tenant_model_access: TenantModelAccessRepository
+    tenant_entitlements: TenantEntitlementRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 
@@ -376,6 +407,7 @@ class SqlPlatformUnitOfWork:
         self.platform_user_roles = SqlPlatformUserRoleRepository(session)
         self.model_configurations = SqlPlatformModelConfigurationRepository(session)
         self.tenant_model_access = SqlTenantModelAccessRepository(session)
+        self.tenant_entitlements = SqlTenantEntitlementRepository(session)
         self.users = SqlUserRepository(session)
         self.identities = SqlAuthIdentityRepository(session)
         self.credentials = SqlCredentialRepository(session)

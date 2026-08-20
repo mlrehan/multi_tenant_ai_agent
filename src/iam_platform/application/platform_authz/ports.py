@@ -12,6 +12,9 @@ from types import TracebackType
 from typing import Protocol
 from uuid import UUID
 
+from iam_platform.application.ai_resources.ports import (
+    TenantEntitlementRepository,
+)
 from iam_platform.application.identity.ports import (
     AuditWriter,
     AuthIdentityRepository,
@@ -153,6 +156,8 @@ class PlatformUnitOfWork(Protocol):
     # entry, so both live on the BYPASSRLS connection.
     model_configurations: PlatformModelConfigurationRepository
     tenant_model_access: TenantModelAccessRepository
+    #: Platform-written; tenants hold SELECT only on the table itself.
+    tenant_entitlements: TenantEntitlementRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 

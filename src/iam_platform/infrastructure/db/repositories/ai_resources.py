@@ -19,6 +19,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from iam_platform.application.ai_resources.ports import StoredChunk
+from iam_platform.domain.ai_resources.chatbot import Personality, ResponseLength
 from iam_platform.domain.ai_resources.entities import (
     AiAssistant,
     AssistantAccessLevel,
@@ -26,6 +27,8 @@ from iam_platform.domain.ai_resources.entities import (
     AssistantStatus,
     ChatWidget,
     Conversation,
+    ConversationMessage,
+    ConversationState,
     ConversationStatus,
     CrawlMode,
     CredentialOwnerType,
@@ -33,7 +36,9 @@ from iam_platform.domain.ai_resources.entities import (
     DataSourceKind,
     Document,
     DocumentStatus,
+    HandoffInitiator,
     KnowledgeBase,
+    MessageRole,
     ModelConfiguration,
     ProviderCredential,
     ResourceVisibility,
@@ -44,6 +49,7 @@ from iam_platform.infrastructure.db.models.ai_resources import (
     AiAssistantModel,
     AssistantMemberModel,
     ChatWidgetModel,
+    ConversationMessageModel,
     ConversationModel,
     DataSourceModel,
     DocumentChunkModel,
@@ -68,6 +74,10 @@ def _assistant_to_domain(m: AiAssistantModel) -> AiAssistant:
         model_configuration_id=m.model_configuration_id,
         status=AssistantStatus(m.status),
         system_prompt=m.system_prompt,
+        role_instructions=m.role_instructions,
+        avoid_instructions=m.avoid_instructions,
+        personality=Personality(m.personality),
+        response_length=ResponseLength(m.response_length),
         created_at=m.created_at,
         updated_at=m.updated_at,
     )
@@ -128,6 +138,11 @@ class SqlAiAssistantRepository:
                 # in-memory fake repository and could not have caught a
                 # missing column in a real SQL statement.
                 model_configuration_id=assistant.model_configuration_id,
+                # Added with the entity fields, not after: see the note above.
+                role_instructions=assistant.role_instructions,
+                avoid_instructions=assistant.avoid_instructions,
+                personality=assistant.personality.value,
+                response_length=assistant.response_length.value,
             )
         )
 
@@ -377,11 +392,25 @@ def _conversation_to_domain(m: ConversationModel) -> Conversation:
         tenant_id=m.tenant_id,
         assistant_id=m.assistant_id,
         membership_id=m.membership_id,
+        visitor_session_id=m.visitor_session_id,
+        widget_id=m.widget_id,
+        state=ConversationState(m.state),
+        assigned_team_id=m.assigned_team_id,
+        assigned_membership_id=m.assigned_membership_id,
+        handoff_reason=m.handoff_reason,
+        handoff_at=m.handoff_at,
+        handoff_initiated_by=(
+            HandoffInitiator(m.handoff_initiated_by) if m.handoff_initiated_by else None
+        ),
+        claimed_at=m.claimed_at,
+        ai_fallback_disabled=m.ai_fallback_disabled,
         title=m.title,
         status=ConversationStatus(m.status),
         created_at=m.created_at,
         updated_at=m.updated_at,
         last_message_at=m.last_message_at,
+        summary=m.summary,
+        summary_through_seq=m.summary_through_seq,
     )
 
 
@@ -408,6 +437,14 @@ class SqlConversationRepository:
                 tenant_id=conversation.tenant_id,
                 assistant_id=conversation.assistant_id,
                 membership_id=conversation.membership_id,
+                # Written with the entity fields, not after. Omitting these
+                # made every visitor conversation fail the
+                # `exactly_one_owner` CHECK -- the row claimed neither a
+                # member nor a session, which is the one shape the constraint
+                # forbids.
+                visitor_session_id=conversation.visitor_session_id,
+                widget_id=conversation.widget_id,
+                state=conversation.state.value,
                 title=conversation.title,
                 status=conversation.status.value,
                 last_message_at=conversation.last_message_at,
@@ -423,8 +460,187 @@ class SqlConversationRepository:
                 title=conversation.title,
                 status=conversation.status.value,
                 last_message_at=conversation.last_message_at,
+                summary=conversation.summary,
+                summary_through_seq=conversation.summary_through_seq,
             )
         )
+
+    async def list_by_tenant(self, tenant_id: UUID) -> list[Conversation]:
+        stmt = (
+            select(ConversationModel)
+            .where(ConversationModel.tenant_id == tenant_id)
+            .order_by(ConversationModel.last_message_at.desc().nullslast())
+        )
+        return [_conversation_to_domain(m) for m in (await self._session.execute(stmt)).scalars()]
+
+    async def list_by_ids(self, conversation_ids: list[UUID]) -> list[Conversation]:
+        if not conversation_ids:
+            return []
+        stmt = (
+            select(ConversationModel)
+            .where(ConversationModel.id.in_(conversation_ids))
+            .order_by(ConversationModel.last_message_at.desc().nullslast())
+        )
+        return [_conversation_to_domain(m) for m in (await self._session.execute(stmt)).scalars()]
+
+    async def delete(self, conversation_id: UUID) -> None:
+        await self._session.execute(
+            delete(ConversationModel).where(ConversationModel.id == conversation_id)
+        )
+
+    async def find_by_visitor_session(
+        self, *, tenant_id: UUID, visitor_session_id: UUID
+    ) -> Conversation | None:
+        """The thread for one widget session.
+
+        Tenant-scoped in the predicate as well as by RLS: `visitor_session_id`
+        comes from a signed token, but a lookup that matched on it alone would
+        be one policy change away from reaching across tenants.
+        """
+        row = await self._session.scalar(
+            select(ConversationModel).where(
+                ConversationModel.tenant_id == tenant_id,
+                ConversationModel.visitor_session_id == visitor_session_id,
+            )
+        )
+        return _conversation_to_domain(row) if row else None
+
+
+def _message_to_domain(m: ConversationMessageModel) -> ConversationMessage:
+    return ConversationMessage(
+        id=m.id,
+        tenant_id=m.tenant_id,
+        conversation_id=m.conversation_id,
+        seq=m.seq,
+        role=MessageRole(m.role),
+        content=m.content,
+        citations=list(m.citations),
+        token_count=m.token_count,
+        created_at=m.created_at,
+    )
+
+class SqlConversationMessageRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add_many(self, messages: list[ConversationMessage]) -> None:
+        self._session.add_all(
+            [
+                ConversationMessageModel(
+                    id=m.id,
+                    tenant_id=m.tenant_id,
+                    conversation_id=m.conversation_id,
+                    seq=m.seq,
+                    role=m.role.value,
+                    content=m.content,
+                    citations=m.citations,
+                    token_count=m.token_count,
+                    created_at=m.created_at,
+                )
+                for m in messages
+            ]
+        )
+        await self._session.flush()
+
+    async def next_seq(self, conversation_id: UUID) -> int:
+        stmt = select(func.coalesce(func.max(ConversationMessageModel.seq), 0)).where(
+            ConversationMessageModel.conversation_id == conversation_id
+        )
+        return int((await self._session.execute(stmt)).scalar_one()) + 1
+
+    async def list_after(
+        self, *, conversation_id: UUID, after_seq: int
+    ) -> list[ConversationMessage]:
+        stmt = (
+            select(ConversationMessageModel)
+            .where(
+                ConversationMessageModel.conversation_id == conversation_id,
+                ConversationMessageModel.seq > after_seq,
+            )
+            .order_by(ConversationMessageModel.seq)
+        )
+        return [_message_to_domain(m) for m in (await self._session.execute(stmt)).scalars()]
+
+    async def list_page(
+        self, *, conversation_id: UUID, limit: int, offset: int
+    ) -> list[ConversationMessage]:
+        stmt = (
+            select(ConversationMessageModel)
+            .where(ConversationMessageModel.conversation_id == conversation_id)
+            .order_by(ConversationMessageModel.seq)
+            .limit(limit)
+            .offset(offset)
+        )
+        return [_message_to_domain(m) for m in (await self._session.execute(stmt)).scalars()]
+
+    async def list_tail(
+        self, *, conversation_id: UUID, limit: int, before_seq: int | None = None
+    ) -> list[ConversationMessage]:
+        """The most recent turns, oldest-first, paging backwards by cursor.
+
+        **A cursor, not an offset, and that difference is the bug this fixes.**
+        `list_page(limit=50, offset=0)` returns the *first* fifty turns of a
+        conversation, so a thread that outgrew fifty froze: every new message
+        landed past the window and the agent watched a visitor they could no
+        longer hear. An offset would misbehave a second way here even counting
+        from the end -- a live conversation gains rows between requests, which
+        slides every offset and makes a page skip or repeat turns.
+
+        `seq` is a per-conversation ordinal, so `before_seq` is stable no
+        matter how much arrives while someone is reading.
+
+        The window is selected newest-first and then reversed, because
+        "the last N" cannot be expressed by an ascending LIMIT.
+        """
+        stmt = select(ConversationMessageModel).where(
+            ConversationMessageModel.conversation_id == conversation_id
+        )
+        if before_seq is not None:
+            stmt = stmt.where(ConversationMessageModel.seq < before_seq)
+        stmt = stmt.order_by(ConversationMessageModel.seq.desc()).limit(limit)
+        newest_first = list((await self._session.execute(stmt)).scalars())
+        return [_message_to_domain(m) for m in reversed(newest_first)]
+
+    async def count_for_conversation(self, conversation_id: UUID) -> int:
+        """Total turns, so a caller can tell "there is more above" from
+        "this is the beginning" without fetching a page to find out."""
+        return int(
+            await self._session.scalar(
+                select(func.count())
+                .select_from(ConversationMessageModel)
+                .where(ConversationMessageModel.conversation_id == conversation_id)
+            )
+            or 0
+        )
+
+    async def search(
+        self, *, tenant_id: UUID, membership_id: UUID | None, text: str, limit: int
+    ) -> list[UUID]:
+        """Distinct conversation ids whose message text matches.
+
+        `plainto_tsquery` rather than `to_tsquery`: the input is whatever
+        someone typed into a search box, and `to_tsquery` raises a syntax error
+        on an unbalanced quote or a bare `&`. Ids only -- the caller re-reads
+        the conversations it is allowed to see, so a match can never widen
+        access on its own.
+        """
+        stmt = (
+            select(ConversationMessageModel.conversation_id)
+            .where(
+                ConversationMessageModel.tenant_id == tenant_id,
+                func.to_tsvector("english", ConversationMessageModel.content).op("@@")(
+                    func.plainto_tsquery("english", text)
+                ),
+            )
+            .distinct()
+            .limit(limit)
+        )
+        if membership_id is not None:
+            stmt = stmt.join(
+                ConversationModel,
+                ConversationModel.id == ConversationMessageModel.conversation_id,
+            ).where(ConversationModel.membership_id == membership_id)
+        return list((await self._session.execute(stmt)).scalars())
 
 
 def _model_configuration_to_domain(m: ModelConfigurationModel) -> ModelConfiguration:
@@ -725,6 +941,12 @@ def _widget_to_domain(model: ChatWidgetModel) -> ChatWidget:
         status=WidgetStatus(model.status),
         daily_question_limit=model.daily_question_limit,
         created_by_membership_id=model.created_by_membership_id,
+        assistant_id=model.assistant_id,
+        chatbot_name=model.chatbot_name,
+        chatbot_title=model.chatbot_title,
+        avatar_key=model.avatar_key,
+        greeting=model.greeting,
+        show_quick_reply_suggestions=model.show_quick_reply_suggestions,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
@@ -782,6 +1004,12 @@ class SqlChatWidgetRepository:
                 allowed_origins=list(widget.allowed_origins),
                 status=widget.status.value,
                 daily_question_limit=widget.daily_question_limit,
+                assistant_id=widget.assistant_id,
+                chatbot_name=widget.chatbot_name,
+                chatbot_title=widget.chatbot_title,
+                avatar_key=widget.avatar_key,
+                greeting=widget.greeting,
+                show_quick_reply_suggestions=widget.show_quick_reply_suggestions,
             )
         )
         await self._session.execute(stmt)

@@ -72,8 +72,19 @@ class WidgetTokenService:
         knowledge_base_id: UUID,
         origin: str,
         now: datetime,
+        session_id: UUID | None = None,
     ) -> IssuedWidgetSession:
-        session_id = uuid4()
+        """Mints a session token, optionally continuing an existing session.
+
+        `session_id` is what a visitor's conversation is found by, so a fresh
+        one on every mint means a refreshed page is a different person as far
+        as this platform is concerned -- their thread is still in Postgres and
+        they can never see it again. Passing the previous id forward is what
+        makes the history survive a reload; the caller is responsible for
+        having *proved* the visitor owns that id, which `read_resumable` below
+        is for.
+        """
+        session_id = session_id or uuid4()
         expires_at = now + timedelta(seconds=self._settings.widget_session_ttl_seconds)
         claims: dict[str, object] = {
             # `sub` is the *widget*, never a user. A visitor has no account,
@@ -98,6 +109,49 @@ class WidgetTokenService:
         return IssuedWidgetSession(
             token=token, session_id=session_id, expires_at=expires_at
         )
+
+    def read_resumable(self, token: str) -> WidgetSessionClaims | None:
+        """The claims of a previous session token, **expiry deliberately ignored**.
+
+        Continuing a conversation is not the same authority as acting in it.
+        Every request that *does* something still goes through `verify`, where
+        an expired token is refused; this is only asked at mint time, to answer
+        "which session was this browser last part of?". A visitor who closed
+        the tab overnight has a token hours past its thirty-minute life and is
+        still the same person with the same thread -- refusing them here would
+        make history survive a refresh but not a night, which is the case the
+        feature exists for.
+
+        What it does *not* relax is authenticity: the signature, issuer and
+        audience are all still checked, so the only session id a caller can
+        resume is one this service minted and handed to them. A plain
+        `session_id` field in the request body would have been trivially
+        forgeable and would have let anyone read a stranger's conversation by
+        guessing a uuid.
+
+        Returns `None` rather than raising: a token that is corrupt, forged, or
+        from a previous signing key is not an error the visitor can act on, and
+        the correct response is simply to start a fresh session.
+        """
+        try:
+            payload = jwt.decode(
+                token,
+                self._settings.public_key_pem,
+                algorithms=[self._settings.algorithm],
+                issuer=self._settings.issuer,
+                audience=self._settings.widget_audience,
+                leeway=self._settings.clock_skew_seconds,
+                options={"verify_exp": False},
+            )
+            return WidgetSessionClaims(
+                widget_id=UUID(payload["sub"]),
+                tenant_id=UUID(payload["tid"]),
+                knowledge_base_id=UUID(payload["kb"]),
+                session_id=UUID(payload["sid"]),
+                origin=str(payload["org"]),
+            )
+        except (jwt.InvalidTokenError, KeyError, ValueError):
+            return None
 
     def verify(self, token: str) -> WidgetSessionClaims:
         try:

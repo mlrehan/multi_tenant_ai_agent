@@ -293,6 +293,50 @@ class TavilySettings(BaseModel):
     api_key: SecretStr = SecretStr("")
 
 
+class PushSettings(BaseModel):
+    """Web Push (VAPID) for notifying agents when the console is not open.
+
+    **Unconfigured means the feature is absent, not broken.** `is_configured`
+    is false without a keypair, `GET .../push/public-key` then reports that,
+    and the console does not offer to subscribe. That is deliberate: the
+    alternative shapes are both worse -- refusing to start would take the whole
+    API down over an optional notification channel, and offering a Subscribe
+    button that always fails would look like a bug in the browser.
+
+    **Both keys are base64url strings, not PEM.** `pywebpush` hands a string
+    private key to `py_vapid.Vapid.from_string`, which strips newlines and
+    base64url-decodes it -- so a PKCS8 PEM pasted into an env var fails with
+    "ASN.1 parsing error: invalid length" at the moment of the first send, not
+    at startup. Found by sending a real push, not by reading the library.
+
+    Generate a matching pair with:
+
+        python -m scripts.generate_vapid_keys
+
+    The **private key never leaves the server**; the public key is handed to
+    every browser by design (it is what the push service uses to verify the
+    signature), so it is not a secret and is not a `SecretStr`.
+    """
+
+    vapid_public_key: str = ""
+    vapid_private_key: SecretStr = SecretStr("")
+
+    #: The `sub` claim of the VAPID JWT. Push services require a contact --
+    #: it is how they reach an operator whose sending is misbehaving rather
+    #: than silently blocking them.
+    vapid_subject: str = "mailto:ops@example.com"
+
+    #: How long a push may sit queued if the agent's browser is offline. Ten
+    #: minutes: a waiting visitor is a *now* problem, and a notification that
+    #: arrives an hour later sends an agent to a conversation someone else has
+    #: long since picked up.
+    ttl_seconds: int = 600
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.vapid_public_key and self.vapid_private_key.get_secret_value())
+
+
 class IngestionSettings(BaseModel):
     """Chunking parameters for the ingestion pipeline.
 
@@ -533,6 +577,11 @@ class Settings(BaseSettings):
     tavily: TavilySettings = TavilySettings()
     ingestion: IngestionSettings = IngestionSettings()
     crawl: CrawlSettings = CrawlSettings()
+
+    #: Agent push notifications. Optional in the same way and for the same
+    #: reason: an inbox that only chimes in an open tab is a lesser product,
+    #: not a broken one.
+    push: PushSettings = PushSettings()
 
     cors_allowed_origins: list[str] = []
 

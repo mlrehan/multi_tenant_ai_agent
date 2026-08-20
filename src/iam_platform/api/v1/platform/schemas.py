@@ -201,3 +201,60 @@ class PlatformModelConfigurationResponse(BaseModel):
 
 class PlatformModelConfigurationListResponse(BaseModel):
     model_configurations: list[PlatformModelConfigurationResponse]
+
+
+class TenantEntitlementsRequest(BaseModel):
+    """A tenant's plan, as a platform operator sets it.
+
+    `None` on any limit means **uncapped**, and is deliberately distinct from
+    `0` ("none at all"). Both are accepted; the client sends `null` for the
+    former, and the field is required rather than optional so an operator
+    cannot half-fill the form and silently leave a limit at whatever it was.
+    """
+
+    max_knowledge_bases: int | None = Field(ge=0)
+    max_chat_widgets: int | None = Field(ge=0)
+    max_messages_per_day: int | None = Field(ge=0)
+    max_tokens_per_month: int | None = Field(ge=0)
+    allow_own_provider_credentials: bool
+    allow_create_assistant: bool
+    allow_invite_members: bool
+    allow_create_roles: bool
+
+
+class TenantEntitlementsResponse(BaseModel):
+    tenant_id: UUID
+    max_knowledge_bases: int | None
+    max_chat_widgets: int | None
+    max_messages_per_day: int | None
+    max_tokens_per_month: int | None
+    allow_own_provider_credentials: bool
+    allow_create_assistant: bool
+    allow_invite_members: bool
+    allow_create_roles: bool
+    updated_at: datetime
+
+
+class TenantEntitlementsListResponse(BaseModel):
+    entitlements: list[TenantEntitlementsResponse]
+
+
+class ProviderCapabilityResponse(BaseModel):
+    """What the console needs to disable the fields a provider cannot honour.
+
+    `supported=False` entries are returned rather than hidden: an operator
+    asking "why can't I pick Gemini?" deserves to see it listed as not yet
+    implemented instead of wondering whether the page failed to load.
+    """
+
+    provider: str
+    label: str
+    supported: bool
+    supports_embeddings: bool
+    supports_embedding_dimensions: bool
+    supports_reasoning_effort: bool
+    supports_request_timeout: bool
+
+
+class ProviderCapabilityListResponse(BaseModel):
+    providers: list[ProviderCapabilityResponse]

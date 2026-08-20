@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Little Stars Nursery — Ilford</title>
+<style>
+  :root { --ink:#1f2a37; --muted:#5b6b7c; --line:#e3e8ee; --brand:#0f766e; --bg:#f7f9fb; }
+  * { box-sizing:border-box }
+  body { margin:0; font:16px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         color:var(--ink); background:var(--bg) }
+  header { background:#fff; border-bottom:1px solid var(--line) }
+  .wrap { max-width:960px; margin:0 auto; padding:0 24px }
+  nav { display:flex; align-items:center; gap:28px; height:68px }
+  .logo { font-weight:700; font-size:19px; color:var(--brand); margin-right:auto }
+  nav a { color:var(--muted); text-decoration:none; font-size:15px }
+  nav a:hover { color:var(--ink) }
+  .hero { background:#fff; padding:56px 0 64px; border-bottom:1px solid var(--line) }
+  .hero h1 { font-size:40px; line-height:1.15; margin:0 0 14px; letter-spacing:-.02em }
+  .hero p { font-size:18px; color:var(--muted); max-width:60ch; margin:0 0 24px }
+  .cta { display:inline-block; background:var(--brand); color:#fff; text-decoration:none;
+         padding:12px 22px; border-radius:8px; font-weight:600 }
+  main { padding:48px 0 96px }
+  .cards { display:grid; gap:20px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)) }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:20px }
+  .card h3 { margin:0 0 8px; font-size:17px }
+  .card p { margin:0; color:var(--muted); font-size:15px }
+  h2 { font-size:24px; margin:44px 0 12px }
+  table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line);
+          border-radius:12px; overflow:hidden }
+  th, td { text-align:left; padding:12px 16px; border-bottom:1px solid var(--line); font-size:15px }
+  th { background:#f2f6f9; font-weight:600 }
+  tr:last-child td { border-bottom:0 }
+  footer { border-top:1px solid var(--line); background:#fff; color:var(--muted);
+           font-size:14px; padding:28px 0 }
+  .hint { margin-top:40px; padding:14px 16px; background:#fffbeb; border:1px solid #fde68a;
+          border-radius:10px; font-size:14px; color:#78350f }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <nav>
+      <span class="logo">Little Stars Nursery</span>
+      <a href="#sessions">Sessions</a>
+      <a href="#fees">Fees</a>
+      <a href="#admissions">Admissions</a>
+      <a href="#contact">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <h1>A warm, curious start<br>for every child.</h1>
+    <p>Ofsted-registered early-years care in Ilford for children aged 6 months to 5 years.
+       Funded hours available, with flexible morning, afternoon and full-day sessions.</p>
+    <a class="cta" href="#admissions">Book a visit</a>
+  </div>
+</section>
+
+<main class="wrap">
+  <div class="cards">
+    <div class="card"><h3>EYFS curriculum</h3><p>Play-led learning across all seven areas, with daily updates for parents.</p></div>
+    <div class="card"><h3>Home-cooked meals</h3><p>Freshly prepared on site, with allergy and dietary plans agreed in advance.</p></div>
+    <div class="card"><h3>Settling in</h3><p>A gentle, staged settling programme shaped around your child's pace.</p></div>
+  </div>
+
+  <h2 id="sessions">Sessions</h2>
+  <table>
+    <tr><th>Session</th><th>Hours</th></tr>
+    <tr><td>Morning</td><td>7:30am – 1:00pm</td></tr>
+    <tr><td>Afternoon</td><td>1:00pm – 6:00pm</td></tr>
+    <tr><td>Full day</td><td>7:30am – 6:00pm</td></tr>
+  </table>
+
+  <h2 id="admissions">Admissions</h2>
+  <p>We accept applications year-round and keep a short waiting list for the baby room.
+     Funded 15- and 30-hour places can be applied to any session pattern.</p>
+
+  <h2 id="contact">Contact</h2>
+  <p>Questions about fees, invoices or funding? Use the chat in the corner — the assistant
+     answers from our published information, and can put you through to a colleague.</p>
+
+  <div class="hint">
+    <strong>Demo page.</strong> This is a stand-in for a tenant's own website. The only thing
+    connecting it to the platform is the one <code>&lt;script&gt;</code> tag at the bottom of
+    this file — no build step, no framework, no shared code with the console.
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">Little Stars Nursery · Ilford · Demo site for widget verification</div>
+</footer>
+
+<!--
+  The embed snippet, exactly as the console hands it to a tenant admin: the
+  public key and nothing else. Name, title, avatar, greeting and the opening
+  prompts all arrive with the chat session, so what a visitor sees here is
+  whatever the tenant approved in the console's AI Chatbot preview — no second
+  place to keep in step.
+
+  It is bound to `http://localhost:8091` by the widget's origin allowlist, so
+  copying this tag onto any other site will be refused when it tries to mint a
+  session.
+-->
+<script src="http://127.0.0.1:8000/v1/public/chat/widget.js"
+        data-public-key="wk_BiQt8VBNatrnHO7HxedKTZ5RModnxfER"
+        async></script>
+
+</body>
+</html>

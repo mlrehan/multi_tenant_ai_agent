@@ -55,6 +55,8 @@ TENANT_PERMISSIONS = [
     ("tenant.conversations.create", "conversations", "create", "low", "Start conversations with assistants"),
     ("tenant.conversations.view", "conversations", "view", "high",
      "View other members' conversation metadata"),
+    ("tenant.conversations.view_all", "conversations", "view_all", "high",
+     "See every team's handoff queue, not only the teams you staff"),
     ("tenant.provider_credentials.manage", "provider_credentials", "manage", "critical",
      "Store and rotate provider API keys"),
     ("tenant.resources.read", "resources", "read", "low", "Read tenant resources"),

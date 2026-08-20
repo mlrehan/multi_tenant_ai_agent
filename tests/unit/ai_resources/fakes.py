@@ -19,6 +19,7 @@ from iam_platform.domain.ai_resources.entities import (
     AssistantStatus,
     ChatWidget,
     Conversation,
+    ConversationMessage,
     DataSource,
     Document,
     KnowledgeBase,
@@ -220,6 +221,74 @@ class FakeConversationRepository:
     async def save(self, conversation: Conversation) -> None:
         self.by_id[conversation.id] = conversation
 
+    async def list_by_tenant(self, tenant_id: UUID) -> list[Conversation]:
+        return [c for c in self.by_id.values() if c.tenant_id == tenant_id]
+
+    async def list_by_ids(self, conversation_ids: list[UUID]) -> list[Conversation]:
+        return [self.by_id[i] for i in conversation_ids if i in self.by_id]
+
+    async def delete(self, conversation_id: UUID) -> None:
+        self.by_id.pop(conversation_id, None)
+
+
+class FakeConversationMessageRepository:
+    """Append-only, like the real table -- there is deliberately no `save`.
+
+    Cascade is simulated on the unit of work rather than here, because in
+    Postgres it is the *conversation* delete that removes these rows.
+    """
+
+    def __init__(self) -> None:
+        self.by_conversation: dict[UUID, list[ConversationMessage]] = {}
+
+    async def add_many(self, messages: list[ConversationMessage]) -> None:
+        for m in messages:
+            self.by_conversation.setdefault(m.conversation_id, []).append(m)
+
+    async def next_seq(self, conversation_id: UUID) -> int:
+        existing = self.by_conversation.get(conversation_id, [])
+        return (max((m.seq for m in existing), default=0)) + 1
+
+    async def list_after(
+        self, *, conversation_id: UUID, after_seq: int
+    ) -> list[ConversationMessage]:
+        return [
+            m
+            for m in sorted(
+                self.by_conversation.get(conversation_id, []), key=lambda x: x.seq
+            )
+            if m.seq > after_seq
+        ]
+
+    async def list_page(
+        self, *, conversation_id: UUID, limit: int, offset: int
+    ) -> list[ConversationMessage]:
+        ordered = sorted(self.by_conversation.get(conversation_id, []), key=lambda x: x.seq)
+        return ordered[offset : offset + limit]
+
+    async def list_tail(
+        self, *, conversation_id: UUID, limit: int, before_seq: int | None = None
+    ) -> list[ConversationMessage]:
+        ordered = sorted(self.by_conversation.get(conversation_id, []), key=lambda x: x.seq)
+        if before_seq is not None:
+            ordered = [m for m in ordered if m.seq < before_seq]
+        return ordered[-limit:] if limit > 0 else []
+
+    async def count_for_conversation(self, conversation_id: UUID) -> int:
+        return len(self.by_conversation.get(conversation_id, []))
+
+    async def search(
+        self, *, tenant_id: UUID, membership_id: UUID | None, text: str, limit: int
+    ) -> list[UUID]:
+        found: list[UUID] = []
+        for conversation_id, messages in self.by_conversation.items():
+            if any(
+                m.tenant_id == tenant_id and text.lower() in m.content.lower()
+                for m in messages
+            ):
+                found.append(conversation_id)
+        return found[:limit]
+
 
 class FakeModelConfigurationRepository:
     """Models entitlements, not ownership.
@@ -420,6 +489,183 @@ class FakeChatWidgetRepository:
         self.by_id[widget.id] = widget
 
 
+
+
+class FakeTenantEntitlementRepository:
+    """Permissive by default -- see the module note in fix_fakes.
+
+    Standing in for a generously provisioned tenant keeps tests that are not
+    about plans from failing on a limit they never configured. A test about
+    entitlements assigns `self.stored[tenant_id]`.
+    """
+
+    def __init__(self) -> None:
+        self.stored: dict[UUID, object] = {}
+        self.knowledge_bases = 0
+        self.chat_widgets = 0
+        self.assistants = 0
+
+    async def get_for_tenant(self, tenant_id: UUID) -> object | None:
+        if tenant_id in self.stored:
+            return self.stored[tenant_id]
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from iam_platform.domain.tenancy.entitlements import TenantEntitlements
+
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        return TenantEntitlements(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            max_knowledge_bases=None,
+            max_chat_widgets=None,
+            max_messages_per_day=None,
+            max_tokens_per_month=None,
+            allow_own_provider_credentials=True,
+            allow_create_assistant=True,
+            allow_invite_members=True,
+            allow_create_roles=True,
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def upsert(self, entitlements: object) -> None:
+        self.stored[entitlements.tenant_id] = entitlements  # type: ignore[attr-defined]
+
+    async def list_all(self) -> list[object]:
+        return list(self.stored.values())
+
+    async def count_knowledge_bases(self, tenant_id: UUID) -> int:
+        return self.knowledge_bases
+
+    async def count_chat_widgets(self, tenant_id: UUID) -> int:
+        return self.chat_widgets
+
+    async def count_assistants(self, tenant_id: UUID) -> int:
+        return self.assistants
+
+
+class FakeTenantChatbotSettingsRepository:
+    def __init__(self) -> None:
+        self.stored: dict[UUID, object] = {}
+
+    async def get_for_tenant(self, tenant_id: UUID) -> object | None:
+        return self.stored.get(tenant_id)
+
+    async def upsert(self, settings: object) -> None:
+        self.stored[settings.tenant_id] = settings  # type: ignore[attr-defined]
+
+
+class FakeTenantTeamRepository:
+    def __init__(self) -> None:
+        self.teams: dict[UUID, object] = {}
+        self.members: dict[UUID, list[UUID]] = {}
+
+    async def get(self, *, tenant_id: UUID, team_id: UUID) -> object | None:
+        team = self.teams.get(team_id)
+        return team if team is not None and team.tenant_id == tenant_id else None  # type: ignore[attr-defined]
+
+    async def list_for_tenant(
+        self, tenant_id: UUID, *, active_only: bool = False
+    ) -> list[object]:
+        return [
+            t
+            for t in self.teams.values()
+            if t.tenant_id == tenant_id and (not active_only or t.is_active)  # type: ignore[attr-defined]
+        ]
+
+    async def add(self, team: object) -> None:
+        self.teams[team.id] = team  # type: ignore[attr-defined]
+
+    async def save(self, team: object) -> None:
+        self.teams[team.id] = team  # type: ignore[attr-defined]
+
+    async def list_members(self, *, tenant_id: UUID, team_id: UUID) -> list[UUID]:
+        return list(self.members.get(team_id, []))
+
+    async def set_members(
+        self, *, tenant_id: UUID, team_id: UUID, membership_ids: list[UUID]
+    ) -> None:
+        self.members[team_id] = list(membership_ids)
+
+    async def teams_for_membership(
+        self, *, tenant_id: UUID, membership_id: UUID
+    ) -> list[UUID]:
+        return [t for t, ms in self.members.items() if membership_id in ms]
+
+
+class FakeConversationHandoffRepository:
+    """Simulates the conditional UPDATE, including its refusals.
+
+    The production repository settles a two-agent race in Postgres; this fake
+    reproduces the *observable* behaviour -- a second claim returns False --
+    so a use-case test can assert the loser is told, without a database.
+    """
+
+    def __init__(self, conversations: object) -> None:
+        self._conversations = conversations
+
+    def _get(self, tenant_id: UUID, conversation_id: UUID) -> object | None:
+        c = self._conversations.by_id.get(conversation_id)  # type: ignore[attr-defined]
+        return c if c is not None and c.tenant_id == tenant_id else None  # type: ignore[attr-defined]
+
+    async def route_to_team(
+        self, *, tenant_id, conversation_id, team_id, reason, initiated_by, now
+    ) -> bool:
+        from iam_platform.domain.ai_resources.entities import ConversationState
+
+        c = self._get(tenant_id, conversation_id)
+        if c is None or c.state in (  # type: ignore[attr-defined]
+            ConversationState.ASSIGNED,
+            ConversationState.HUMAN_ACTIVE,
+        ):
+            return False
+        c.route_to_team(  # type: ignore[attr-defined]
+            team_id=team_id, reason=reason, initiated_by=initiated_by, now=now
+        )
+        return True
+
+    async def claim(self, *, tenant_id, conversation_id, membership_id, now) -> bool:
+        from iam_platform.domain.ai_resources.entities import ConversationState
+
+        c = self._get(tenant_id, conversation_id)
+        if c is None or c.state is not ConversationState.UNASSIGNED:  # type: ignore[attr-defined]
+            return False
+        c.claim(membership_id=membership_id, now=now)  # type: ignore[attr-defined]
+        return True
+
+    async def set_state(
+        self, *, tenant_id, conversation_id, state, now, clear_assignment=False
+    ) -> bool:
+        c = self._get(tenant_id, conversation_id)
+        if c is None:
+            return False
+        c.state = state  # type: ignore[attr-defined]
+        if clear_assignment:
+            c.assigned_membership_id = None  # type: ignore[attr-defined]
+            c.assigned_team_id = None  # type: ignore[attr-defined]
+        return True
+
+    async def set_ai_fallback_disabled(
+        self, *, tenant_id, conversation_id, disabled, now
+    ) -> bool:
+        c = self._get(tenant_id, conversation_id)
+        if c is None:
+            return False
+        c.ai_fallback_disabled = disabled  # type: ignore[attr-defined]
+        return True
+
+    async def list_unassigned(self, *, tenant_id, team_ids=None) -> list[object]:
+        from iam_platform.domain.ai_resources.entities import ConversationState
+
+        return [
+            c
+            for c in self._conversations.by_id.values()  # type: ignore[attr-defined]
+            if c.tenant_id == tenant_id
+            and c.state is ConversationState.UNASSIGNED
+            and (team_ids is None or c.assigned_team_id in team_ids)
+        ]
+
 class FakeAiResourceUnitOfWork:
     _REPO_ATTRS = (
         "tenant_memberships",
@@ -430,10 +676,14 @@ class FakeAiResourceUnitOfWork:
         "data_sources",
         "chat_widgets",
         "conversations",
+        "conversation_messages",
         "model_configurations",
         "provider_credentials",
         "audit",
         "security_events",
+        "entitlements",
+        "chatbot_settings",
+        "teams",
     )
 
     def __init__(self) -> None:
@@ -445,8 +695,13 @@ class FakeAiResourceUnitOfWork:
         self.data_sources = FakeDataSourceRepository()
         self.chat_widgets = FakeChatWidgetRepository()
         self.conversations = FakeConversationRepository()
+        self.conversation_messages = FakeConversationMessageRepository()
         self.model_configurations = FakeModelConfigurationRepository()
         self.provider_credentials = FakeProviderCredentialRepository()
+        self.entitlements = FakeTenantEntitlementRepository()
+        self.chatbot_settings = FakeTenantChatbotSettingsRepository()
+        self.teams = FakeTenantTeamRepository()
+        self.handoff = FakeConversationHandoffRepository(self.conversations)
         self.audit = FakeAuditWriter()
         self.security_events = FakeSecurityEventWriter()
         self.last_user_id: UUID | None = None

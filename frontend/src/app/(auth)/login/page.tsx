@@ -96,7 +96,7 @@ function LoginPageContent() {
           <CardDescription>Open your authenticator app and enter the 6-digit code.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleMfaSubmit(onSubmitMfa)} className="space-y-4">
+          <form method="post" onSubmit={handleMfaSubmit(onSubmitMfa)} className="space-y-4">
             {formError && (
               <Alert variant="destructive">
                 <AlertDescription>{formError}</AlertDescription>
@@ -131,7 +131,7 @@ function LoginPageContent() {
         <CardDescription>Enter your credentials to access the console.</CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <form method="post" onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           {formError && (
             <Alert variant="destructive">
               <AlertDescription>{formError}</AlertDescription>

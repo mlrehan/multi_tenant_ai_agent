@@ -11,12 +11,19 @@ of that computation (Phase 6 scope note, CLAUDE.md).
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response, status
 
 from iam_platform.api.deps.authn import get_container, get_current_claims
 from iam_platform.api.deps.container import AppContainer
 from iam_platform.api.v1.platform import schemas
+from iam_platform.application.ai_resources.manage_entitlements import (
+    ListTenantEntitlements,
+    ListTenantEntitlementsQuery,
+    SetTenantEntitlements,
+    SetTenantEntitlementsCommand,
+)
 from iam_platform.application.ai_resources.manage_model_configuration import (
     ArchiveModelConfiguration,
     CreateModelConfiguration,
@@ -82,6 +89,8 @@ from iam_platform.application.platform_authz.manage_users import (
     UpdateUserCommand,
     UserSummary,
 )
+from iam_platform.domain.ai_resources.providers import all_capabilities
+from iam_platform.domain.tenancy.entitlements import TenantEntitlements
 
 logger = logging.getLogger("iam_platform.api.v1.platform")
 
@@ -667,3 +676,103 @@ async def revoke_model_configuration(
         )
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- tenant entitlements ----------------------------------------------------
+#
+# The platform's lever over a tenant. Gated on the same permission as the model
+# catalogue: both are the platform deciding what a tenant may spend the
+# platform's money on, and a permission per screen produces a catalogue nobody
+# can reason about.
+
+
+@router.get("/tenant-entitlements", response_model=schemas.TenantEntitlementsListResponse)
+async def list_tenant_entitlements(
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.TenantEntitlementsListResponse:
+    use_case = ListTenantEntitlements(container.platform_uow_factory, container.clock)
+    items = await use_case.execute(
+        ListTenantEntitlementsQuery(actor_user_id=str(claims.user_id))
+    )
+    return schemas.TenantEntitlementsListResponse(
+        entitlements=[_entitlements_response(e) for e in items]
+    )
+
+
+@router.put(
+    "/tenants/{tenant_id}/entitlements",
+    response_model=schemas.TenantEntitlementsResponse,
+)
+async def set_tenant_entitlements(
+    tenant_id: UUID,
+    body: schemas.TenantEntitlementsRequest,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.TenantEntitlementsResponse:
+    """Sets a tenant's whole plan in one write.
+
+    PUT rather than PATCH: the eight fields are one policy decision, and a
+    partial update would let an operator raise a token cap while believing
+    they had also tightened a capability flag they never sent.
+    """
+    use_case = SetTenantEntitlements(container.platform_uow_factory, container.clock)
+    entitlements = await use_case.execute(
+        SetTenantEntitlementsCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=str(tenant_id),
+            max_knowledge_bases=body.max_knowledge_bases,
+            max_chat_widgets=body.max_chat_widgets,
+            max_messages_per_day=body.max_messages_per_day,
+            max_tokens_per_month=body.max_tokens_per_month,
+            allow_own_provider_credentials=body.allow_own_provider_credentials,
+            allow_create_assistant=body.allow_create_assistant,
+            allow_invite_members=body.allow_invite_members,
+            allow_create_roles=body.allow_create_roles,
+        )
+    )
+    return _entitlements_response(entitlements)
+
+
+@router.get("/ai-providers", response_model=schemas.ProviderCapabilityListResponse)
+async def list_ai_providers(
+    claims: AccessTokenClaims = Depends(get_current_claims),
+) -> schemas.ProviderCapabilityListResponse:
+    """The provider catalogue and what each supports.
+
+    Static data, so no use case and no unit of work -- but still behind
+    authentication, because it tells a reader which providers this deployment
+    can talk to, which is deployment topology rather than public information.
+    """
+    del claims
+    return schemas.ProviderCapabilityListResponse(
+        providers=[
+            schemas.ProviderCapabilityResponse(
+                provider=c.provider.value,
+                label=c.label,
+                supported=c.supported,
+                supports_embeddings=c.supports_embeddings,
+                supports_embedding_dimensions=c.supports_embedding_dimensions,
+                supports_reasoning_effort=c.supports_reasoning_effort,
+                supports_request_timeout=c.supports_request_timeout,
+            )
+            for c in all_capabilities()
+        ]
+    )
+
+
+def _entitlements_response(
+    entitlements: TenantEntitlements,
+) -> schemas.TenantEntitlementsResponse:
+    return schemas.TenantEntitlementsResponse(
+        tenant_id=entitlements.tenant_id,
+        max_knowledge_bases=entitlements.max_knowledge_bases,
+        max_chat_widgets=entitlements.max_chat_widgets,
+        max_messages_per_day=entitlements.max_messages_per_day,
+        max_tokens_per_month=entitlements.max_tokens_per_month,
+        allow_own_provider_credentials=entitlements.allow_own_provider_credentials,
+        allow_create_assistant=entitlements.allow_create_assistant,
+        allow_invite_members=entitlements.allow_invite_members,
+        allow_create_roles=entitlements.allow_create_roles,
+        updated_at=entitlements.updated_at,
+    )

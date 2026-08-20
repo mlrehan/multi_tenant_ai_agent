@@ -10,6 +10,7 @@ import type {
   KnowledgeBase,
   KnowledgeBaseDocument,
   KnowledgeBaseQueryHit,
+  ConversationThread,
   ModelConfiguration,
   ProviderCredential,
   Visibility,
@@ -299,15 +300,21 @@ export async function* streamAnswer(
   question: string,
   signal?: AbortSignal,
   assistantId?: string,
+  conversationId?: string,
 ): AsyncGenerator<{ event: string; data: Record<string, unknown> }> {
   const response = await fetch(
     `/api/backend/v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/answer`,
     {
       method: "POST",
       headers: { "content-type": "application/json", "x-tenant-id": tenantId },
-      body: JSON.stringify(
-        assistantId ? { question, assistant_id: assistantId } : { question },
-      ),
+      // Built by spreading rather than by branching: three optional fields
+      // produce eight branches, and the previous two-branch version already
+      // had to be rewritten once to add one.
+      body: JSON.stringify({
+        question,
+        ...(assistantId ? { assistant_id: assistantId } : {}),
+        ...(conversationId ? { conversation_id: conversationId } : {}),
+      }),
       signal,
     },
   );
@@ -383,8 +390,56 @@ export function setModelCredential(
     `v1/tenants/${tenantId}/model-configurations/${modelConfigurationId}/credential`,
     {
       method: "PUT",
-      body: JSON.stringify({ provider_credential_id: providerCredentialId }),
+      body: { provider_credential_id: providerCredentialId },
+      tenantId,
     },
+  );
+}
+
+export function getConversationMessages(
+  tenantId: string,
+  conversationId: string,
+  limit?: number,
+) {
+  // The server returns the *newest* `limit` turns. Growing the window is how
+  // this screen pages backwards -- see `useConversationMessages` for why that
+  // beats accumulating separate pages on the client.
+  const query = limit ? `?limit=${limit}` : "";
+  return apiFetch<ConversationThread>(
+    `v1/tenants/${tenantId}/conversations/${conversationId}/messages${query}`,
+    { tenantId },
+  );
+}
+
+export function renameConversation(tenantId: string, conversationId: string, title: string) {
+  return apiFetch<void>(`v1/tenants/${tenantId}/conversations/${conversationId}`, {
+    method: "PATCH",
+    body: { title },
+    tenantId,
+  });
+}
+
+export function deleteConversation(tenantId: string, conversationId: string) {
+  return apiFetch<void>(`v1/tenants/${tenantId}/conversations/${conversationId}`, {
+    method: "DELETE",
+    tenantId,
+  });
+}
+
+export function searchConversations(tenantId: string, q: string, allMembers = false) {
+  const params = new URLSearchParams({ q, all_members: String(allMembers) });
+  return apiFetch<{ conversations: Conversation[] }>(
+    `v1/tenants/${tenantId}/conversations/search?${params}`,
+    { tenantId },
+  );
+}
+
+/** Every conversation in the tenant. Requires `tenant.conversations.view`;
+ *  metadata only -- opening one audits the read. */
+export function listTenantConversations(tenantId: string) {
+  return apiFetch<{ conversations: Conversation[] }>(
+    `v1/tenants/${tenantId}/conversations/all`,
+    { tenantId },
   );
 }
 

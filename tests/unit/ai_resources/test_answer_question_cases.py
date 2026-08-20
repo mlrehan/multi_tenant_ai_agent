@@ -93,6 +93,7 @@ def _query(tenant_id: UUID, user_id: UUID, kb: KnowledgeBase, question: str, **k
         permissions=kw.get("permissions", QUERY_PERMISSION),  # type: ignore[arg-type]
         question=question,
         assistant_id=kw.get("assistant_id"),  # type: ignore[arg-type]
+        conversation_id=kw.get("conversation_id"),  # type: ignore[arg-type]
     )
 
 

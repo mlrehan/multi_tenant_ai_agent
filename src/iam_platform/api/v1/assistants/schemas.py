@@ -17,7 +17,7 @@ field for a client to populate.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, HttpUrl
@@ -50,6 +50,14 @@ class AssistantResponse(BaseModel):
     owner_membership_id: UUID
     model_configuration_id: UUID
     system_prompt: str | None
+    #: The guided brief the chatbot console edits. Returned so an edit form is
+    #: populated with what is stored -- the failure `AssistantResponse` already
+    #: had once, when `system_prompt` was missing and every save silently
+    #: overwrote the existing prompt with an empty string.
+    role_instructions: str | None
+    avoid_instructions: str | None
+    personality: str
+    response_length: str
     status: Literal["draft", "published", "archived"]
     created_at: datetime
     updated_at: datetime
@@ -315,6 +323,10 @@ class AnswerQuestionRequest(BaseModel):
 
     question: str = Field(min_length=1, max_length=2000)
     assistant_id: UUID | None = None
+    #: Continue an existing thread: its history is loaded into the prompt and
+    #: this exchange is appended to it. Ownership is re-checked server-side, so
+    #: supplying someone else's id gets a 404, never their history.
+    conversation_id: UUID | None = None
 
 
 class SearchHitResponse(BaseModel):
@@ -337,13 +349,59 @@ class StartConversationResponse(BaseModel):
 
 
 class ConversationResponse(BaseModel):
+    #: Both nullable since widget conversations gained persistence: a visitor
+    #: thread has no assistant bound (widget-to-assistant binding is a later,
+    #: separate feature) and is owned by `visitor_session_id`, not a member.
     id: UUID
-    assistant_id: UUID
-    membership_id: UUID
+    assistant_id: UUID | None
+    membership_id: UUID | None
     title: str | None
     status: Literal["active", "archived"]
     created_at: datetime
     last_message_at: datetime | None
+
+
+class ConversationMessageResponse(BaseModel):
+    """One turn, as shown when a thread is reopened."""
+
+    id: UUID
+    seq: int
+    #: Mirrors `MessageRole` in domain/ai_resources/entities.py: `user`/
+    #: `assistant` are the visitor and the AI, `agent_message`/
+    #: `internal_comment` are a human agent's reply and staff-only note, and
+    #: `system_event` marks a transfer (e.g. "Conversation transferred...").
+    role: Literal["user", "assistant", "agent_message", "internal_comment", "system_event"]
+    content: str
+    #: What this answer actually cited -- label, document and location. Only
+    #: the sources the model used, not every candidate that was offered.
+    citations: list[dict[str, Any]] = []
+    #: The exchange's token cost, recorded on the answer that incurred it.
+    #: 0 on a user turn and on any answer the provider did not report usage for.
+    token_count: int = 0
+    created_at: datetime
+
+
+class ConversationMessagesResponse(BaseModel):
+    conversation: ConversationResponse
+    #: False when the caller reached this through the oversight permission --
+    #: the console uses it to show a "viewing another member's conversation"
+    #: banner and to hide the owner-only rename and delete controls.
+    is_owner: bool
+    messages: list[ConversationMessageResponse]
+    #: The visitor is composing something right now. Ephemeral cache state, not
+    #: a turn -- it is deliberately absent from `messages`, because it is not
+    #: something anybody said and has no place in a transcript.
+    #:
+    #: Defaulted so every other caller of this response shape is unaffected.
+    visitor_typing: bool = False
+    #: Turns in the whole thread, not in this page.
+    total_messages: int = 0
+    #: Whether older turns exist above this page.
+    has_more: bool = False
+
+
+class RenameConversationRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
 
 
 class ConversationSummaryResponse(BaseModel):
@@ -352,8 +410,8 @@ class ConversationSummaryResponse(BaseModel):
     message content, and a title routinely leaks the subject matter)."""
 
     id: UUID
-    assistant_id: UUID
-    membership_id: UUID
+    assistant_id: UUID | None
+    membership_id: UUID | None
     status: Literal["active", "archived"]
     created_at: datetime
     last_message_at: datetime | None

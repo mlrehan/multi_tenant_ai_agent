@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 from iam_platform.application.ai_resources.authorize import load_visible_assistant
+from iam_platform.application.ai_resources.entitlements import guard_capability
 from iam_platform.application.ai_resources.exceptions import (
     AssistantNotFoundError,
     ModelConfigurationNotFoundError,
@@ -63,6 +64,16 @@ class CreateAssistant:
         async with self._uow_factory(actor_id, tenant_id) as uow:
             if CREATE_ASSISTANT_PERMISSION not in command.permissions:
                 raise PermissionDeniedError(CREATE_ASSISTANT_PERMISSION)
+
+            # A capability, not a count: the platform either lets this tenant
+            # build assistants or it does not. Existing assistants keep
+            # working if it is later withdrawn -- nothing on a read path asks.
+            await guard_capability(
+                uow,
+                tenant_id=tenant_id,
+                clock=self._clock,
+                capability="allow_create_assistant",
+            )
 
             requester = await build_requester_context(
                 uow, tenant_id=tenant_id, user_id=actor_id, permissions=command.permissions

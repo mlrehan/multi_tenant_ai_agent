@@ -374,6 +374,61 @@ class FakeInvitationEmailSender(InvitationEmailSender):
         self.sent.append((to, token, tenant_name))
 
 
+
+class FakeTenantEntitlementRepository:
+    """Permissive by default: these tests are not about plans.
+
+    Defined here rather than imported from `tests.unit.ai_resources.fakes` --
+    that module already imports from this one, and reaching back the other way
+    is a genuine import cycle, not a style preference.
+
+    Standing in for a generously provisioned tenant keeps tests that never
+    configured a limit from failing on one. A test about entitlements assigns
+    `stored[tenant_id]` explicitly.
+    """
+
+    def __init__(self) -> None:
+        self.stored: dict[UUID, object] = {}
+
+    async def get_for_tenant(self, tenant_id: UUID) -> object | None:
+        if tenant_id in self.stored:
+            return self.stored[tenant_id]
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from iam_platform.domain.tenancy.entitlements import TenantEntitlements
+
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        return TenantEntitlements(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            max_knowledge_bases=None,
+            max_chat_widgets=None,
+            max_messages_per_day=None,
+            max_tokens_per_month=None,
+            allow_own_provider_credentials=True,
+            allow_create_assistant=True,
+            allow_invite_members=True,
+            allow_create_roles=True,
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def upsert(self, entitlements: object) -> None:
+        self.stored[entitlements.tenant_id] = entitlements  # type: ignore[attr-defined]
+
+    async def list_all(self) -> list[object]:
+        return list(self.stored.values())
+
+    async def count_knowledge_bases(self, tenant_id: UUID) -> int:
+        return 0
+
+    async def count_chat_widgets(self, tenant_id: UUID) -> int:
+        return 0
+
+    async def count_assistants(self, tenant_id: UUID) -> int:
+        return 0
+
 class FakeTenantUnitOfWork:
     """Shared instance doubles as its own factory (``self(user_id, tenant_id)``
     returns itself, matching ``TenantUowFactory``'s call shape) so tests can
@@ -406,6 +461,8 @@ class FakeTenantUnitOfWork:
         self.tenant_membership_roles = FakeTenantMembershipRoleRepository()
         self.role_hierarchy = FakeRoleHierarchyRepository()
         self.authorization_overrides = FakeAuthorizationOverrideRepository()
+        self.entitlements = FakeTenantEntitlementRepository()
+        self.tenant_entitlements = self.entitlements
         self.audit = FakeAuditWriter()
         self.security_events = FakeSecurityEventWriter()
         self.last_user_id: UUID | None = None
@@ -516,6 +573,8 @@ class FakePlatformUnitOfWork:
         self.impersonation_sessions = FakeImpersonationSessionRepository()
         self.model_configurations = FakePlatformModelConfigurationRepository()
         self.tenant_model_access = FakeTenantModelAccessRepository(self.model_configurations)
+        self.entitlements = FakeTenantEntitlementRepository()
+        self.tenant_entitlements = self.entitlements
         self.audit = FakeAuditWriter()
         self.security_events = FakeSecurityEventWriter()
         self.last_user_id: UUID | None = None

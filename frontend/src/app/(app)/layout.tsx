@@ -2,10 +2,15 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-shell/app-sidebar";
 import { Topbar } from "@/components/app-shell/topbar";
 import { ImpersonationBanner } from "@/components/app-shell/impersonation-banner";
+import { HandoffAlerts } from "@/components/app-shell/handoff-alerts";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <SidebarProvider>
+      {/* Alerting lives in the shell so a waiting visitor reaches the agent on
+          whichever screen they are on — and, via the system notification it
+          raises, whether or not the console is the window in front of them. */}
+      <HandoffAlerts />
       <AppSidebar />
       <SidebarInset>
         <ImpersonationBanner />

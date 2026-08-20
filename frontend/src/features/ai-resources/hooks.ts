@@ -231,6 +231,85 @@ export function useConversation(tenantId: string | null, conversationId: string 
   });
 }
 
+/**
+ * One conversation's turns, newest-anchored.
+ *
+ * **`limit` grows to page backwards; older pages are not accumulated
+ * separately.** The obvious design -- keep the live newest page and stack
+ * fetched older pages beside it -- has a gap that only appears in a busy
+ * conversation: the live window slides forward as messages arrive, so after a
+ * few new turns the space between the top of the live window and the last
+ * older page belongs to neither, and those turns vanish from the thread. That
+ * is precisely the "do not skip" failure, and it would be intermittent and
+ * near-impossible to reproduce on demand.
+ *
+ * Widening one contiguous newest-anchored window cannot produce a gap, needs
+ * no cursor bookkeeping, and makes duplicates unrepresentable -- the server
+ * returns each turn once. The cost is re-reading the loaded window on each
+ * poll, which for a support thread is tens of rows.
+ */
+export function useConversationMessages(
+  tenantId: string,
+  conversationId: string | null,
+  options?: { live?: boolean; limit?: number },
+) {
+  return useQuery({
+    queryKey: ["conversation-messages", tenantId, conversationId, options?.limit],
+    queryFn: () => api.getConversationMessages(tenantId, conversationId!, options?.limit),
+    // Keeps the previous window on screen while a wider one loads, so
+    // scrolling up does not blank the thread and lose the reading position.
+    placeholderData: (previous) => previous,
+    enabled: Boolean(conversationId),
+    // Only the agent thread view opts in: a visitor's next message, or a
+    // colleague's reply, must show up without the agent hitting refresh.
+    // The read-only history dialog elsewhere has no reason to keep polling
+    // a thread that is not receiving new turns.
+    refetchInterval: options?.live ? 4000 : false,
+  });
+}
+
+export function useConversationSearch(
+  tenantId: string,
+  q: string,
+  allMembers: boolean,
+) {
+  return useQuery({
+    queryKey: ["conversation-search", tenantId, q, allMembers],
+    queryFn: () => api.searchConversations(tenantId, q, allMembers),
+    // Only once there is something to search for: an empty query would return
+    // the whole tenant and read as "search is broken".
+    enabled: q.trim().length > 1,
+  });
+}
+
+export function useTenantConversations(tenantId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["tenant-conversations", tenantId],
+    queryFn: () => api.listTenantConversations(tenantId),
+    enabled,
+  });
+}
+
+export function useRenameConversation(tenantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { conversationId: string; title: string }) =>
+      api.renameConversation(tenantId, vars.conversationId, vars.title),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conversations", tenantId] });
+      queryClient.invalidateQueries({ queryKey: ["conversation-messages", tenantId] });
+    },
+  });
+}
+
+export function useDeleteConversation(tenantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (conversationId: string) => api.deleteConversation(tenantId, conversationId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["conversations", tenantId] }),
+  });
+}
+
 export function useStartConversation(tenantId: string) {
   const queryClient = useQueryClient();
   return useMutation({

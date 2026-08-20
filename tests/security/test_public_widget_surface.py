@@ -62,6 +62,44 @@ class _FakeLookup:
 
 
 @dataclass
+class _FakeChatbotSettings:
+    """Only the field the session endpoint reads."""
+
+    allow_human_handoff: bool = True
+
+
+class _FakeSettingsRepo:
+    def __init__(self, settings: _FakeChatbotSettings | None) -> None:
+        self._settings = settings
+
+    async def get_for_tenant(self, tenant_id: UUID) -> _FakeChatbotSettings | None:
+        del tenant_id
+        return self._settings
+
+
+class _FakeUow:
+    def __init__(self, settings: _FakeChatbotSettings | None) -> None:
+        self.chatbot_settings = _FakeSettingsRepo(settings)
+
+    async def __aenter__(self) -> _FakeUow:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+_HANDOFF_PERMITTED = _FakeChatbotSettings(allow_human_handoff=True)
+
+
+def _uow_factory(settings: _FakeChatbotSettings | None = _HANDOFF_PERMITTED):  # type: ignore[no-untyped-def]
+    def factory(user_id: UUID, tenant_id: UUID) -> _FakeUow:
+        del user_id, tenant_id
+        return _FakeUow(settings)
+
+    return factory
+
+
+@dataclass
 class _FakeQuota:
     allow: bool = True
     calls: list[UUID] = field(default_factory=list)
@@ -90,7 +128,7 @@ class _FakePipeline:
 
 class TestSessionIssuance:
     async def test_an_unknown_public_key_is_refused(self) -> None:
-        use_case = StartWidgetSession(_FakeLookup())
+        use_case = StartWidgetSession(_FakeLookup(), _uow_factory())  # type: ignore[arg-type]
 
         with pytest.raises(WidgetUnavailableError):
             await use_case.execute(
@@ -103,7 +141,7 @@ class TestSessionIssuance:
         """Distinguishing them would tell an anonymous caller whether a key
         they guessed is real -- a probing oracle for free."""
         disabled = _widget(status=WidgetStatus.DISABLED)
-        use_case = StartWidgetSession(_FakeLookup([disabled]))
+        use_case = StartWidgetSession(_FakeLookup([disabled]), _uow_factory())  # type: ignore[arg-type]
 
         with pytest.raises(WidgetUnavailableError) as disabled_error:
             await use_case.execute(
@@ -127,7 +165,7 @@ class TestSessionIssuance:
         ],
     )
     async def test_a_disallowed_origin_is_refused(self, origin: str | None) -> None:
-        use_case = StartWidgetSession(_FakeLookup([_widget()]))
+        use_case = StartWidgetSession(_FakeLookup([_widget()]), _uow_factory())  # type: ignore[arg-type]
 
         with pytest.raises(WidgetOriginNotAllowedError):
             await use_case.execute(
@@ -141,7 +179,7 @@ class TestSessionIssuance:
         never names a tenant or knowledge base, so what comes back is whatever
         the widget row says and nothing else."""
         widget = _widget()
-        use_case = StartWidgetSession(_FakeLookup([widget]))
+        use_case = StartWidgetSession(_FakeLookup([widget]), _uow_factory())  # type: ignore[arg-type]
 
         resolved = await use_case.execute(
             StartWidgetSessionCommand(public_key="wk_public", origin=ORIGIN)
@@ -150,6 +188,67 @@ class TestSessionIssuance:
         assert resolved.tenant_id == widget.tenant_id
         assert resolved.knowledge_base_id == widget.knowledge_base_id
         assert resolved.origin == ORIGIN
+
+
+class TestTheWidgetIsToldWhatToLookLike:
+    """The session response is what makes the embedded widget match the preview.
+
+    The console writes name, title, avatar and greeting to `chat_widgets`; if
+    the session does not carry them back, the widget renders whatever the
+    script tag happened to say and the tenant's configuration is decorative.
+    """
+
+    async def test_the_configured_presentation_comes_back_with_the_session(
+        self,
+    ) -> None:
+        widget = _widget(
+            chatbot_name="Little Stars Assistant",
+            chatbot_title="Admissions & Fees",
+            avatar_key="nursery-star",
+            greeting="Hello! Ask me about sessions.",
+        )
+        use_case = StartWidgetSession(_FakeLookup([widget]), _uow_factory())  # type: ignore[arg-type]
+
+        resolved = await use_case.execute(
+            StartWidgetSessionCommand(public_key="wk_public", origin=ORIGIN)
+        )
+
+        assert resolved.chatbot_name == "Little Stars Assistant"
+        assert resolved.chatbot_title == "Admissions & Fees"
+        assert resolved.avatar_key == "nursery-star"
+        assert resolved.greeting == "Hello! Ask me about sessions."
+
+    async def test_the_handoff_pill_is_offered_only_when_handoff_is_permitted(
+        self,
+    ) -> None:
+        """Otherwise the visitor presses "Speak to a person", the wording
+        reaches the model as an ordinary question, and nobody comes."""
+        widget = _widget()
+        allowed = StartWidgetSession(  # type: ignore[arg-type]
+            _FakeLookup([widget]), _uow_factory(_FakeChatbotSettings(True))
+        )
+        refused = StartWidgetSession(  # type: ignore[arg-type]
+            _FakeLookup([widget]), _uow_factory(_FakeChatbotSettings(False))
+        )
+        command = StartWidgetSessionCommand(public_key="wk_public", origin=ORIGIN)
+
+        with_handoff = (await allowed.execute(command)).quick_replies
+        without_handoff = (await refused.execute(command)).quick_replies
+
+        assert "Speak to a person" in with_handoff
+        assert "Speak to a person" not in without_handoff
+        # The topic prompts are unaffected -- only the transfer pill is policy.
+        assert without_handoff and set(without_handoff) < set(with_handoff)
+
+    async def test_a_widget_with_suggestions_off_gets_no_pills_at_all(self) -> None:
+        widget = _widget(show_quick_reply_suggestions=False)
+        use_case = StartWidgetSession(_FakeLookup([widget]), _uow_factory())  # type: ignore[arg-type]
+
+        resolved = await use_case.execute(
+            StartWidgetSessionCommand(public_key="wk_public", origin=ORIGIN)
+        )
+
+        assert resolved.quick_replies == ()
 
 
 class TestAskingIsReCheckedEveryTime:
@@ -170,6 +269,7 @@ class TestAskingIsReCheckedEveryTime:
                     knowledge_base_id=widget.knowledge_base_id,
                     question="anything",
                     session_origin=ORIGIN,
+                session_id=uuid4(),
                 )
             )
 
@@ -187,6 +287,7 @@ class TestAskingIsReCheckedEveryTime:
                     knowledge_base_id=widget.knowledge_base_id,
                     question="anything",
                     session_origin=ORIGIN,
+                session_id=uuid4(),
                 )
             )
 
@@ -208,6 +309,7 @@ class TestAskingIsReCheckedEveryTime:
                     knowledge_base_id=uuid4(),  # someone else's
                     question="anything",
                     session_origin=ORIGIN,
+                session_id=uuid4(),
                 )
             )
 
@@ -226,6 +328,7 @@ class TestTheNamespaceIsDerivedNotSupplied:
                 knowledge_base_id=widget.knowledge_base_id,
                 question="what are your hours?",
                 session_origin=ORIGIN,
+                session_id=uuid4(),
             )
         )
 
@@ -259,6 +362,7 @@ class TestQuota:
                     knowledge_base_id=widget.knowledge_base_id,
                     question="anything",
                     session_origin=ORIGIN,
+                session_id=uuid4(),
                 )
             )
 
@@ -275,6 +379,7 @@ class TestQuota:
                 knowledge_base_id=widget.knowledge_base_id,
                 question="anything",
                 session_origin=ORIGIN,
+                session_id=uuid4(),
             )
         )
 

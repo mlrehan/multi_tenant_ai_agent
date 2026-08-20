@@ -9,7 +9,7 @@ mean two Protocols the same SQL repository has to satisfy.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -19,17 +19,24 @@ from uuid import UUID
 
 from iam_platform.application.identity.ports import AuditWriter, SecurityEventWriter
 from iam_platform.application.tenancy.ports import TenantMembershipRepository
+from iam_platform.domain.ai_resources.chatbot import TenantChatbotSettings
 from iam_platform.domain.ai_resources.entities import (
     AiAssistant,
     AssistantMember,
     ChatWidget,
     Conversation,
+    ConversationMessage,
+    ConversationState,
     DataSource,
     Document,
+    HandoffInitiator,
     KnowledgeBase,
     ModelConfiguration,
     ProviderCredential,
 )
+from iam_platform.domain.ai_resources.push import PushMessage, PushSubscription
+from iam_platform.domain.tenancy.entitlements import TenantEntitlements
+from iam_platform.domain.tenancy.teams import TenantTeam
 
 
 class AiAssistantRepository(Protocol):
@@ -192,6 +199,45 @@ class WidgetQuotaStore(Protocol):
         ...
 
 
+class TypingIndicatorStore(Protocol):
+    """Who is composing a message right now, on either end of a conversation.
+
+    Deliberately *not* a repository: this is state with a lifetime measured in
+    seconds and no record worth keeping. Modelling it as a port anyway keeps
+    the routes free of an `infrastructure` import (docs/20) and leaves the
+    door open to a transport that pushes rather than polls.
+    """
+
+    async def mark_typing(
+        self, *, conversation_id: str, side: str, display_name: str = ""
+    ) -> None:
+        """Asserts, or renews, that this side is typing."""
+        ...
+
+    async def clear(self, *, conversation_id: str, side: str) -> None: ...
+
+    async def who_is_typing(self, *, conversation_id: str, side: str) -> str | None:
+        """Display name, or `None` when nobody is typing. Never raises."""
+        ...
+
+
+class WidgetMemoryStore(Protocol):
+    """Recent turns for one anonymous widget session.
+
+    Separate from `ConversationMessageRepository` on purpose: that one persists
+    a member's owned history in Postgres under RLS, and a visitor has no
+    identity to own anything. This is session-scoped, expires with the token,
+    and **fails open** -- see the Redis adapter for why the asymmetry with the
+    quota store beside it is deliberate.
+    """
+
+    async def recent(self, session_id: UUID) -> list[tuple[str, str]]:
+        """`(role, content)` oldest first. Empty when unavailable."""
+        ...
+
+    async def append(self, session_id: UUID, *, question: str, answer: str) -> None: ...
+
+
 class TokenUsageStore(Protocol):
     """Monthly token spend per model configuration, per tenant.
 
@@ -225,8 +271,88 @@ class TokenUsageStore(Protocol):
 class ConversationRepository(Protocol):
     async def get_by_id(self, conversation_id: UUID) -> Conversation | None: ...
     async def list_by_membership(self, membership_id: UUID) -> list[Conversation]: ...
+    async def list_by_tenant(self, tenant_id: UUID) -> list[Conversation]:
+        """Every conversation in the tenant -- the admin oversight read."""
+        ...
+
+    async def list_by_ids(self, conversation_ids: list[UUID]) -> list[Conversation]: ...
+
+    async def find_by_visitor_session(
+        self, *, tenant_id: UUID, visitor_session_id: UUID
+    ) -> Conversation | None:
+        """The thread belonging to one widget session.
+
+        Every widget exchange is persisted from the first question, so a
+        session that has asked anything has a row here. `None` means a session
+        that has not yet spoken -- or a brand-new one, which is what a visitor
+        who has cleared their site data looks like.
+
+        The session id is what makes a visitor's history durable: it is carried
+        forward across token mints (see `WidgetTokenService.issue`), so a
+        refresh or a return visit finds the same conversation instead of
+        silently starting another.
+        """
+        ...
     async def add(self, conversation: Conversation) -> None: ...
     async def save(self, conversation: Conversation) -> None: ...
+    async def delete(self, conversation_id: UUID) -> None:
+        """Hard delete. Messages go with it via ON DELETE CASCADE -- a person
+        asking for their conversation to be removed means the content, and a
+        soft-deleted thread whose turns remain readable is not a deletion."""
+        ...
+
+
+class ConversationMessageRepository(Protocol):
+    """Turns within a conversation. Append-only by design -- there is no
+    `save`, and the table revokes UPDATE from the application role."""
+
+    async def add_many(self, messages: list[ConversationMessage]) -> None: ...
+
+    async def next_seq(self, conversation_id: UUID) -> int:
+        """The ordinal the next message takes. 1 for an empty thread."""
+        ...
+
+    async def list_after(
+        self, *, conversation_id: UUID, after_seq: int
+    ) -> list[ConversationMessage]:
+        """The uncompacted tail, in order.
+
+        A range rather than the whole thread: everything at or before
+        `after_seq` is already represented by the conversation's summary, and
+        re-reading it each turn is the cost the summary exists to avoid.
+        """
+        ...
+
+    async def list_page(
+        self, *, conversation_id: UUID, limit: int, offset: int
+    ) -> list[ConversationMessage]:
+        """A page of the thread for *display*, oldest first."""
+        ...
+
+    async def list_tail(
+        self, *, conversation_id: UUID, limit: int, before_seq: int | None = None
+    ) -> list[ConversationMessage]:
+        """The most **recent** turns, oldest first, paged backwards by cursor.
+
+        Separate from `list_page` rather than a flag on it, because the two
+        answer opposite questions: "the start of this thread" and "what is
+        being said now". Paged by `seq` cursor and never by offset -- a live
+        conversation gains rows between requests, and an offset slides under
+        them, skipping or repeating turns.
+        """
+        ...
+
+    async def count_for_conversation(self, conversation_id: UUID) -> int:
+        """Total turns, so a caller can tell "there is more above" from "this
+        is the beginning" without fetching a page to find out."""
+        ...
+
+    async def search(
+        self, *, tenant_id: UUID, membership_id: UUID | None, text: str, limit: int
+    ) -> list[UUID]:
+        """Conversation ids whose messages match. `membership_id=None` searches
+        the whole tenant, which only a tenant admin's use case may ask for."""
+        ...
 
 
 class ModelConfigurationRepository(Protocol):
@@ -519,6 +645,64 @@ class VectorSearchClient(Protocol):
         ...
 
 
+class ConversationHandoffRepository(Protocol):
+    """Handoff transitions written as conditional updates.
+
+    Every method reports whether a row actually matched the state it expected.
+    That is what lets two agents claiming the same conversation be told apart:
+    the check and the write are one statement, so exactly one of them wins and
+    the other is told so rather than silently overwriting.
+    """
+
+    async def route_to_team(
+        self,
+        *,
+        tenant_id: UUID,
+        conversation_id: UUID,
+        team_id: UUID | None,
+        reason: str | None,
+        initiated_by: HandoffInitiator,
+        now: datetime,
+    ) -> bool: ...
+
+    async def claim(
+        self, *, tenant_id: UUID, conversation_id: UUID, membership_id: UUID, now: datetime
+    ) -> bool:
+        """False means another agent got there first."""
+        ...
+
+    async def set_state(
+        self,
+        *,
+        tenant_id: UUID,
+        conversation_id: UUID,
+        state: ConversationState,
+        now: datetime,
+        clear_assignment: bool = False,
+    ) -> bool: ...
+
+    async def set_ai_fallback_disabled(
+        self, *, tenant_id: UUID, conversation_id: UUID, disabled: bool, now: datetime
+    ) -> bool:
+        """False means no such conversation in this tenant."""
+        ...
+
+    async def purge_expired_conversations(
+        self, *, tenant_id: UUID, older_than: datetime
+    ) -> int:
+        """Deletes conversations last active before `older_than`. Returns how
+        many, so the sweep can report what it actually removed rather than
+        that it ran."""
+        ...
+
+    async def list_unassigned(
+        self, *, tenant_id: UUID, team_ids: list[UUID] | None = None
+    ) -> list[Any]:
+        """`team_ids=None` => every team (tenant-admin oversight). A list scopes
+        an agent to the teams they actually staff."""
+        ...
+
+
 class AiResourceUnitOfWork(Protocol):
     tenant_memberships: TenantMembershipRepository
     assistants: AiAssistantRepository
@@ -528,8 +712,14 @@ class AiResourceUnitOfWork(Protocol):
     data_sources: DataSourceRepository
     chat_widgets: ChatWidgetRepository
     conversations: ConversationRepository
+    conversation_messages: ConversationMessageRepository
     model_configurations: ModelConfigurationRepository
     provider_credentials: ProviderCredentialRepository
+    entitlements: TenantEntitlementRepository
+    chatbot_settings: TenantChatbotSettingsRepository
+    teams: TenantTeamRepository
+    handoff: ConversationHandoffRepository
+    push_subscriptions: PushSubscriptionRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 
@@ -713,9 +903,26 @@ class TokenUsage:
     indistinguishable from "cost nothing": both mean there is nothing to bill
     against a budget, and inventing an estimate would be a number nobody could
     reconcile with their provider invoice.
+
+    **The split is normalised at the adapter boundary.** Every provider names
+    these differently (OpenAI `prompt`/`completion`, Anthropic `input`/
+    `output`), and the adapter maps its own vocabulary onto these two so the
+    quota store, the API and the console all speak one language and adding a
+    provider does not ripple outward.
+
+    `total` is carried rather than derived, because a provider's reported total
+    can exceed the sum: reasoning and cached tokens are billed and do not
+    always appear in either half. Recomputing it would under-count the bill,
+    which is the one direction a spending control must never err in.
     """
 
     total: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    @property
+    def billable(self) -> int:
+        return self.total or (self.input_tokens + self.output_tokens)
 
 
 class ChatModel(Protocol):
@@ -777,6 +984,266 @@ class WidgetSessionIssuer(Protocol):
         knowledge_base_id: UUID,
         origin: str,
         now: datetime,
+        session_id: UUID | None = None,
     ) -> Any: ...
 
     def verify(self, token: str) -> Any: ...
+
+    def read_resumable(self, token: str) -> Any:
+        """The claims of a previous token, ignoring expiry, or `None`.
+
+        Separate from `verify` on purpose: this answers "which conversation
+        was this browser part of?" at mint time, where an expired token is
+        still a truthful answer, while `verify` guards every request that
+        *acts* and must keep refusing one.
+        """
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Entitlements, chatbot configuration, teams and per-tenant quota.
+# ---------------------------------------------------------------------------
+
+
+class TenantEntitlementRepository(Protocol):
+    """What a tenant is allowed to have. Platform-written, tenant-readable."""
+
+    async def get_for_tenant(self, tenant_id: UUID) -> TenantEntitlements | None:
+        """`None` when the platform has never configured this tenant.
+
+        Returned rather than defaulted here so the *caller* decides what an
+        unconfigured tenant means -- `resolve_entitlements` applies the
+        documented defaults, and a read-only screen can honestly show "not
+        configured" instead of inventing numbers that were never set.
+        """
+        ...
+
+    async def upsert(self, entitlements: TenantEntitlements) -> None: ...
+
+    async def list_all(self) -> list[TenantEntitlements]:
+        """Every configured tenant, for the platform console."""
+        ...
+
+    async def count_knowledge_bases(self, tenant_id: UUID) -> int:
+        """Live count, not a stored one.
+
+        A denormalised counter would drift the first time a knowledge base was
+        removed by anything that forgot to decrement it, and a drifted quota
+        counter fails in whichever direction is worse at the time.
+        """
+        ...
+
+    async def count_chat_widgets(self, tenant_id: UUID) -> int: ...
+
+    async def count_assistants(self, tenant_id: UUID) -> int: ...
+
+
+class TenantChatbotSettingsRepository(Protocol):
+    async def get_for_tenant(self, tenant_id: UUID) -> TenantChatbotSettings | None: ...
+
+    async def upsert(self, settings: TenantChatbotSettings) -> None: ...
+
+
+class TenantTeamRepository(Protocol):
+    async def get(self, *, tenant_id: UUID, team_id: UUID) -> TenantTeam | None: ...
+
+    async def list_for_tenant(
+        self, tenant_id: UUID, *, active_only: bool = False
+    ) -> list[TenantTeam]:
+        """`active_only` is what the visitor-facing handoff menu asks for: a
+        deactivated team must not be offered, but must still be readable so
+        conversations already routed to it keep rendering its name."""
+        ...
+
+    async def add(self, team: TenantTeam) -> None: ...
+
+    async def save(self, team: TenantTeam) -> None: ...
+
+    async def list_members(self, *, tenant_id: UUID, team_id: UUID) -> list[UUID]:
+        """Membership ids staffing this team."""
+        ...
+
+    async def list_memberships_with_permission(
+        self, *, tenant_id: UUID, permission_code: str
+    ) -> list[UUID]:
+        """Memberships whose granted roles carry this permission code.
+
+        On the team repository because its only caller is notification
+        fan-out, which needs "who has oversight of the queue" alongside "who
+        staffs this team" and would otherwise reach into the tenant-authz unit
+        of work from an AI-resources use case.
+
+        Resolved from live role grants, never cached: revoking the permission
+        has to stop the notifications too, or a former supervisor keeps being
+        alerted about queues they can no longer open.
+        """
+        ...
+
+    async def list_team_ids_for_membership(
+        self, *, tenant_id: UUID, membership_id: UUID
+    ) -> list[UUID]:
+        """The teams this member staffs -- the agent's queue scope.
+
+        Answered in SQL rather than by listing every team and filtering: the
+        set that decides what an agent may see must not depend on the caller
+        remembering to filter, and a tenant may run many teams.
+        """
+        ...
+
+    async def set_members(
+        self, *, tenant_id: UUID, team_id: UUID, membership_ids: list[UUID]
+    ) -> None: ...
+
+    async def teams_for_membership(
+        self, *, tenant_id: UUID, membership_id: UUID
+    ) -> list[UUID]:
+        """Which teams an agent belongs to -- their Unassigned inbox scope."""
+        ...
+
+
+class TenantQuotaStore(Protocol):
+    """Per-tenant AI spending, in atomic counters.
+
+    Two deliberately different shapes; see
+    `infrastructure/cache/tenant_quota.py` for the full reasoning. Messages
+    reserve up front (cost known: one). Tokens read before and record after
+    (cost unknown until the provider answers).
+    """
+
+    async def consume_message(self, *, tenant_id: UUID, limit: int | None) -> bool:
+        """Atomically reserves one AI message; False means over the limit.
+
+        Atomic because the alternative -- read the count, then write it --
+        loses under concurrency in the direction that costs money: two requests
+        both read 999 against a limit of 1000 and both proceed.
+        """
+        ...
+
+    async def release_message(self, *, tenant_id: UUID) -> None:
+        """Returns a reservation for AI work that never happened."""
+        ...
+
+    async def messages_used_today(self, *, tenant_id: UUID) -> int: ...
+
+    async def tokens_used_this_month(self, *, tenant_id: UUID) -> int:
+        """Fails closed: raises rather than returning 0 when unreadable."""
+        ...
+
+    async def token_breakdown(self, *, tenant_id: UUID) -> TokenUsage: ...
+
+    async def record_tokens(self, *, tenant_id: UUID, usage: TokenUsage) -> None: ...
+
+
+class PushSubscriptionRepository(Protocol):
+    """Browsers that may be notified for one tenant."""
+
+    async def upsert(self, subscription: PushSubscription) -> None:
+        """Stores or refreshes a subscription.
+
+        Upsert rather than insert: a browser re-subscribing hands back the
+        *same* endpoint, and treating that as a conflict would either error on
+        an ordinary page reload or accumulate duplicates that each get their
+        own copy of every notification.
+        """
+        ...
+
+    async def list_for_memberships(
+        self, *, tenant_id: UUID, membership_ids: Sequence[UUID]
+    ) -> list[PushSubscription]:
+        """Subscriptions for exactly these memberships.
+
+        Takes the recipient list rather than resolving it: who *should* be
+        notified is an authorization decision (it must honour the same team
+        scope the inbox does), and deciding it in a repository would put it
+        somewhere no permission check can see.
+        """
+        ...
+
+    async def delete_for_membership(
+        self, *, tenant_id: UUID, membership_id: UUID, endpoint: str
+    ) -> int:
+        """An agent turning notifications off for one of *their own* browsers.
+
+        Scoped to the membership as well as the tenant, and that is the whole
+        difference from `delete_by_endpoint`: an endpoint string learned any
+        other way must not silence a colleague's notifications, which would be
+        a quiet denial of service against one agent that nothing would report.
+
+        Two methods rather than one with an optional `membership_id` -- an
+        argument whose absence widens authority is the kind that gets dropped
+        by a later edit and nobody notices.
+        """
+        ...
+
+    async def delete_by_endpoint(self, *, tenant_id: UUID, endpoint: str) -> int:
+        """Prunes an endpoint the push service has reported permanently gone.
+
+        Not membership-scoped because there is no acting agent: the push
+        service said 404/410, so whichever row holds that endpoint is dead.
+        Never called from a request path.
+        """
+        ...
+
+    async def mark_used(self, *, tenant_id: UUID, endpoint: str, at: datetime) -> None: ...
+
+
+class WebPushSender(Protocol):
+    """Delivers one encrypted payload to one browser.
+
+    Narrow on purpose: one subscription, one message. Fan-out belongs in the
+    use case, where a failure for one agent can be handled without abandoning
+    the rest.
+    """
+
+    @property
+    def is_configured(self) -> bool:
+        """False when no VAPID keypair is set. Callers skip sending entirely
+        rather than attempting it -- an unconfigured deployment should do
+        nothing, not log a failure per agent per handoff."""
+        ...
+
+    async def send(
+        self, *, subscription: PushSubscription, message: PushMessage
+    ) -> PushSendResult: ...
+
+
+class PushSendOutcome(StrEnum):
+    DELIVERED = "delivered"
+    #: The push service says this endpoint is permanently gone (404/410). The
+    #: subscription should be deleted -- retrying it forever is the shape of
+    #: bug that makes a notification system slowly cost more and do less.
+    EXPIRED = "expired"
+    #: Anything else: a timeout, a 5xx, a rate limit. Kept, not pruned.
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class PushSendResult:
+    outcome: PushSendOutcome
+    detail: str | None = None
+
+
+class ConversationEventPublisher(Protocol):
+    """Fan-out for realtime console updates.
+
+    **This platform has no WebSocket layer** -- its realtime transport is
+    Server-Sent Events, already used for streamed answers and already proven to
+    pass through the console's BFF proxy unbuffered. Adding a WebSocket stack
+    for one-way server-to-client notifications would be a second realtime
+    system to secure, authenticate and operate, for a direction SSE already
+    covers. Redis pub/sub carries events between API processes so a notice
+    reaches an agent whichever worker holds their stream.
+    """
+
+    async def publish(self, *, tenant_id: UUID, event: str, payload: dict[str, Any]) -> None: ...
+
+    def subscribe(self, *, tenant_id: UUID) -> AsyncGenerator[dict[str, Any]]:
+        """Events for one tenant. The tenant scope is the isolation boundary
+        and is derived from the authenticated session, never from the client.
+
+        Typed as an `AsyncGenerator`, not an `AsyncIterator`, because callers
+        must be able to `aclose()` it -- that is what unsubscribes and returns
+        the Redis connection to the pool, and `AsyncIterator` does not declare
+        it. Every implementation here is already a generator.
+        """
+        ...

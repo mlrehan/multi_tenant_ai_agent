@@ -601,6 +601,224 @@ Two things found while finishing:
 
    One case is left refused rather than fixed, and stated instead of quietly patched: a machine with a stray `OPENAI_API_KEY` exported for the OpenAI CLI **and** the correct name set cannot start, because `extra="forbid"` rejects the stray even though the guard tolerates it. Relaxing that would mean changing a decision docs/21 records as confirmed, so it is asserted in the test with its reasoning.
 
+## Conversation memory, input guardrails, and prompt precedence
+
+Three features in one pass. The common thread: each closes a gap where the platform *looked* complete and was not.
+
+**Memory.** `conversations` has existed since Phase 7 carrying only metadata — who, which assistant, when. The turns lived nowhere, so a conversation could be listed but never reopened, and every question reached the model with no memory of the one before it. New `conversation_messages` (migration `b8e2f4a71c93`, RLS, composite FK, **`UPDATE` revoked** — a turn that was said cannot be un-said, only the conversation deleted).
+
+**Memory is stored, not recomputed.** `conversations.summary` holds a precis of the compacted prefix and `summary_through_seq` records how far it reaches, so assembling context is "the summary, plus messages after N" — never a re-read of the thread. Three tiers in `conversation_memory.py`: rolling summary → last 6 turns verbatim → retrieved passages. Sending the whole thread fails twice over: cost grows quadratically, and once the thread outgrows the window the *oldest* turns fall out silently — precisely backwards, since the beginning is where someone stated what they were trying to do.
+
+**Compaction is extractive, not model-written.** Summarising with the chat model would put a second paid call on the answer path and hand a poisoned earlier turn a chance to rewrite the record of what was said. `seq` is a per-conversation ordinal rather than a timestamp: two messages in the same millisecond still need a defined order.
+
+**Guardrails** (`domain/ai_resources/guardrails.py`) — one place, two deliberately different entry points. A question is written *by* a person and may be refused; a retrieved passage is content the tenant chose to index and is **neutralised, never refused** — a document containing "ignore all previous instructions" is usually a security policy, and dropping it would silently make the knowledge base wrong. What the layer is honestly for: bounding size, stripping control characters (ANSI, NUL, bidi overrides), refusing the small set of requests with no legitimate phrasing, and closing the **fence escape** — a passage carrying the adapter's own delimiter could otherwise end the quoted region and have its remainder read as prompt. Blocklisting injection phrasing cannot be won at the input; the structural defences carry the weight.
+
+Patterns are deliberately narrow: the test is not "could this be an attack?" but "is there a real question this also matches?" Six ordinary questions (*"What is our password reset policy?"*, *"How do I rotate an API key?"*) are asserted **not** refused — a false refusal is a worse product than a missed paraphrase.
+
+**Prompt precedence**, written where it is enforced: platform → assistant persona → memory → sources → question. Each layer is introduced with an explicit statement of its standing; history is fenced as `<<<HISTORY>>>` and declared a record, non-citable and non-authoritative.
+
+**Three defects only the live run could show**, every one invisible to a green suite:
+1. **The security event rolled back.** The refusal was recorded and then `raise`d *inside* the same unit of work — docs/18's rollback pitfall in its most damaging shape: the record of an attack disappearing because the attack was refused. Caught by a fake that simulates real rollback. Now records, exits the block, then raises.
+2. **`/conversations/search` was parsed as a conversation id** (`UUID("search")` → 500). My own docstring warned that FastAPI matches in definition order — and appending the routes at the end of the file defeated it. Moved ahead of `/conversations/{conversation_id}`.
+3. **The router never forwarded `conversation_id`**, so memory silently did nothing. The first live run *looked* correct because retrieval alone answered the follow-up — a coincidence, not memory.
+
+**A fourth, in the test harness:** `tests/conftest.py` truncates every table in the metadata, so a new table that exists in `iam_platform` but not `iam_platform_test` errors 117 tests. **After any migration that adds a table, migrate the test database too:**
+
+```bash
+DATABASE__NAME=iam_platform_test python -m alembic upgrade head
+```
+
+A column-only migration does not break `TRUNCATE`, which is why the BYOK migrations had left that database two revisions behind unnoticed.
+
+**Verified live:** guardrail → 400; a two-turn thread where "it" resolved from history; 4 turns persisted with an auto-title from the first question; search 1 hit / 0 miss; rename 204; delete → cascade to 0 messages; admin roster 3.
+
+**Each answer records what it used.** `citations` stores only the labels the model *actually cited* -- not every candidate offered -- because reopening a thread should show what the answer drew on, and the full candidate set would misrepresent it. `token_count` goes on the assistant turn: the provider reports one number for the exchange, and splitting it across the question and the answer would be a guess presented as a fact. The console renders both (`Sources: [1] page 5 — 994 tokens`).
+
+### Widget memory — Redis, not Postgres, and that is the design
+
+A visitor gets memory too, but stored differently, and the difference is the point. `WidgetSessionClaims` carries no user id, no membership and no permissions *by construction*, so there is nobody for a stored thread to belong to and nobody with standing to delete it. Three consequences, each a reason rather than a convenience:
+
+* **It expires by itself.** The Redis key's TTL is the session token's own lifetime, so memory and the right to read it end together. Persisting a stranger's questions past the session would be storing personal data with no owner, no retention policy and no deletion path — on the tenant's behalf, without either party asking.
+* **`conversations` would not take it anyway.** `membership_id` and `assistant_id` are both NOT NULL and both meaningless for a visitor; making them nullable to fit an anonymous session would weaken a constraint that currently guarantees every stored conversation has a real owner.
+* **It fails open, where the quota store beside it fails closed.** An unconfirmable quota must never become unlimited spending. An unavailable memory just means a context-free answer — what the visitor would have had anyway — and refusing would take a working widget down over a cache blip.
+
+Keyed by `session_id` from the token, never by widget or IP: two visitors on the same page hold different sessions and must not see each other's questions. Four turns, shorter than the authenticated window — a widget exchange is a support question and its follow-ups, and every stored turn is prompt budget spent on someone who may have closed the tab. `ConversationMemory` is reused rather than a second prompt formatter written, so the "history is a record, not an instruction" fencing has one implementation.
+
+**A deployment with no store wired takes the original code path**, not "the new path with an empty memory" — those look identical today and diverge the moment the parameter grows a default. A test asserts it.
+
+**Driven live against the real widget:** two turns on one session where *"Give me one example of it"* resolved to the primary key from turn 1, `widget:memory:<session>` present in Redis with **TTL 1760s of 1800** and exactly 4 turns stored.
+
+**Still not built:** nothing outstanding from this pass.
+
+## Tenant entitlements, chatbot configuration, teams and human handoff
+
+A large pass turning the platform into a governed multi-tenant AI *product*:
+the platform now decides what each tenant may have and spend, the tenant now
+configures its own chatbot, and a conversation can leave the AI for a human
+and come back.
+
+**New tables** (migration `c9f2a4d81b57`): `tenant_entitlements`,
+`tenant_chatbot_settings`, `tenant_teams`, `tenant_team_members`. Extended:
+`model_configurations` (provider + encrypted `api_key_ciphertext` + embedding/
+chat model, timeout, reasoning effort, `enabled`), `ai_assistants` (role/avoid/
+personality/response_length), `chat_widgets` (assistant binding + presentation),
+`conversations` (state machine + handoff fields + visitor ownership),
+`conversation_messages` (three new roles + author), `data_sources`
+(`direct_text`).
+
+**Six decisions worth not re-litigating:**
+
+1. **A limit governs creation, never existence.** Withdrawing
+   `allow_create_assistant` from a tenant with three assistants leaves those
+   three working -- `may_create_*` is asked at the point of creation and
+   nowhere else. A platform that silently disables working resources when an
+   operator edits a number is one nobody can administer safely.
+2. **`None` means uncapped and is not `0`.** Zero is a real, enforceable limit
+   meaning "none at all". Collapsing them would make "unlimited" unexpressible
+   and turn an unset field into a total lockout.
+3. **`tenant_entitlements` needs two mechanisms to be read-only to tenants.**
+   RLS says *which rows*; it cannot say "no writes". `ALTER DEFAULT PRIVILEGES`
+   had already granted `app_tenant` full CRUD, so the migration REVOKEs
+   INSERT/UPDATE/DELETE explicitly. **Fourth recurrence** of the Phase 8
+   `audit_logs` lesson.
+4. **`conversations` losing `NOT NULL` on `membership_id` is a narrowing.**
+   A CHECK now requires *exactly one* of `membership_id` / `visitor_session_id`
+   -- which the old constraint could not express, since it permitted a row
+   claiming both. This is what lets a visitor thread live in the same table as
+   a member's rather than in a second chat system.
+5. **Conversation state is one column, not a spread of booleans.**
+   `is_handed_off` + `is_claimed` + `is_resolved` admit combinations that mean
+   nothing, and every reader then invents its own precedence rule.
+6. **Only OpenAI is marked `supported`.** Anthropic/Gemini/xAI are modelled and
+   **refused at write time** with a message naming the supported set, rather
+   than offered and failing on the first question.
+
+**The concurrency-safe claim is in the repository, not the entity.** Two agents
+can both load an unassigned conversation and both call `claim()`; nothing in a
+domain object can prevent that, because by then the read is stale. A conditional
+`UPDATE ... WHERE state = 'unassigned'` makes the check and the write one
+statement -- Postgres serialises it, exactly one sees rowcount 1. **Proven live:
+two simultaneous claims returned 204 and 409.**
+
+**Quota shapes differ on purpose.** A *message* costs one unit, known in
+advance, so the daily counter **reserves** with atomic `INCR` (the naive
+`SELECT count` then write loses under concurrency in the direction that costs
+money). *Tokens* cost an unknown amount known only after the answer, so the
+monthly counter **reads before and records after**. Both reads fail closed;
+recording fails open; the console's *display* fails open too (`None` renders
+`?`, never `0`).
+
+**Prompt layering states standing rather than relying on position.** Each
+tenant-authored block is introduced with "does not override the rules above",
+and `avoid` is declared additive-only. Position alone establishes nothing: a
+model has no way to know which of two contradictory instructions came from the
+platform unless it is told. Personality and response length are **enums mapped
+to fixed internal strings** -- a stored value outside the enum degrades to the
+default, so a hand-written row cannot smuggle instruction text through a field
+the UI presents as a dropdown.
+
+### Two defects only the live run could show
+
+1. **The daily-limit ceiling returned 500.** `UpdateChatbotSettings` raised a
+   bare `ValueError`, which no handler maps -- and
+   `test_exception_mapping_is_exhaustive.py` could not see it either, because
+   it only scans `AiResourceError` subclasses. **Third time** this codebase has
+   learned that an exception declared outside the module base class is
+   invisible to the very test written to prevent it. Now
+   `ChatbotSettingsInvalidError` -> 400, naming the ceiling. Mutation-tested:
+   reverting to `ValueError` fails the new test.
+2. **Claiming a nonexistent conversation said "another agent already has it".**
+   The conditional UPDATE returns zero rows for *both* "already claimed" and
+   "does not exist", and the use case reported both as 409 -- sending an agent
+   looking for a colleague who was never there. The failure path now
+   disambiguates: absent (or cross-tenant, invisible under RLS) -> 404,
+   genuinely taken -> 409.
+
+**Driven live end to end** against real Postgres/Redis/Qdrant: entitlements
+backfilled; tenant admin writing entitlements **403**; KB creation at the limit
+**409** naming the numbers; assistant creation with the capability withdrawn
+**403**; teams created from tenant-supplied names; handoff -> inbox -> two
+concurrent claims (204/409) -> agent reply + internal note -> return-to-AI ->
+inbox empty. All five message roles verified coexisting in one conversation,
+and the audit trail carries entitlement, chatbot-settings, handoff, claim and
+return-to-AI entries.
+
+**Deliberately not built, and stated rather than implied:** the frontend
+console for any of this; the Direct Text ingestion job (schema and domain
+only); provider-config CRUD routes (columns and capability validation exist,
+the adapters still read `.env`); quota enforcement wired into the answer path
+(the store is built and concurrency-safe, nothing calls it yet); and the AI
+handoff summariser (the best-effort hook and `INTERNAL_COMMENT` write path
+exist, the summarising implementation does not).
+
+**No WebSocket layer exists on this platform** and none was added. Realtime
+inbox updates ride the SSE transport already used for streamed answers and
+already proven to pass through the console BFF proxy unbuffered, with Redis
+pub/sub fanning events between API processes. An in-memory fan-out would be
+correct in development and silently broken behind a load balancer.
+
+## Queue scoping, widget persistence and retention
+
+Two product decisions the user made explicitly, plus the defects found
+implementing them.
+
+**Agents see only their own teams' queues.** New permission
+`tenant.conversations.view_all` separates "may work the inbox" from "may see
+the whole tenant's inbox"; without it the queue is scoped to the teams the
+caller staffs, resolved by `resolve_queue_team_scope()`. The scope goes *into*
+the query, so another team's conversation is never loaded rather than loaded
+and hidden — and **the SSE stream applies the same scope**, or an Admissions
+agent is chimed for a billing dispute they then cannot see. The repository had
+accepted a `team_ids` filter since the handoff work and **nothing had ever
+passed it**: team routing was real in the data and decorative in the
+notification. `tenant_team_members` has no lead/supervisor column, so
+leadership is currently *team membership*; recorded in the code rather than
+faked with a column nothing reads. **Re-run `scripts/bootstrap_tenant_catalog.py`**
+to seed the new permission.
+
+**Widget conversations are persisted from the first question**, reversing the
+original "persist only on escalation" decision. What changed is that keeping
+them now has an expiry date: `tenant_chatbot_settings.conversation_retention_days`
+(migration `e1b6d70c94af`, NOT NULL, default 30, CHECK 1–3650) with
+`PurgeExpiredConversations` and `scripts/purge_expired_conversations.py`
+enforcing it. **NOT NULL on purpose** — a nullable column makes "keep forever"
+expressible by accident, which is the outcome the default exists to avoid.
+
+`visitor_conversation.py` is the single creator both paths use; two creators
+would produce two shapes of visitor thread, and the `exactly_one_owner` CHECK
+only catches the one that is outright wrong. Redis memory is kept *alongside*
+Postgres and that is deliberate: Redis is the bounded working window the
+prompt is built from, Postgres is the record retention deletes. Persistence is
+**best effort** — it runs after the visitor already has their answer, so
+raising would show an error for work that succeeded, on the one surface with
+nobody to explain it to.
+
+**Four defects, each found by running it rather than reading it:**
+1. **The purge landed on the wrong repository class** — `AttributeError` at
+   runtime, invisible to every test that used a fake.
+2. **A broad `except` turned that into "purged 0"** — a wiring bug reading as
+   a clean sweep, which is exactly how a retention job silently stops
+   retaining. Failures are now counted on the summary line and the exit status
+   is non-zero.
+3. **The synthetic system actor violated an FK.** `audit_logs.actor_user_id`
+   references `users`, so an all-zero uuid was refused and the transaction
+   rolled back — correctly atomic, but nothing was deleted. The column is
+   nullable: a scheduled deletion records **no actor** rather than a fake one.
+4. **The purge is a script, not a Celery task.** Workers connect only as
+   `app_tenant` by design, so enumerating tenants from one would mean handing
+   a background job BYPASSRLS.
+
+Live: retention 1 day + a back-dated row → 12 → 9 conversations, 27 → 15
+messages (cascade), audit row surviving with the counts. Two ordinary widget
+questions → one conversation, 4 turns, titled from the first question,
+`membership_id` null. Stored text verified real UTF-8 (38 chars / 40 bytes, no
+U+FFFD) rather than assumed.
+
+**Status:** `ruff` clean; **681 tests** (`tests/unit` + `tests/security`, up
+from 510); `mypy src/iam_platform` **20 pre-existing errors**, none in the
+changed files. **Not built:** push notifications, badges and vibration for a
+closed or minimised console — the agent chime still requires an open tab.
+
 ## Ground rules for continuing this project
 
 - Never generate the entire project in one response — follow the phase sequence.

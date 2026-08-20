@@ -91,8 +91,21 @@ _AI_RESOURCE_STATUS_MAP: dict[type[ai_resource_errors.AiResourceError], int] = {
     ai_resource_errors.ModelConfigurationManagementDeniedError: status.HTTP_403_FORBIDDEN,
     ai_resource_errors.ModelConfigurationInUseError: status.HTTP_409_CONFLICT,
     ai_resource_errors.TokenBudgetExceededError: status.HTTP_429_TOO_MANY_REQUESTS,
+    # A quota is a 409, a capability is a 403, and a spent allowance is a 429 --
+    # three different things the caller does three different things about.
+    ai_resource_errors.EntitlementExceededError: status.HTTP_409_CONFLICT,
+    ai_resource_errors.FeatureNotEntitledError: status.HTTP_403_FORBIDDEN,
+    ai_resource_errors.DailyMessageQuotaExceededError: status.HTTP_429_TOO_MANY_REQUESTS,
+    ai_resource_errors.TenantTokenQuotaExceededError: status.HTTP_429_TOO_MANY_REQUESTS,
+    ai_resource_errors.ChatbotDisabledError: status.HTTP_409_CONFLICT,
+    ai_resource_errors.HandoffNotAvailableError: status.HTTP_409_CONFLICT,
+    ai_resource_errors.ConversationAlreadyClaimedError: status.HTTP_409_CONFLICT,
+    ai_resource_errors.TeamNotFoundError: status.HTTP_404_NOT_FOUND,
+    ai_resource_errors.ChatbotSettingsInvalidError: status.HTTP_400_BAD_REQUEST,
+    ai_resource_errors.PushSubscriptionInvalidError: status.HTTP_400_BAD_REQUEST,
     ai_resource_errors.ProviderCredentialNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.ProviderCredentialUnusableError: status.HTTP_409_CONFLICT,
+    ai_resource_errors.QuestionBlockedError: status.HTTP_400_BAD_REQUEST,
     ai_resource_errors.PermissionDeniedError: status.HTTP_403_FORBIDDEN,
     ai_resource_errors.ResourceAccessDeniedError: status.HTTP_403_FORBIDDEN,
     # Deliberately 500, not 404: the row exists and storage lost the bytes.

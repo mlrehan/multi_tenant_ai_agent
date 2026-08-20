@@ -1,0 +1,2 @@
+D:\LAIT\AI CHATBOT\ai_agent_by_Claude\src\iam_platform\infrastructure\vector\qdrant_search.py:57: UserWarning: Api key is used with an insecure connection.
+  self._client = AsyncQdrantClient(

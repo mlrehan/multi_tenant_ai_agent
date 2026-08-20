@@ -79,6 +79,7 @@ import {
   useDocumentDetail,
   useResyncDataSource,
   useAssistants,
+  useStartConversation,
 } from "@/features/ai-resources/hooks";
 import { isApiError } from "@/lib/api-client";
 import { streamAnswer } from "@/features/ai-resources/api";
@@ -1295,6 +1296,11 @@ function AskDialog({
   const [cited, setCited] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [assistantId, setAssistantId] = useState(PLATFORM_DEFAULT_ASSISTANT);
+  // The thread this dialog is currently continuing. Created lazily on the
+  // first question, because a conversation requires an assistant and most
+  // asks here are one-off lookups that should not litter the history.
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const startConversation = useStartConversation(tenantId);
   const abortRef = useRef<AbortController | null>(null);
   const { data: assistantsData } = useAssistants(tenantId);
   // Archived is off the record for new use, mirroring the server: naming one
@@ -1313,12 +1319,30 @@ function AskDialog({
     setCited([]);
     setStreaming(true);
     try {
+      // Memory needs a thread, and a thread needs an assistant -- the platform
+      // default resolves no assistant, so those asks stay stateless. Failing
+      // to create one must not lose the question, so it degrades to a
+      // one-off answer rather than raising.
+      let thread = conversationId;
+      if (!thread && assistantId !== PLATFORM_DEFAULT_ASSISTANT) {
+        try {
+          const created = await startConversation.mutateAsync({
+            assistantId,
+            title: null,
+          });
+          thread = created.id;
+          setConversationId(created.id);
+        } catch {
+          toast.warning("Answering without conversation history.");
+        }
+      }
       for await (const frame of streamAnswer(
         tenantId,
         knowledgeBase.id,
         question,
         controller.signal,
         assistantId === PLATFORM_DEFAULT_ASSISTANT ? undefined : assistantId,
+        thread ?? undefined,
       )) {
         if (frame.event === "sources") {
           setCitations((frame.data.citations as AnswerCitation[]) ?? []);
