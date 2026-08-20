@@ -51,7 +51,13 @@ export function getChatbotSettings(tenantId: string) {
 
 export function updateChatbotSettings(
   tenantId: string,
-  body: Omit<ChatbotSettings, "updated_at" | "effective_daily_message_limit">,
+  body: Omit<
+    ChatbotSettings,
+    // Server-derived, never sent back: the effective limit is the clamped
+    // one, and the defaults are what the server falls back to rather than
+    // anything the tenant is setting.
+    "updated_at" | "effective_daily_message_limit" | "default_role" | "default_avoid"
+  >,
 ) {
   return apiFetch<ChatbotSettings>(`v1/tenants/${tenantId}/chatbot-settings`, {
     method: "PUT",

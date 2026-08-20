@@ -153,10 +153,20 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
   const selectedAssistantId = assistantId || assistantList[0]?.id || "";
   const [behaviourStamp, setBehaviourStamp] = useState<string | null>(null);
   const selectedAssistant = assistantList.find((a) => a.id === selectedAssistantId);
-  if (selectedAssistant && behaviourStamp !== selectedAssistant.id) {
-    setBehaviourStamp(selectedAssistant.id);
-    setRole(selectedAssistant.role_instructions ?? "");
-    setAvoid(selectedAssistant.avoid_instructions ?? "");
+  // Keyed on the settings too, not the assistant alone. The defaults arrive
+  // with the settings query, which may resolve *after* the assistants one --
+  // hydrating on the assistant alone left an assistant with no brief showing
+  // an empty box for ever, because the stamp had already been claimed.
+  const behaviourKey = selectedAssistant
+    ? `${selectedAssistant.id}:${settings.data?.updated_at ?? ""}`
+    : null;
+  if (selectedAssistant && behaviourKey && behaviourStamp !== behaviourKey) {
+    setBehaviourStamp(behaviourKey);
+    // An assistant that has never been given a brief is shown the shipped one
+    // rather than a blank field, so Save stores something coherent instead of
+    // an empty string that silently means "use the default".
+    setRole(selectedAssistant.role_instructions ?? settings.data?.default_role ?? "");
+    setAvoid(selectedAssistant.avoid_instructions ?? settings.data?.default_avoid ?? "");
     setPersonality(selectedAssistant.personality ?? "neutral");
     setResponseLength(selectedAssistant.response_length ?? "balanced");
   }
@@ -508,7 +518,6 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                         label="Role"
                         hint="What this assistant helps with."
                         value={role}
-                        max={1000}
                         rows={6}
                         disabled={!canManage}
                         onChange={setRole}
@@ -518,7 +527,6 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                         label="Avoid"
                         hint="Topics and actions to refuse or escalate. These only ever add restrictions."
                         value={avoid}
-                        max={1000}
                         rows={6}
                         disabled={!canManage}
                         onChange={setAvoid}
@@ -839,18 +847,23 @@ function CharField({
   label: string;
   hint: string;
   value: string;
-  max: number;
+  /** Omitted where the field is deliberately unbounded -- the count is still
+   *  shown, because knowing how long a brief has grown is useful, but there is
+   *  no ceiling to measure it against. */
+  max?: number;
   rows: number;
   disabled: boolean;
   onChange: (v: string) => void;
 }) {
-  const over = value.length > max;
+  const over = max !== undefined && value.length > max;
   return (
     <div>
       <div className="flex items-baseline justify-between">
         <Label htmlFor={id}>{label}</Label>
         <span className={`text-xs ${over ? "font-medium text-destructive" : "text-muted-foreground"}`}>
-          {value.length.toLocaleString()} / {max.toLocaleString()}
+          {max === undefined
+            ? value.length.toLocaleString()
+            : `${value.length.toLocaleString()} / ${max.toLocaleString()}`}
         </span>
       </div>
       <p className="mb-1.5 text-xs text-muted-foreground">{hint}</p>

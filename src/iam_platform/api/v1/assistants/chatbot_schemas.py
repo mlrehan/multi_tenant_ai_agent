@@ -21,19 +21,30 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from iam_platform.domain.ai_resources.chatbot import (
-    MAX_AVOID_CHARS,
     MAX_COMPANY_DESCRIPTION_CHARS,
     MAX_DIRECT_TEXT_CHARS,
     MAX_INDUSTRY_CHARS,
-    MAX_ROLE_CHARS,
 )
 
 
 class ChatbotSettingsResponse(BaseModel):
     ai_chatbot_enabled: bool
+    #: **Resolved**, not raw. A tenant who has never opened the Company tab is
+    #: shown the shipped default rather than an empty box, and saving persists
+    #: what they were shown -- so the prompt the assistant runs on and the text
+    #: the administrator can see are the same words.
     company_name: str | None
     company_description: str
     industry: str
+    #: The shipped assistant brief and restrictions, named for this company.
+    #:
+    #: Served from here rather than restated in the console, because they are
+    #: the exact strings the prompt builder falls back to. A copy in TypeScript
+    #: would drift the moment either side is edited, and the drift would be
+    #: invisible: the form would show one brief and the model would follow
+    #: another.
+    default_role: str
+    default_avoid: str
     allow_human_handoff: bool
     add_ai_summary_as_internal_comment: bool
     allow_ai_for_unassigned_conversations: bool
@@ -107,8 +118,8 @@ class SaveTeamRequest(BaseModel):
 class AssistantBehaviourRequest(BaseModel):
     """The assistant's brief, as the Behaviour tab edits it."""
 
-    role_instructions: str = Field(default="", max_length=MAX_ROLE_CHARS)
-    avoid_instructions: str = Field(default="", max_length=MAX_AVOID_CHARS)
+    role_instructions: str = ""
+    avoid_instructions: str = ""
     personality: str = "neutral"
     response_length: str = "balanced"
 

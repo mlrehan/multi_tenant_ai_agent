@@ -408,9 +408,17 @@ export type AvatarKey = (typeof AVATAR_KEYS)[number];
 
 export interface ChatbotSettings {
   ai_chatbot_enabled: boolean;
+  /** Resolved server-side: the tenant's own value, or the shipped default.
+   *  Saving persists what the administrator was shown, so the prompt and the
+   *  form never describe the assistant differently. */
   company_name: string | null;
   company_description: string;
   industry: string;
+  /** The shipped role brief and restrictions, named for this company. Served
+   *  rather than restated here, because they are the exact strings the prompt
+   *  builder falls back to and a copy would drift invisibly. */
+  default_role: string;
+  default_avoid: string;
   allow_human_handoff: boolean;
   add_ai_summary_as_internal_comment: boolean;
   allow_ai_for_unassigned_conversations: boolean;

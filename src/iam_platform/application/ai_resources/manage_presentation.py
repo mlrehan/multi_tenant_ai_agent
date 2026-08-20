@@ -29,8 +29,6 @@ from iam_platform.application.ai_resources.requester import build_requester_cont
 from iam_platform.core.clock import Clock
 from iam_platform.domain.ai_resources.chatbot import (
     AVATAR_KEYS,
-    MAX_AVOID_CHARS,
-    MAX_ROLE_CHARS,
     Personality,
     ResponseLength,
 )
@@ -71,14 +69,6 @@ class UpdateAssistantBehaviour:
 
         role = command.role_instructions.strip()
         avoid = command.avoid_instructions.strip()
-        if len(role) > MAX_ROLE_CHARS:
-            raise ChatbotSettingsInvalidError(
-                f"the role must be {MAX_ROLE_CHARS} characters or fewer"
-            )
-        if len(avoid) > MAX_AVOID_CHARS:
-            raise ChatbotSettingsInvalidError(
-                f"the avoid rules must be {MAX_AVOID_CHARS} characters or fewer"
-            )
         # Validated against the enum here so a bad value is refused at the API
         # with a clear message. The *prompt* builder degrades an unknown stored
         # value to the default rather than trusting it -- two different jobs:

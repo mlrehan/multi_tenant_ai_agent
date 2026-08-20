@@ -74,6 +74,7 @@ from iam_platform.application.ai_resources.manage_push import (
     UnsubscribeFromPushCommand,
 )
 from iam_platform.application.identity.ports import AccessTokenClaims
+from iam_platform.domain.ai_resources.chatbot import DEFAULT_AVOID, default_role
 from iam_platform.domain.ai_resources.entities import HandoffInitiator
 
 logger = logging.getLogger("iam_platform.api.v1.assistants.chatbot_router")
@@ -713,10 +714,18 @@ async def stream_conversation_events(
 def _settings_response(
     settings: object, effective_daily_limit: int | None
 ) -> schemas.ChatbotSettingsResponse:
+    # Resolved against an empty display name: the tenant's own chatbot-facing
+    # name if they set one, otherwise the shipped default. The account's
+    # display name is deliberately not consulted here -- it is an identity for
+    # operators and audit records, and quietly borrowing it as the nursery's
+    # public-facing name is a decision the tenant never made.
+    company = settings.resolved_company_name("")  # type: ignore[attr-defined]
     return schemas.ChatbotSettingsResponse(
         ai_chatbot_enabled=settings.ai_chatbot_enabled,  # type: ignore[attr-defined]
-        company_name=settings.company_name,  # type: ignore[attr-defined]
-        company_description=settings.company_description,  # type: ignore[attr-defined]
+        company_name=company,
+        company_description=settings.resolved_company_description(""),  # type: ignore[attr-defined]
+        default_role=default_role(company),
+        default_avoid=DEFAULT_AVOID,
         industry=settings.industry,  # type: ignore[attr-defined]
         allow_human_handoff=settings.allow_human_handoff,  # type: ignore[attr-defined]
         add_ai_summary_as_internal_comment=(
