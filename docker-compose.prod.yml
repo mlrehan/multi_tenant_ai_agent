@@ -9,7 +9,89 @@
 #
 # Every secret below is read from the host environment with no default, so
 # `docker compose -f docker-compose.prod.yml up` fails loudly rather than
-# silently starting with a weak credential.
+# silently starting with a weak credential. They come from the `.env` file
+# beside this one, which must be `chmod 600` and is git-ignored.
+#
+# The API and the worker share one environment block by anchor. They must not
+# drift: the worker parses, embeds and indexes documents, so it needs the same
+# storage, Qdrant and OpenAI settings the API reads back. A worker missing one
+# of them fails *asynchronously*, leaving a document stuck in `processing`
+# with nobody watching.
+
+x-app-env: &app-env
+  ENVIRONMENT: production
+  # This deployment keeps its secrets in the `chmod 600` .env beside this file
+  # rather than a managed secret manager. `env` is normally refused when
+  # ENVIRONMENT=production; ALLOW_PLAINTEXT_SECRETS is the deliberate opt-out
+  # (core/config.py explains what it trades away). Switch SECRET_PROVIDER to
+  # aws_secrets_manager and drop the flag to move to managed secrets later --
+  # the values below then become `secret://` references and nothing else here
+  # changes.
+  SECRET_PROVIDER: ${SECRET_PROVIDER:-env}
+  ALLOW_PLAINTEXT_SECRETS: ${ALLOW_PLAINTEXT_SECRETS:-true}
+  DATABASE__HOST: postgres
+  DATABASE__PORT: "5432"
+  DATABASE__NAME: iam_platform
+  DATABASE__USER: app_tenant
+  DATABASE__PASSWORD: ${APP_TENANT_PASSWORD:?}
+  DATABASE__PLATFORM_USER: app_platform
+  DATABASE__PLATFORM_PASSWORD: ${APP_PLATFORM_PASSWORD:?}
+  # Neither service ever needs DDL rights; migrator credentials are
+  # intentionally absent from both.
+  REDIS__URL: redis://redis:6379/0
+  # Defaulted to `example.invalid` in code, which would be baked into the
+  # `iss` claim of every token this deployment issues.
+  JWT__ISSUER: ${JWT_ISSUER:?set JWT_ISSUER, e.g. https://yourdomain.com}
+  JWT__AUDIENCE: ${JWT_AUDIENCE:-iam-platform-api}
+  JWT__PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:?}
+  JWT__PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:?}
+  ENCRYPTION__DATA_KEY: ${ENCRYPTION_DATA_KEY:?}
+  # --- Knowledge base / RAG ---------------------------------------------
+  # Uploaded bytes stay on this server, under the `uploads` named volume
+  # below. The container root filesystem is read-only and must stay that way,
+  # so that volume is what makes uploads possible at all -- and the Dockerfile
+  # pre-creates the path owned by `app`, or the mount would be root-owned and
+  # the first upload would fail on `mkdir`.
+  #
+  # `docker compose down -v` deletes this. Back it up with the database.
+  STORAGE__MODE: ${STORAGE__MODE:-local}
+  STORAGE__LOCAL_PATH: /var/lib/iam-platform/storage
+  STORAGE__R2_ACCOUNT_ID: ${STORAGE__R2_ACCOUNT_ID:-}
+  STORAGE__R2_BUCKET: ${STORAGE__R2_BUCKET:-}
+  STORAGE__R2_ACCESS_KEY_ID: ${STORAGE__R2_ACCESS_KEY_ID:-}
+  STORAGE__R2_SECRET_ACCESS_KEY: ${STORAGE__R2_SECRET_ACCESS_KEY:-}
+  QDRANT__URL: ${QDRANT__URL:-http://qdrant:6333}
+  QDRANT__API_KEY: ${QDRANT__API_KEY:-}
+  QDRANT__TIMEOUT_SECONDS: ${QDRANT__TIMEOUT_SECONDS:-30}
+  OPENAI__API_KEY: ${OPENAI__API_KEY:-}
+  OPENAI__EMBEDDING_MODEL: ${OPENAI__EMBEDDING_MODEL:-text-embedding-3-large}
+  OPENAI__EMBEDDING_DIMENSIONS: ${OPENAI__EMBEDDING_DIMENSIONS:-3072}
+  OPENAI__CHAT_MODEL: ${OPENAI__CHAT_MODEL:-gpt-5.5}
+  # Deliberately passed through unset-if-blank. A non-reasoning model rejects
+  # this parameter outright, so an empty value must mean "omit the key",
+  # never "send an empty one".
+  OPENAI__CHAT_REASONING_EFFORT: ${OPENAI__CHAT_REASONING_EFFORT:-}
+  OPENAI__REQUEST_TIMEOUT_SECONDS: ${OPENAI__REQUEST_TIMEOUT_SECONDS:-60}
+  COHERE__API_KEY: ${COHERE__API_KEY:-}
+  COHERE__RERANK_MODEL: ${COHERE__RERANK_MODEL:-rerank-v3.5}
+  TAVILY__API_KEY: ${TAVILY__API_KEY:-}
+  # Web Push, so an agent is alerted with the console closed. Blank disables
+  # it; the inbox still works, the notification simply never arrives.
+  PUSH__VAPID_PUBLIC_KEY: ${PUSH_VAPID_PUBLIC_KEY:-}
+  PUSH__VAPID_PRIVATE_KEY: ${PUSH_VAPID_PRIVATE_KEY:-}
+  PUSH__VAPID_SUBJECT: ${PUSH_VAPID_SUBJECT:-mailto:ops@example.com}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+# Log rotation. Without this the json-file driver grows without limit until
+# the server's disk is full -- which takes down every container at once,
+# including the database, and is one of the commonest ways a small Docker
+# host dies. 20 MB x 5 files per service is a few hours of busy traffic and
+# bounded at roughly 500 MB across the stack.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
 
 services:
   postgres:
@@ -18,6 +100,13 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD}
       POSTGRES_DB: iam_platform
+      # Read by `docker/postgres-init/01-roles.sh` when the database is first
+      # created, to give `app_tenant` and `app_platform` the same passwords the
+      # API and worker connect with. Without them the roles would be created
+      # with a password nothing uses and every application connection would
+      # fail authentication.
+      APP_TENANT_PASSWORD: ${APP_TENANT_PASSWORD:?set APP_TENANT_PASSWORD}
+      APP_PLATFORM_PASSWORD: ${APP_PLATFORM_PASSWORD:?set APP_PLATFORM_PASSWORD}
     volumes:
       - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
       - pgdata:/var/lib/postgresql/data
@@ -27,8 +116,14 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres -d iam_platform"]
       interval: 5s
       timeout: 3s
-      retries: 12
+      # First boot creates the cluster and runs the role script, which on a
+      # small cloud VM takes appreciably longer than a restart. `start_period`
+      # is not counted as failures, so a slow initialisation cannot exhaust
+      # the retries and mark the database permanently unhealthy.
+      retries: 20
+      start_period: 15s
     restart: unless-stopped
+    logging: *default-logging
 
   redis:
     image: redis:7-alpine
@@ -37,15 +132,49 @@ services:
     # (docs/06-authorization-model.md -- "never authoritative"), so durability
     # buys nothing and an RDB dump on disk is one more place session-adjacent
     # data could linger.
+    #
+    # It is also the Celery broker. That is not a contradiction: a lost job is
+    # a document that shows as `failed` and can be retried from the console,
+    # whereas the queue is empty for seconds at a time in normal operation.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 12
+      retries: 20
+      start_period: 5s
     restart: unless-stopped
+    logging: *default-logging
+
+  qdrant:
+    # Vector store for knowledge-base search. Pinned to match `qdrant-client`
+    # in pyproject.toml: the client refuses more than one minor version of
+    # skew. Bump both together.
+    #
+    # No `ports:` -- like Postgres, it is reachable only on the compose
+    # network. An unauthenticated Qdrant exposed to the internet is every
+    # tenant's indexed documents, readable by anyone who finds the port.
+    image: qdrant/qdrant:v1.19.0
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    healthcheck:
+      # Checks the port is *accepting connections*, not merely that the binary
+      # runs. `entrypoint.sh --version` was the previous probe and passes on a
+      # container whose service has not finished starting -- which would let
+      # the API and worker start against a Qdrant that is not listening yet.
+      #
+      # The image carries bash (verified by running it), so this works. An
+      # earlier comment here claimed it was distroless with no shell; that was
+      # simply wrong, and it is why the weaker probe was chosen.
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/6333"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+    logging: *default-logging
 
   migrate:
-    build: .
+    image: iam-platform:latest
     # Runs as the migrator (table-owning) role and exits. The app service
     # waits for it to complete successfully, so a failed migration blocks the
     # rollout instead of leaving the app running against a stale schema.
@@ -53,6 +182,7 @@ services:
     environment:
       ENVIRONMENT: production
       SECRET_PROVIDER: ${SECRET_PROVIDER:-env}
+      ALLOW_PLAINTEXT_SECRETS: ${ALLOW_PLAINTEXT_SECRETS:-true}
       DATABASE__HOST: postgres
       DATABASE__PORT: "5432"
       DATABASE__NAME: iam_platform
@@ -70,50 +200,97 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    logging: *default-logging
 
   api:
+    # The one service that builds; `migrate` and `worker` reuse this tag.
     build: .
+    image: iam-platform:latest
     environment:
-      ENVIRONMENT: production
-      # NOTE: `env` is rejected at startup when ENVIRONMENT=production
-      # (core/config.py) -- a real deploy sets this to aws_secrets_manager (or
-      # another implemented provider) and passes `secret://` references below.
-      SECRET_PROVIDER: ${SECRET_PROVIDER:?production requires a real secret provider}
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-      # Only needed when the host isn't an EC2 instance with an IAM role
-      # attached (boto3's default credential chain finds the role
-      # automatically and these can be left blank). Left empty, they are
-      # ignored -- boto3 treats an empty-string env var as "not set" and
-      # falls through to the next credential source.
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
-      DATABASE__HOST: postgres
-      DATABASE__PORT: "5432"
-      DATABASE__NAME: iam_platform
-      DATABASE__USER: app_tenant
-      DATABASE__PASSWORD: ${APP_TENANT_PASSWORD:?}
-      DATABASE__PLATFORM_USER: app_platform
-      DATABASE__PLATFORM_PASSWORD: ${APP_PLATFORM_PASSWORD:?}
-      # The app never needs DDL rights; migrator credentials are intentionally
-      # absent from this service's environment.
-      REDIS__URL: redis://redis:6379/0
-      JWT__PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:?}
-      JWT__PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:?}
-      ENCRYPTION__DATA_KEY: ${ENCRYPTION_DATA_KEY:?}
+      <<: *app-env
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-[]}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Where third-party pages reach this API, used to build the <script>
+      # snippet tenants paste into their own sites. Behind a reverse proxy the
+      # request's own Host may not survive, and the snippet would then point
+      # at the wrong hostname -- on someone else's website, where nobody here
+      # would see it fail.
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-}
+    volumes:
+      - uploads:/var/lib/iam-platform/storage
     ports:
-      - "8000:8000"
+      # **Bound to localhost, and this is a security control, not a
+      # preference.** `- "8000:8000"` binds 0.0.0.0, and Docker publishes
+      # ports by writing its own iptables rules in the DOCKER chain, which
+      # are consulted *before* ufw's. A `ufw deny` on 8000 therefore does not
+      # block it: the API would be reachable from the internet directly, over
+      # plain HTTP, bypassing Nginx, TLS, and the security headers and rate
+      # limits the proxy adds. Nginx reaches it on the loopback instead.
+      - "127.0.0.1:8000:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
     # Give the app time to finish in-flight requests; must exceed uvicorn's
     # timeout_graceful_shutdown (20s) in asgi.py.
     stop_grace_period: 30s
     restart: unless-stopped
+    logging: *default-logging
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  worker:
+    image: iam-platform:latest
+    # **Required, not optional.** Ingestion runs here, not in the API: an
+    # upload is accepted, queued, and then parsed, chunked, embedded and
+    # indexed by this process. A deployment that starts only the API accepts
+    # uploads and leaves every document on `processing` for ever, with no
+    # error anywhere to explain it.
+    #
+    # `--pool=threads` because the work is I/O-bound (object storage, OpenAI,
+    # Qdrant) and the parsers hold interpreter state that does not survive
+    # forking cleanly.
+    command:
+      - celery
+      - -A
+      - iam_platform.workers.main:celery_app
+      - worker
+      - --loglevel=info
+      - --pool=threads
+      - --concurrency=${WORKER_CONCURRENCY:-4}
+    environment:
+      <<: *app-env
+    volumes:
+      # The same volume the API writes uploads to. Two separate volumes would
+      # mean the worker parsing a file the API had not written -- an immediate
+      # "file not found" on every ingestion.
+      - uploads:/var/lib/iam-platform/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      # Asks the running worker to answer, rather than checking the process
+      # exists: the failure this catches is a worker that booted, failed to
+      # register its tasks and is silently consuming nothing.
+      test: ["CMD-SHELL", "celery -A iam_platform.workers.main:celery_app inspect ping -d celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+    # Longer than the API's: a document being embedded is mid-flight against a
+    # third-party API, and killing it wastes work already paid for.
+    stop_grace_period: 60s
+    restart: unless-stopped
+    logging: *default-logging
     read_only: true
     tmpfs:
       - /tmp
@@ -122,3 +299,5 @@ services:
 
 volumes:
   pgdata:
+  qdrant-storage:
+  uploads:

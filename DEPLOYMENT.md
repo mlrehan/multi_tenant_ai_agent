@@ -32,7 +32,7 @@ These run together:
 | **PostgreSQL** | The database | Runs inside Docker | Runs inside Docker |
 | **Redis** | A fast in-memory cache (login attempt counters, rate limits) and the background job queue | Runs inside Docker | Runs inside Docker |
 | **The worker** | A separate process that ingests uploaded documents in the background (Celery) | Runs directly on your computer with `celery` | Runs as its own container/service |
-| **Qdrant** | The vector database that makes document search work | Runs inside Docker | Your own self-hosted server |
+| **Qdrant** | The vector database that makes document search work | Runs inside Docker | Runs inside Docker (self-hosted, not exposed to the internet) |
 
 In development, only the databases and cache run in Docker — you run the API and worker directly so you can see errors instantly and restart them in a second. In production, **everything** runs in Docker, including the API itself, because that's what makes it reproducible and safe to deploy on a server you don't sit in front of.
 
@@ -330,10 +330,26 @@ This section assumes you have a fresh Ubuntu server from a cloud provider (AWS, 
 - An Ubuntu 22.04 or 24.04 server with at least 2 GB RAM
 - SSH access to it (`ssh youruser@your-server-ip`)
 - (Optional but recommended) a domain name pointed at the server's IP address, for HTTPS
-- An AWS account — explained in Step 4 below, and needed for one specific reason: **production secrets are stored in AWS Secrets Manager**, not in plain text on the server. This is a deliberate security choice this project makes (see the box below). Your server itself does **not** need to be hosted on AWS — Secrets Manager is reachable from any cloud.
+- An OpenAI API key, if you're using the knowledge-base / chatbot features (Step 4d)
 
-> **Why AWS Secrets Manager specifically, even if my server isn't on AWS?**
-> This project refuses to start in production mode with secrets sitting in plain environment variables — that's an intentional safety rail, not a bug. Today, AWS Secrets Manager is the only "real" secret store this project knows how to talk to (support for HashiCorp Vault, Azure Key Vault, and Google Secret Manager is designed for but not yet built — see `docs/22-deployment-and-operations.md`). Using AWS Secrets Manager just means your server makes API calls to AWS to fetch secrets at startup; it costs a few cents a month and takes about 10 minutes to set up (Step 4 walks through it). If your organization already has Vault or another secret manager and wants it supported, that's a small, well-contained engineering task — the integration point is one file (`src/iam_platform/infrastructure/secrets/`).
+Everything runs on this one server: the API, the background worker, PostgreSQL, Redis, Qdrant, and the uploaded documents themselves.
+
+**What you are about to build — six containers on one machine:**
+
+| Container | What it does | Reachable from outside? |
+|---|---|---|
+| `api` | Serves the API and the embeddable chat widget | Only through Nginx (bound to `127.0.0.1:8000`) |
+| `worker` | Ingests uploaded documents in the background | No |
+| `migrate` | Creates/updates database tables, then exits | No — it is a job, not a service |
+| `postgres` | The database | No |
+| `redis` | Cache, rate limits, and the job queue | No |
+| `qdrant` | Vector search over your documents | No |
+
+Only Nginx (ports 80/443) and SSH face the internet. Everything else talks over a private Docker network.
+
+**The ten steps, at a glance:** prepare the server → install Docker → clone the code → create `.env` with your secrets → build and start → verify → create your admin account → add a domain and HTTPS → close the firewall → confirm it survives a reboot.
+
+**Roughly how long:** 20 minutes of typing, plus **20–45 minutes for the first image build** — it installs PyTorch and bakes in the document-parsing models, which is a one-time cost. Later deploys take about a minute. **No AWS account or other cloud service is required.** Secrets live in a `chmod 600` file on the server; uploaded files live in a Docker volume on its disk. Step 4 explains exactly what that trades away, and what to change if you later want a managed secret store instead.
 
 ### Step 1 — Basic server setup
 
@@ -388,14 +404,17 @@ cd ai_agent_by_Claude
 
 ### Step 4 — Set up your production secrets
 
-This is the step with the most moving parts, so it's broken into small pieces. You're creating six pieces of secret material:
+You're creating five pieces of secret material, all of which live in one `chmod 600` file on this server:
 
 1. A password for the database's admin (superuser) role
 2. A password for the application's normal database role (`app_tenant`)
 3. A password for the application's platform database role (`app_platform`)
-4. A JWT signing keypair (same as in development, Step 4a — generate a fresh one, don't reuse your dev keys)
-5. A data-encryption key (same as in development, Step 4b — generate a fresh one)
-6. AWS credentials that let the server fetch secrets from AWS Secrets Manager
+4. A JWT signing keypair (generate a fresh one — don't reuse your dev keys)
+5. A data-encryption key (fresh, likewise)
+
+> **Where these are kept, and what that costs.** This setup stores them in the `.env` file described below rather than a managed secret manager. The application normally refuses to start in production mode with plaintext secrets — `ALLOW_PLAINTEXT_SECRETS=true` is the deliberate opt-out, and it exists so the refusal still catches the case it was built for: someone reaching production *by accident*, having copied a dev `.env` and changed one line.
+>
+> What you're accepting: anyone who can read that file — or a backup, disk image or snapshot containing it — holds your JWT signing key and your data-encryption key, and can mint valid tokens for any account. Keep it `chmod 600`, keep it out of backups that travel off this server unencrypted, and treat a compromise of the host as a compromise of every credential. If you later want managed secrets, Step 4 is the only step that changes: set `SECRET_PROVIDER=aws_secrets_manager`, drop `ALLOW_PLAINTEXT_SECRETS`, and replace the values with `secret://` references. Nothing else in this guide changes.
 
 **4a. Generate three strong database passwords:**
 
@@ -403,7 +422,7 @@ This is the step with the most moving parts, so it's broken into small pieces. Y
 openssl rand -base64 32   # run this three times, write down each result
 ```
 
-**4b. Generate a fresh JWT keypair** (exactly like development Step 4a, but do this again — don't copy your dev keys to production):
+**4b. Generate a fresh JWT keypair** (don't copy your dev keys to production):
 
 ```bash
 openssl genrsa -out jwt_private.pem 2048
@@ -412,12 +431,20 @@ openssl rsa -in jwt_private.pem -pubout -out jwt_public.pem
 python3 - <<'PY'
 for name in ["jwt_private.pem", "jwt_public.pem"]:
     with open(name) as f:
-        print(name, "->", f.read().strip().replace("\n", "\\n"))
+        print(name, "->", f.read().strip().replace("
+", "\n"))
     print()
 PY
 ```
 
-Keep the two printed values handy — you'll paste them in Step 4e.
+The keys must be **single-line** values with real line breaks replaced by the two characters `
+` — that's what the script above prints. Keep both handy for Step 4d.
+
+Once they're pasted into `.env` (Step 4d), delete the `.pem` files — leaving a second copy of the signing key lying in the project directory defeats the point of locking down `.env`:
+
+```bash
+shred -u jwt_private.pem jwt_public.pem 2>/dev/null || rm -f jwt_private.pem jwt_public.pem
+```
 
 **4c. Generate a fresh encryption key:**
 
@@ -425,25 +452,13 @@ Keep the two printed values handy — you'll paste them in Step 4e.
 python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-**4d. Create an AWS account and an IAM user for Secrets Manager.** If you already have an AWS account, skip to creating the IAM user.
+If `python3` isn't on the server, generate it after the image is built instead:
 
-1. Sign up at https://aws.amazon.com/ if you don't already have an account.
-2. In the AWS Console, go to **IAM → Users → Create user**. Name it something like `iam-platform-prod`.
-3. Attach the permission `SecretsManagerReadWrite` (or, for tighter security later, a custom policy scoped to just the secrets you create below).
-4. Under **Security credentials** for that user, create an **Access key** (choose "Application running outside AWS" as the use case). Save the **Access Key ID** and **Secret Access Key** it shows you — this is the only time AWS displays the secret key.
-5. Go to **Secrets Manager → Store a new secret** and create one secret per value from steps 4a–4c above (six secrets total). Name them clearly, e.g.:
-   - `prod/iam-platform/db-superuser-password`
-   - `prod/iam-platform/db-app-tenant-password`
-   - `prod/iam-platform/db-app-platform-password`
-   - `prod/iam-platform/jwt-private-key`
-   - `prod/iam-platform/jwt-public-key`
-   - `prod/iam-platform/encryption-data-key`
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps migrate   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
-   For each, choose "Other type of secret" and paste the plain value (the raw password, or the `\n`-escaped PEM line, or the Fernet key) as **plaintext**, not as key/value JSON.
-
-Note the exact secret names — you'll need them in the next step, prefixed with `secret://`.
-
-**4e. Create the production `.env` file.** This file is read by Docker Compose to fill in the values in `docker-compose.prod.yml` — it is **not** the same kind of file as the development `.env`. Create it in the project root:
+**4d. Create the production `.env` file.** This file is read by Docker Compose to fill in the values in `docker-compose.prod.yml` — it is **not** the same kind of file as the development `.env`. Create it in the project root:
 
 ```bash
 nano .env
@@ -452,27 +467,34 @@ nano .env
 Paste this in, replacing every placeholder with your real values from steps 4a–4d:
 
 ```bash
-# --- Database passwords (plain values — these two containers, Postgres
-# itself and the one-time migration job, run before secrets can be fetched
-# from AWS, so they take the raw password directly) ---
+# --- Database passwords (from Step 4a) ---
 POSTGRES_SUPERUSER_PASSWORD=paste-your-superuser-password-here
 APP_TENANT_PASSWORD=paste-your-app-tenant-password-here
 APP_PLATFORM_PASSWORD=paste-your-app-platform-password-here
 
-# --- Tell the app to fetch its own secrets from AWS Secrets Manager ---
-SECRET_PROVIDER=aws_secrets_manager
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=paste-your-access-key-id-here
-AWS_SECRET_ACCESS_KEY=paste-your-secret-access-key-here
+# --- Application secrets (from Steps 4b and 4c) ---
+# Single-line values: the PEMs must have their line breaks written as the two
+# characters 
+, which is what the script in Step 4b prints for you.
+JWT_PRIVATE_KEY_PEM=-----BEGIN PRIVATE KEY-----
+MIIEvQ...
+-----END PRIVATE KEY-----
+JWT_PUBLIC_KEY_PEM=-----BEGIN PUBLIC KEY-----
+MIIBIjA...
+-----END PUBLIC KEY-----
+ENCRYPTION_DATA_KEY=paste-your-fernet-key-here
 
-# --- These are REFERENCES to the secrets you created in AWS, not the
-# secrets themselves -- replace the names if you named yours differently ---
-JWT_PRIVATE_KEY_PEM=secret://prod/iam-platform/jwt-private-key
-JWT_PUBLIC_KEY_PEM=secret://prod/iam-platform/jwt-public-key
-ENCRYPTION_DATA_KEY=secret://prod/iam-platform/encryption-data-key
+# --- AI answering, document ingestion and search ---
+# Required if you use the knowledge-base / chatbot / widget features. Without
+# OPENAI__API_KEY, uploads still queue and then fail during embedding, and no
+# question can be answered.
+OPENAI__API_KEY=sk-paste-your-openai-key-here
 
-# --- AI answering ---
-# Only needed if you use the knowledge-base / chat features.
+# Optional. Reranks search results before they reach the model. Without it,
+# passages are ranked by embedding similarity alone -- answers get worse, but
+# nothing breaks.
+COHERE__API_KEY=
+
 # CHAT_REASONING_EFFORT matters more than it looks: on a reasoning model, left
 # unset the model decides how long to think and occasionally spends ten seconds
 # on a question -- emitting nothing at all meanwhile, so a visitor watches an
@@ -480,6 +502,19 @@ ENCRYPTION_DATA_KEY=secret://prod/iam-platform/encryption-data-key
 # 10.80s worst case; "low" gave 1.24s and 1.58s. Leave it BLANK on a
 # non-reasoning model, which rejects the parameter outright.
 OPENAI__CHAT_REASONING_EFFORT=low
+
+# Where uploaded document bytes are stored. `local` writes to a Docker volume
+# shared by the API and the worker, which is the default and needs nothing
+# else set. Use `r2` (Cloudflare R2) if you'd rather not keep them on this
+# server's disk, and fill in the four STORAGE__R2_* values from .env.example.
+STORAGE__MODE=local
+
+# --- Token identity ---
+# Goes into the `iss` claim of every token this deployment issues. Left unset
+# the code would default to `example.invalid`, so compose now refuses to start
+# without it rather than baking a placeholder into live tokens. Use the URL
+# users reach this deployment at.
+JWT_ISSUER=https://yourdomain.com
 
 # --- Everything else ---
 CORS_ALLOWED_ORIGINS=["https://yourdomain.com"]
@@ -508,7 +543,13 @@ Lock the file down so only you can read it:
 chmod 600 .env
 ```
 
-> **Why are the three database passwords plain values instead of `secret://` references, when everything else is a reference?** The database container and the one-off migration job both start up *before* the application's own secret-fetching code runs, so they can't fetch anything from AWS yet — they need their password directly. This `.env` file, protected with `chmod 600` and never committed to git (already covered by `.gitignore`), is the one place those three values live in plain text. Everything the long-running API process touches (the JWT keys, the encryption key, and its own two database passwords `DATABASE__PASSWORD`/`DATABASE__PLATFORM_PASSWORD`, which are set from the same `APP_TENANT_PASSWORD`/`APP_PLATFORM_PASSWORD` values in the compose file) is resolved through this project's `secret://` mechanism instead.
+> **Do not copy your development `.env` onto the server and edit it down.** Docker Compose reads this file automatically and any leftover key wins over the compose file's own default — silently. A stray `QDRANT__URL=http://localhost:56333` from a dev machine is the one that bites: the containers start, look healthy, and every knowledge-base search fails, because `localhost` inside a container is the container itself. Start from the block above and add only what you need. To see what the containers will actually receive:
+>
+> ```bash
+> docker compose -f docker-compose.prod.yml config
+> ```
+
+> **This file is the whole of your secret store.** It is `chmod 600` and git-ignored (already covered by `.gitignore`), and it is the only copy of your JWT signing key and encryption key. Two consequences worth planning for now rather than discovering later: **back it up somewhere encrypted and off this server** — lose it and every existing session token and every stored provider credential becomes undecryptable — and **exclude it from any backup or disk image that travels unencrypted**, because it is enough on its own to impersonate any account.
 
 ### Step 5 — Build and start everything
 
@@ -516,12 +557,17 @@ chmod 600 .env
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-This does three things in order:
-1. Builds the application's Docker image
-2. Starts PostgreSQL and Redis, waits until they're healthy
-3. Runs the database migration as a one-time job, then starts the API — the API waits for the migration to finish successfully before it starts
+This does four things in order:
+1. Builds the application image **once**, tagged `iam-platform:latest`. The `migrate` and `worker` services reuse that exact tag rather than building their own copies.
+2. Starts PostgreSQL, Redis and Qdrant, and waits until each is genuinely healthy
+3. Runs the database migration as a one-time job, which then exits
+4. Starts the **API** and the **worker** — both wait for the migration to have finished *successfully* first, so a failed migration stops the rollout rather than leaving the app running against a stale schema
 
-The first run takes a few minutes (downloading base images, building). Watch it happen:
+> **Expect the first build to take 20–45 minutes**, and to download roughly 2 GB. It installs CPU PyTorch and bakes in the document-parsing models and a headless browser, so that a worker never downloads them at run time (which would make the first PDF upload on a fresh container extremely slow, and impossible on a server with no route to Hugging Face). This is a one-time cost per server. Subsequent deploys reuse the cached layers and take about a minute, because the dependency install sits *below* the source copy in the image.
+>
+> If a later build re-downloads PyTorch after you have only changed application code, something has invalidated that layer — check whether `pyproject.toml` changed, since that is the file the dependency layer keys on.
+
+Watch it happen:
 
 ```bash
 docker compose -f docker-compose.prod.yml logs -f
@@ -530,6 +576,14 @@ docker compose -f docker-compose.prod.yml logs -f
 Press `Ctrl+C` to stop watching (this does **not** stop the containers).
 
 ### Step 6 — Verify it's working
+
+All five services should be `running`, and `postgres`, `redis`, `qdrant` and `worker` should also show `healthy`:
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+```
+
+Then check the API:
 
 ```bash
 curl http://localhost:8000/readyz
@@ -540,6 +594,19 @@ You should see `{"status":"ready", ...}`. If you see `503` or `"not_ready"`, che
 ```bash
 docker compose -f docker-compose.prod.yml logs api
 docker compose -f docker-compose.prod.yml logs migrate
+```
+
+**Check the worker separately — `/readyz` does not cover it.** The API is healthy whether or not anything is consuming the queue, so a dead worker is invisible from the health endpoint. Ask the worker itself:
+
+```bash
+docker compose -f docker-compose.prod.yml exec worker \
+  celery -A iam_platform.workers.main:celery_app inspect ping
+```
+
+A `pong` means ingestion will run. Anything else means uploads will be accepted and then sit on "Processing" for ever, with no error shown to the person who uploaded them:
+
+```bash
+docker compose -f docker-compose.prod.yml logs worker
 ```
 
 ### Step 7 — Create your platform administrator account
@@ -631,25 +698,20 @@ sudo certbot --nginx -d yourdomain.com
 
 Certbot will ask for an email address (for renewal notices) and automatically edit your Nginx config to redirect HTTP to HTTPS. Certificates auto-renew; you don't need to do anything further.
 
-**8e. Now that Nginx is your public entry point, stop exposing port 8000 to the whole internet.** Edit `docker-compose.prod.yml` and change the `api` service's port line from:
-
-```yaml
-    ports:
-      - "8000:8000"
-```
-
-to:
+**8e. Confirm port 8000 is not exposed to the internet.** `docker-compose.prod.yml` already binds it to the loopback address only:
 
 ```yaml
     ports:
       - "127.0.0.1:8000:8000"
 ```
 
-This makes port 8000 reachable only from the server itself (which is exactly what Nginx needs) and unreachable from the outside world directly. Apply it:
+Nginx reaches the API over the loopback; nothing outside the server can. Verify from your own machine (**not** over SSH on the server) — this should time out or be refused:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
+curl --max-time 5 http://YOUR_SERVER_IP:8000/livez
 ```
+
+> **Do not change this to `"8000:8000"`, and do not rely on the firewall to cover it if you do.** Docker publishes ports by writing its own iptables rules in the `DOCKER` chain, and those are evaluated **before** ufw's. A `ufw deny 8000` does not block a Docker-published port. If the API were bound to `0.0.0.0`, it would be reachable from the internet over plain HTTP — bypassing Nginx, your TLS certificate, and the security headers and rate limiting the proxy adds — and `ufw status` would still look correct.
 
 ### Step 9 — Lock down the firewall
 
@@ -660,7 +722,7 @@ sudo ufw allow 'Nginx Full'   # opens 80 and 443
 sudo ufw status
 ```
 
-Port 8000 should **not** appear in `ufw status` as allowed — it's only reachable locally now (Step 8e), and even if it were, the firewall wouldn't let outside traffic reach it either. This is defense in depth: two independent reasons port 8000 isn't publicly reachable.
+Port 8000 should **not** appear in `ufw status`. What actually keeps it private is the `127.0.0.1` binding in Step 8e, **not** this firewall — see the warning there. ufw is what protects everything else on the host that isn't published by Docker.
 
 ### Step 10 — Confirm auto-start on reboot
 
@@ -681,7 +743,10 @@ sudo systemctl is-enabled docker
 
 ```bash
 docker compose -f docker-compose.prod.yml logs -f api
+docker compose -f docker-compose.prod.yml logs -f worker
 ```
+
+Ingestion failures appear in the **worker** log, not the API's — an upload that never finishes leaves nothing in the API log to find.
 
 Logs are structured JSON, one line per event — pipe through `jq` if you have it installed for easier reading: `... | jq .`
 
@@ -705,7 +770,7 @@ git pull
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-This rebuilds the image, re-runs migrations (skipping any already applied), and restarts the API with zero manual steps. The old container keeps serving traffic until the new one is healthy and ready to take over.
+This rebuilds the image, re-runs migrations (skipping any already applied), and restarts both the API and the worker with zero manual steps. The old container keeps serving traffic until the new one is healthy and ready to take over.
 
 **After an upgrade that adds permissions, re-run the bootstrap script.** New platform permissions don't attach themselves to existing roles, so an administrator who upgraded before `platform.users.read`/`platform.users.manage` existed won't see the Users screen until:
 
@@ -724,16 +789,42 @@ docker compose -f docker-compose.prod.yml exec postgres \
 
 Consider putting this in a daily cron job and copying the resulting file off the server (e.g., to S3 or another remote location) — a backup that lives only on the server it's backing up doesn't protect you if that server is lost.
 
+### Deleting expired conversations
+
+Each tenant sets how long its conversations are kept (`conversation_retention_days`, 30 by default). **Nothing enforces that on its own** — the purge is a script you schedule, not a background job, because it enumerates every tenant and therefore needs the migrator role rather than the per-tenant credentials the worker runs with.
+
+Run it once to check it works:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm migrate python scripts/purge_expired_conversations.py
+```
+
+Then schedule it daily (`crontab -e`, adjusting the path):
+
+```cron
+30 3 * * * cd /home/deploy/ai_agent_by_Claude && docker compose -f docker-compose.prod.yml run --rm migrate python scripts/purge_expired_conversations.py >> /var/log/iam-purge.log 2>&1
+```
+
+It exits non-zero if any tenant fails, so a cron mail or log check will tell you it stopped working rather than it silently retaining everything for ever.
+
 ### Restarting / stopping
 
 ```bash
-# Restart just the API (e.g. after an .env change)
+# Apply an .env change. Use `up -d`, NOT `restart` -- `restart` reuses the
+# containers with the environment they were created with, so the change
+# appears to have been applied and hasn't been.
+docker compose -f docker-compose.prod.yml up -d
+
+# Restart just one service
 docker compose -f docker-compose.prod.yml restart api
+docker compose -f docker-compose.prod.yml restart worker
 
 # Stop everything
 docker compose -f docker-compose.prod.yml down
 
-# Stop everything AND delete the database data (careful!)
+# Stop everything AND delete ALL data (careful!) -- this removes three
+# volumes, not one: the database, the Qdrant vectors, and every uploaded
+# document. Re-uploading is the only way back.
 docker compose -f docker-compose.prod.yml down -v
 ```
 
@@ -750,13 +841,33 @@ Go through this list once before pointing real users at the server:
 - [ ] `/metrics` is blocked at the Nginx layer (Step 8c) — it has no authentication of its own
 - [ ] HTTPS is working (`https://yourdomain.com`, not just `http://`) and HTTP redirects to it
 - [ ] You generated **fresh** production secrets rather than reusing development ones
-- [ ] The IAM user's AWS permissions are scoped to Secrets Manager only, not full AWS admin access
+- [ ] The `jwt_private.pem` / `jwt_public.pem` files from Step 4b are deleted — the key belongs only in `.env`
+- [ ] `.env` itself is backed up somewhere encrypted and off this server: it is the only copy of the JWT signing key and the encryption key, and losing it makes every stored provider credential undecryptable
 - [ ] Database backups are running and are copied somewhere other than the server itself
-- [ ] You've read the **Known gaps** section of [docs/22-deployment-and-operations.md](docs/22-deployment-and-operations.md#known-gaps) so you know what this project deliberately doesn't do yet (there is no background-job worker, and rotating the JWT key or the encryption key isn't a supported operation yet — plan around both)
+- [ ] Uploaded documents are backed up too — they live in the `uploads` Docker volume, which `pg_dump` does not cover
+- [ ] You've read the **Known gaps** section of [docs/22-deployment-and-operations.md](docs/22-deployment-and-operations.md#known-gaps) so you know what this project deliberately doesn't do yet (rotating the JWT key or the encryption key isn't a supported operation — plan around both)
+- [ ] The conversation-retention purge is scheduled (see **Everyday production operations** below) — nothing deletes expired conversations on its own
 
 ---
 
 ## Troubleshooting
+
+**`password authentication failed for user "app_tenant"` (or `app_platform`), but the password in `.env` is correct** — the database was created by an older version of `docker/postgres-init/01-roles.sh`, which was a `.sql` file that hard-coded `dev_only_password` for both roles. `.sql` files get no environment expansion, so the roles were created with a password nothing connects with. The script now takes the real passwords.
+
+The init scripts run **only when the data directory is empty**, so fixing the script does nothing to a database that already exists. Either recreate it (destroys all data):
+
+```bash
+docker compose -f docker-compose.prod.yml down -v
+docker compose -f docker-compose.prod.yml up -d
+```
+
+or, to keep the data, set the passwords on the existing roles:
+
+```bash
+docker compose -f docker-compose.prod.yml exec postgres   psql -U postgres -d iam_platform   -v tenant_pw="$(grep '^APP_TENANT_PASSWORD=' .env | cut -d= -f2-)"   -v platform_pw="$(grep '^APP_PLATFORM_PASSWORD=' .env | cut -d= -f2-)"   -c "ALTER ROLE app_tenant LOGIN PASSWORD :'tenant_pw';"   -c "ALTER ROLE app_platform LOGIN PASSWORD :'platform_pw';"
+```
+
+**`password authentication failed for user "postgres"` during the migration job** — on an older checkout, the connection URL was assembled without escaping the credentials, so a password containing `#`, `%`, `@`, `/` or `:` was silently mangled (`#` starts a URL fragment and truncated it). It is fixed; pull the latest code and rebuild the image. If you are on the current code and still see it, the database was initialised with a *different* superuser password than the one now in `.env` — the `POSTGRES_PASSWORD` only takes effect on first creation, so recreate the volume or `ALTER ROLE postgres` as above.
 
 **A button in the admin console does nothing / an action returns a 500** — if you're on an older checkout, several separate defects caused exactly this and are now fixed: menu items used the wrong Base UI prop and were inert, the console's BFF proxy crashed on every `204 No Content` reply (which is what most successful actions return), permission-denied tenant actions raised an unmapped exception, and creating a *second* tenant for the same owner violated a unique index. Pull the latest code, run `python -m alembic upgrade head`, and restart both the backend and `npm run dev`.
 
@@ -781,9 +892,20 @@ SELECT gen_random_uuid(), '<tenant-id>', '<membership-id>',
 
 **Migration container exits immediately with a permission or validation error** — almost always a `.env` value is missing or malformed. Re-check every value in Step 4e is filled in, especially that `SECRET_PROVIDER` is not left as `env` (production refuses to start with that setting on purpose).
 
-**"refusing to start: environment=production requires a real secret provider"** — this is the intentional safety check described above. `SECRET_PROVIDER` must be `aws_secrets_manager` (with working AWS credentials) whenever `ENVIRONMENT=production`.
+**"refusing to start: environment=production requires a real secret provider"** — `ALLOW_PLAINTEXT_SECRETS=true` is missing from the environment. The compose file sets it by default, so this usually means a stray `ALLOW_PLAINTEXT_SECRETS=false` in your `.env`, or `SECRET_PROVIDER` set to something other than `env` without the matching credentials.
 
-**Can't reach the AWS secret ("SecretNotFoundError" in the logs)** — double-check the secret name after `secret://` in `.env` exactly matches the name you gave it in the AWS Console (Step 4d), and that the IAM user's access key in `.env` has permission to read it.
+**Uploads stay on "Processing" for ever** — the worker isn't consuming the queue. Check it answers (`docker compose -f docker-compose.prod.yml exec worker celery -A iam_platform.workers.main:celery_app inspect ping`) and read `logs worker`; the API log will show nothing, because the API's part succeeded.
+
+**Uploads fail with a permission error writing to `/var/lib/iam-platform/storage`** — the `uploads` volume was created before the image pre-created that directory, so it is owned by root while the container runs as uid 1001. Recreate just that volume:
+
+```bash
+docker compose -f docker-compose.prod.yml down
+docker volume ls | grep uploads          # find the exact name
+docker volume rm <the-name-it-printed>
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Any documents already uploaded must be re-uploaded; their rows remain and can be deleted from the console.
 
 **Changes to `.env` don't seem to apply** — Docker Compose only re-reads environment variables when a container restarts, not automatically. Run `docker compose -f docker-compose.prod.yml up -d` again after editing `.env`.
 

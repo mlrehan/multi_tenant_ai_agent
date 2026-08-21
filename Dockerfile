@@ -16,8 +16,19 @@ WORKDIR /build
 
 # Dependency install is a separate layer from the source copy so editing code
 # doesn't invalidate the (slow) dependency layer on every rebuild.
+#
+# **The stub package below is what makes that true.** `COPY src` used to sit
+# here, above the install -- so every source edit invalidated the layer beneath
+# it and the whole dependency tree (torch, docling, transformers: ~2 GB) was
+# re-downloaded and reinstalled from scratch. A one-line change to a config
+# file cost a full rebuild, measured at ~40 minutes. The comment above claimed
+# the opposite of what the file did, which is how it survived.
+#
+# `pip install .` needs *a* package to build, so an empty one stands in while
+# the dependencies resolve. The real source arrives after, and is installed
+# with `--no-deps` -- seconds, because everything it needs is already there.
 COPY pyproject.toml README.md* ./
-COPY src ./src
+RUN mkdir -p src/iam_platform && touch src/iam_platform/__init__.py
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -45,6 +56,15 @@ RUN pip install --no-cache-dir --upgrade pip \
         --index-url https://download.pytorch.org/whl/cpu \
         torch==2.13.0 torchvision==0.28.0 \
     && pip install --no-cache-dir .
+
+# The real source, and the only layer a code change invalidates.
+#
+# `--no-deps` because the dependency tree was resolved and installed above and
+# has not changed -- re-resolving it is exactly the cost this split exists to
+# avoid. A change to `pyproject.toml` invalidates the COPY above instead, so a
+# genuinely new dependency is still picked up.
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps --force-reinstall .
 
 # ---------- runtime stage ----------
 FROM python:3.13-slim-bookworm AS runtime
@@ -166,6 +186,22 @@ COPY --chown=root:root alembic ./alembic
 # below. Small and dependency-free, so it costs nothing to carry in the
 # runtime image rather than requiring a separate maintenance image.
 COPY --chown=root:root scripts ./scripts
+
+# Where uploaded documents land when STORAGE__MODE=local.
+#
+# **Created here, owned by `app`, on purpose.** A Docker named volume mounted
+# at a path the image does not contain is created owned by root -- and the
+# runtime user is uid 1001, so the very first upload would fail on `mkdir`
+# inside a directory it cannot write to. Docker seeds an *empty* named volume
+# with the ownership of the image path it covers, so pre-creating it here is
+# what makes the mount writable.
+#
+# It is also the one writable path in an otherwise read-only root filesystem
+# (`read_only: true` in compose), which is why it is a volume rather than a
+# directory in the image: bytes written into a container layer die with the
+# container.
+RUN mkdir -p /var/lib/iam-platform/storage \
+    && chown -R app:app /var/lib/iam-platform
 
 USER app
 EXPOSE 8000

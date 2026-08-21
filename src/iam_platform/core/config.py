@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Literal
+from urllib.parse import quote
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, SecretStr, field_validator, model_validator
@@ -43,15 +44,43 @@ class DatabaseSettings(BaseModel):
 
     # Table-owning role migrations run as -- distinct from both of the above
     # so a compromised app connection can never run DDL.
+    #
+    # **Optional, and that is the point.** Only Alembic and the one-off ops
+    # scripts ever build `migrator_dsn`; the API and the worker must never
+    # hold DDL credentials, so a correctly-deployed one does not set this at
+    # all. Requiring it here meant the opposite of what it looks like: those
+    # services could not start *unless* handed the very credential they are
+    # supposed to be denied. `migrator_dsn` fails loudly at use instead, which
+    # is the only place the absence actually matters.
     migrator_user: str = "postgres"
-    migrator_password: SecretStr
+    migrator_password: SecretStr | None = None
 
     pool_size: int = 10
     pool_max_overflow: int = 20
 
     def _dsn(self, user: str, password: SecretStr) -> str:
+        """Assemble a connection URL, percent-encoding the credentials.
+
+        **The encoding is not defensive padding -- without it a perfectly
+        ordinary password silently authenticates as something else.** A URL
+        gives `#`, `%`, `@`, `/` and `:` structural meaning: `#` starts a
+        fragment, so `pa#ssword` is parsed as the password `pa`; `%41` is
+        decoded to `A`. The connection then fails with
+        `InvalidPasswordError: password authentication failed`, which reads as
+        a wrong password rather than a mangled one, and the value in `.env` is
+        correct so nobody suspects it.
+
+        This is not a corner case: DEPLOYMENT.md tells operators to generate
+        passwords with `openssl rand -base64 32`, whose alphabet includes `/`
+        and `+`. Roughly half of all generated passwords contain at least one
+        character that breaks an unencoded URL.
+
+        SQLAlchemy percent-decodes these fields when it parses the URL, so
+        encoding here round-trips exactly.
+        """
         return (
-            f"postgresql+asyncpg://{user}:{password.get_secret_value()}"
+            f"postgresql+asyncpg://{quote(user, safe='')}"
+            f":{quote(password.get_secret_value(), safe='')}"
             f"@{self.host}:{self.port}/{self.name}"
         )
 
@@ -65,6 +94,13 @@ class DatabaseSettings(BaseModel):
 
     @property
     def migrator_dsn(self) -> str:
+        if self.migrator_password is None:
+            raise ValueError(
+                "DATABASE__MIGRATOR_PASSWORD is not set. It is needed only by "
+                "migrations and the ops scripts -- run those in the migration "
+                "job, which has it, rather than in the API or worker container, "
+                "which deliberately do not."
+            )
         return self._dsn(self.migrator_user, self.migrator_password)
 
 
@@ -509,29 +545,51 @@ def _reject_near_miss_group_names(
     if env_file and os.path.isfile(env_file):
         candidates |= set(dotenv_values(env_file))
 
-    def _is_near_miss(key: str) -> bool:
+    def _correction(key: str) -> str | None:
+        """The correctly-spelled name, or ``None`` if this key is not a near miss.
+
+        **Matched against the longest group name, not the first underscore.**
+        Several groups have underscores of their own -- `rate_limit`,
+        `oauth_google`, `oauth_facebook`, `password_policy` -- and splitting on
+        the first underscore turns `RATE_LIMIT_WINDOW_SECONDS` into
+        `RATE__LIMIT_WINDOW_SECONDS`, which is not the right name. That broke
+        the guard twice over: it advised a spelling that does not work, and the
+        tolerance below then looked for that same wrong spelling, so setting
+        the *correct* name alongside it never silenced the refusal.
+
+        Longest-first because `oauth_google` and `oauth_facebook` would
+        otherwise be shadowed by any shorter group that happens to prefix them.
+        """
         lowered = key.lower()
         # A key that *is* a field name is fine; only a single-underscore
         # continuation of a group name is the mistake being caught.
         if lowered in settings_cls.model_fields:
-            return False
-        if not any(
-            lowered.startswith(f"{group}_") and not lowered.startswith(f"{group}__")
-            for group in group_names
-        ):
+            return None
+        for group in sorted(group_names, key=len, reverse=True):
+            if lowered.startswith(f"{group}_") and not lowered.startswith(f"{group}__"):
+                return f"{group}__{lowered[len(group) + 1 :]}".upper()
+        return None
+
+    def _is_near_miss(key: str) -> bool:
+        corrected = _correction(key)
+        if corrected is None:
             return False
         # Only ambiguous if the correctly-spelled name is absent. A machine
         # with a stray `OPENAI_API_KEY` exported for some other tool is
         # common, and refusing to boot the whole IAM API over it would be a
         # worse failure than the one being prevented -- but if the correct
         # name is *also* set, that one wins and there is nothing to warn about.
-        corrected = key.replace("_", "__", 1)
+        #
+        # This also lets one `.env` serve both Docker Compose (which reads flat
+        # `${JWT_ISSUER}` names) and the application (which needs `JWT__ISSUER`),
+        # which is otherwise an unresolvable conflict between two tools reading
+        # the same file.
         return corrected not in candidates
 
     near_misses = sorted(key for key in candidates if _is_near_miss(key))
     if near_misses:
         corrected = ", ".join(
-            f"{key} (did you mean {key.replace('_', '__', 1)}?)" for key in near_misses
+            f"{key} (did you mean {_correction(key)}?)" for key in near_misses
         )
         raise ValueError(
             "refusing to start: these settings names use a single underscore where "
@@ -553,6 +611,25 @@ class Settings(BaseSettings):
     ] = "env"
     #: Only read when secret_provider="aws_secrets_manager".
     aws_region: str = "us-east-1"
+
+    #: Deliberate opt-out from the "production needs a real secret store" rule
+    #: below, for a single-server deployment that keeps its secrets in a
+    #: `chmod 600` `.env` instead of a managed secret manager.
+    #:
+    #: A flag rather than simply dropping the rule, because the rule is worth
+    #: keeping: its job is to stop a deployment reaching production with
+    #: plaintext secrets *by accident* -- someone who copied a dev `.env` and
+    #: changed `ENVIRONMENT`. Setting this is not something that happens by
+    #: accident, so the rail still catches the case it was built for while an
+    #: operator who has read what it means can proceed.
+    #:
+    #: The trade-off it accepts: anyone who can read the file, or a backup or
+    #: image containing it, holds the JWT signing key and the encryption data
+    #: key. On a host where the same `.env` already carries the database
+    #: passwords, that is a difference of degree rather than kind -- but on a
+    #: multi-tenant deployment holding other people's data it is worth
+    #: revisiting.
+    allow_plaintext_secrets: bool = False
 
     database: DatabaseSettings
     redis: RedisSettings = RedisSettings()
@@ -617,8 +694,14 @@ class Settings(BaseSettings):
         super().__init__(**values)
 
     def model_post_init(self, __context: object) -> None:
-        if self.environment == "production" and self.secret_provider == "env":
+        if (
+            self.environment == "production"
+            and self.secret_provider == "env"
+            and not self.allow_plaintext_secrets
+        ):
             raise ValueError(
                 "refusing to start: environment=production requires a real secret "
-                "provider (secret_provider=env means secrets are plain env vars)"
+                "provider (secret_provider=env means secrets are plain env vars). "
+                "Set ALLOW_PLAINTEXT_SECRETS=true to accept that deliberately -- "
+                "see DEPLOYMENT.md."
             )

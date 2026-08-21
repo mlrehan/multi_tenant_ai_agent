@@ -40,6 +40,20 @@ docs/
 *.md
 !README.md
 
+# The admin console. It is a separate Next.js app with its own deployment and
+# is never copied into this image -- but Docker sends the whole context to the
+# daemon before any layer runs, so leaving it here meant `node_modules` (490
+# packages, tens of thousands of files) and `.next` were transferred on *every*
+# build. On Docker Desktop, where the context crosses a VM filesystem boundary,
+# that is the difference between a slow build and an unusable one.
+frontend/
+
+# Local object storage -- real uploaded tenant documents when STORAGE__MODE=local.
+# Both a size problem and a disclosure one: anything in the context can end up
+# in a layer, and this directory is exactly the customer data the image must
+# never carry.
+var/
+
 # Local development tooling
 docker-compose*.yml
 Dockerfile
