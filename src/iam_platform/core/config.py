@@ -19,12 +19,86 @@ groups are deliberately plain ``BaseModel``.
 from __future__ import annotations
 
 import os
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal, cast
 from urllib.parse import quote
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+
+def _nested_group_field_names(settings_cls: type[BaseSettings]) -> frozenset[str]:
+    """Lowercase names of the model's nested-group fields (`jwt`, `openai`, ...).
+
+    The one thing both `_reject_near_miss_group_names` and
+    `_DropUnvalidatableKeys` need to agree on, so it is computed in exactly one
+    place. The `RATE_LIMIT`/`OAUTH_GOOGLE` bug earlier in this file's history
+    was two copies of "which group does this prefix belong to" drifting apart;
+    this is what stops that happening a second time between the guard and the
+    source filter.
+    """
+    return frozenset(
+        name
+        for name, field in settings_cls.model_fields.items()
+        if isinstance(field.annotation, type) and issubclass(field.annotation, BaseModel)
+    )
+
+
+class _DropUnvalidatableKeys:
+    """Wraps the dotenv source, removing keys that would never validate.
+
+    Two categories, both explained at their call site in
+    `settings_customise_sources`:
+
+    1. A fixed, named allowlist (`Settings._COMPOSE_ONLY_KEYS`) -- names that
+       are not a field under any spelling, ever.
+    2. A flat spelling of a nested group (`jwt_issuer` rather than `jwt`).
+       **Safe to drop unconditionally here, not merely likely-safe:**
+       `_reject_near_miss_group_names` runs earlier in `Settings.__init__`,
+       before `super().__init__()` is ever reached, and raises for exactly
+       this shape of key *unless* the correctly-spelled group is also present.
+       By the time this wrapper runs, execution has already stopped for every
+       case where dropping the flat key would lose the only copy of a value --
+       so recognising the shape is enough; there is no "is the correct one
+       really there" check left to repeat.
+
+    The dotenv source is what actually enumerates every line in `.env` as a
+    candidate input -- `os.environ` is not scanned this way, which is why an
+    unrelated `PATH` or `HOME` never trips `extra="forbid"` but a line sitting
+    unused in the dotenv file does. Wrapping the source, rather than editing
+    the dict some other way, keeps this a source in pydantic-settings' own
+    pipeline -- it still participates in precedence ordering normally, it is
+    just missing a few keys by the time anything downstream sees it.
+    """
+
+    def __init__(
+        self,
+        wrapped: PydanticBaseSettingsSource,
+        compose_only: frozenset[str],
+        group_names: frozenset[str],
+    ) -> None:
+        self._wrapped = wrapped
+        self._compose_only = compose_only
+        self._group_names = group_names
+
+    def _is_flat_group_spelling(self, key: str) -> bool:
+        # `key` arrives already lowercased -- the source matches it against
+        # field names that way, not against the env var's actual casing.
+        return any(
+            key.startswith(f"{group}_") and not key.startswith(f"{group}__")
+            for group in self._group_names
+        )
+
+    def __call__(self) -> dict[str, Any]:
+        raw = self._wrapped()
+        return {
+            k: v
+            for k, v in raw.items()
+            # Comparing `.upper()` against the allowlist because that list is
+            # written the way the env var actually looks in `.env`
+            # (`WORKER_CONCURRENCY`), while `k` here is already lowercased.
+            if k.upper() not in self._compose_only and not self._is_flat_group_spelling(k)
+        }
 
 
 class DatabaseSettings(BaseModel):
@@ -602,8 +676,73 @@ class Settings(BaseSettings):
         env_nested_delimiter="__",
         env_file=".env",
         env_file_encoding="utf-8",
+        # Kept "forbid" -- docs/21-configuration-and-secrets.md records this as
+        # a confirmed decision, and `test_config_near_miss_names.py` asserts
+        # the exact friction it accepts (a stray `OPENAI_API_KEY` refuses the
+        # boot even with the correct name also set). Weakening it to "ignore"
+        # was tried and reverted: it silenced that intentional refusal too,
+        # which is a different bug -- see `_COMPOSE_ONLY_KEYS` below for the
+        # actual fix.
         extra="forbid",
     )
+
+    #: Names that appear in `.env` for `docker compose`'s own `${VAR}`
+    #: substitution (`docker-compose.dev.yml` / `docker-compose.prod.yml`) and
+    #: are not, and will never be, a field on this model -- `POSTGRES_
+    #: SUPERUSER_PASSWORD` seeds the `postgres` role compose creates,
+    #: `APP_TENANT_PASSWORD`/`APP_PLATFORM_PASSWORD` seed the two application
+    #: roles `docker/postgres-init/01-roles.sh` creates, `WORKER_CONCURRENCY`
+    #: is a `celery` CLI flag. None of them is a misspelling of anything;
+    #: `extra="forbid"` has no way to tell that apart from a genuine typo, so
+    #: they are removed from the dotenv source explicitly, by name, before
+    #: validation ever sees them -- see `settings_customise_sources` below.
+    #:
+    #: A fixed, reviewed list rather than a pattern match, deliberately: a
+    #: pattern broad enough to catch "yet another compose-only name" would
+    #: also swallow a real typo of a real field.
+    #: `ClassVar`, not a plain class attribute: inside a pydantic model, a
+    #: bare single-underscore name is intercepted as a *private model
+    #: attribute* (`ModelPrivateAttr`) rather than left as a normal class
+    #: constant, so `cls._COMPOSE_ONLY_KEYS` inside `settings_customise_sources`
+    #: returned that descriptor instead of the frozenset -- caught immediately
+    #: by every test that constructs `Settings()`, not silently.
+    _COMPOSE_ONLY_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "POSTGRES_SUPERUSER_PASSWORD",
+            "APP_TENANT_PASSWORD",
+            "APP_PLATFORM_PASSWORD",
+            "WORKER_CONCURRENCY",
+        }
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # `_DropUnvalidatableKeys` satisfies the source protocol structurally
+        # (a zero-arg callable returning a dict) rather than by inheritance --
+        # inheriting `PydanticBaseSettingsSource` pulls in constructor
+        # machinery designed for reading *this* settings class from scratch,
+        # not for wrapping an already-built source. `cast` here asserts that
+        # structural match to mypy; it is not silencing a real type mismatch.
+        return cast(
+            "tuple[PydanticBaseSettingsSource, ...]",
+            (
+                init_settings,
+                env_settings,
+                _DropUnvalidatableKeys(
+                    dotenv_settings,
+                    cls._COMPOSE_ONLY_KEYS,
+                    _nested_group_field_names(settings_cls),
+                ),
+                file_secret_settings,
+            ),
+        )
 
     environment: Literal["development", "staging", "production"] = "development"
     secret_provider: Literal[

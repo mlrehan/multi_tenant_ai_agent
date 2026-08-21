@@ -91,29 +91,31 @@ def test_the_guard_covers_every_group_not_just_openai(
 def test_the_near_miss_guard_stays_quiet_when_the_correct_name_is_also_set(
     tmp_path: Path,
 ) -> None:
-    """The guard itself tolerates a stray `OPENAI_API_KEY` when the correct
-    name is present -- there is no ambiguity about which value would win.
+    """A stray `OPENAI_API_KEY` alongside the correct `OPENAI__API_KEY` boots
+    cleanly, and the correct value is what the app actually uses.
 
-    **`extra="forbid"` then refuses the boot anyway**, and this test asserts
-    that rather than the tolerance the guard intends, because it is what a
-    deployment actually does. Newer pydantic-settings collects the stray under
-    the `openai` group, cannot place it, and surfaces it as an extra field.
+    **This used to still refuse to boot**, which this test itself asserted
+    until it was found live: a `.env` shared with `docker compose` (which
+    needs *flat* names like `JWT_ISSUER` for its own `${VAR}` substitution,
+    alongside the `JWT__ISSUER` the app needs) could not construct `Settings`
+    at all outside a container, because the guard's tolerance only stopped its
+    own `ValueError` -- `extra="forbid"` then rejected the same leftover flat
+    key independently, on every single one of them, not just this one.
 
-    The friction is real -- exporting `OPENAI_API_KEY` for the OpenAI CLI is
-    common, and such a machine cannot start this API even with the correct name
-    also set. Relaxing it would mean changing `extra="forbid"`, which
-    docs/21-configuration-and-secrets.md records as a confirmed decision, so it
-    is stated here rather than quietly weakened. The error names the offending
-    variable and unsetting it is the fix.
+    `settings_customise_sources` now wraps the dotenv source and drops a flat
+    key recognised as "a nested group's name plus an underscore". **That is
+    safe precisely because this test's sibling above still exists**:
+    `_reject_near_miss_group_names` runs first and raises for every near-miss
+    that has no correct spelling set, so by the time the source filter runs, a
+    surviving flat key is guaranteed tolerated -- there is nothing left for
+    `extra="forbid"` to usefully catch in that shape of key, and it was only
+    ever catching it by accident (matching a `openai`-prefixed key it could
+    not otherwise place, not recognising it as a near miss on purpose).
     """
     env = _write_env(
         tmp_path, "OPENAI_API_KEY=sk-for-some-other-tool\nOPENAI__API_KEY=sk-ours\n"
     )
 
-    with pytest.raises(ValueError) as excinfo:
-        Settings(_env_file=str(env))
+    settings = Settings(_env_file=str(env))
 
-    message = str(excinfo.value)
-    # pydantic's message, not the guard's -- the guard deliberately said nothing.
-    assert "openai_api_key" in message
-    assert "OPENAI__API_KEY" not in message
+    assert settings.openai.api_key.get_secret_value() == "sk-ours"

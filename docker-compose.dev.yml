@@ -1,499 +1,239 @@
 # ============================================================
 # docker-compose.dev.yml
-# IAM Platform - Development
+# IAM Platform - Development Environment
 # ============================================================
 
 name: iam-platform-dev
 
-
 # ============================================================
-# Shared application environment
-#
-# IMPORTANT:
-# Host-side .env values such as:
-#   localhost:15432
-#   localhost:56379
-#   localhost:56333
-#
-# are NOT used for container-to-container networking.
-#
-# Docker services communicate using Compose DNS names:
-#   postgres:5432
-#   redis:6379
-#   qdrant:6333
+# Shared Application Environment Anchor
 # ============================================================
-
 x-app-env: &app-env
-
-  # ----------------------------------------------------------
-  # Application
-  # ----------------------------------------------------------
   ENVIRONMENT: development
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
   SECRET_PROVIDER: ${SECRET_PROVIDER:-env}
   ALLOW_PLAINTEXT_SECRETS: ${ALLOW_PLAINTEXT_SECRETS:-true}
   AWS_REGION: ${AWS_REGION:-us-east-1}
 
-  LOG_LEVEL: ${LOG_LEVEL:-INFO}
-
-
-  # ----------------------------------------------------------
-  # PostgreSQL
-  # ----------------------------------------------------------
+  # Database Connection
   DATABASE__HOST: postgres
   DATABASE__PORT: "5432"
   DATABASE__NAME: ${DATABASE__NAME:-iam_platform}
-
   DATABASE__USER: ${DATABASE__USER:-app_tenant}
   DATABASE__PASSWORD: ${APP_TENANT_PASSWORD:?set APP_TENANT_PASSWORD}
-
   DATABASE__PLATFORM_USER: ${DATABASE__PLATFORM_USER:-app_platform}
   DATABASE__PLATFORM_PASSWORD: ${APP_PLATFORM_PASSWORD:?set APP_PLATFORM_PASSWORD}
 
-
-  # ----------------------------------------------------------
-  # Redis
-  #
-  # Internal Docker address.
-  # Do NOT use localhost:56379 here.
-  # ----------------------------------------------------------
+  # Redis Connection
   REDIS__URL: redis://redis:6379/0
 
-
-  # ----------------------------------------------------------
-  # JWT
-  # ----------------------------------------------------------
+  # JWT Config
   JWT__ISSUER: ${JWT_ISSUER:?set JWT_ISSUER}
   JWT__AUDIENCE: ${JWT_AUDIENCE:?set JWT_AUDIENCE}
-
   JWT__PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:?set JWT_PRIVATE_KEY_PEM}
   JWT__PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:?set JWT_PUBLIC_KEY_PEM}
 
-
-  # ----------------------------------------------------------
-  # Application encryption
-  # ----------------------------------------------------------
+  # Encryption
   ENCRYPTION__DATA_KEY: ${ENCRYPTION_DATA_KEY:?set ENCRYPTION_DATA_KEY}
 
-
-  # ----------------------------------------------------------
-  # Storage
-  # ----------------------------------------------------------
+  # Storage Configuration
   STORAGE__MODE: ${STORAGE__MODE:-local}
-
-  # Must be container path, not host-relative path.
   STORAGE__LOCAL_PATH: /var/lib/iam-platform/storage
-
   STORAGE__R2_ACCOUNT_ID: ${STORAGE__R2_ACCOUNT_ID:-}
   STORAGE__R2_BUCKET: ${STORAGE__R2_BUCKET:-}
   STORAGE__R2_ACCESS_KEY_ID: ${STORAGE__R2_ACCESS_KEY_ID:-}
   STORAGE__R2_SECRET_ACCESS_KEY: ${STORAGE__R2_SECRET_ACCESS_KEY:-}
 
-
-  # ----------------------------------------------------------
-  # Qdrant
-  #
-  # IMPORTANT:
-  # Explicitly use Docker service DNS.
-  #
-  # Do NOT use:
-  # ${QDRANT__URL:-http://qdrant:6333}
-  #
-  # because your .env contains:
-  # QDRANT__URL=http://localhost:56333
-  #
-  # which would otherwise incorrectly enter the container.
-  # ----------------------------------------------------------
+  # Qdrant Vector Engine
   QDRANT__URL: http://qdrant:6333
-
   QDRANT__API_KEY: ${QDRANT__API_KEY:-}
   QDRANT__TIMEOUT_SECONDS: ${QDRANT__TIMEOUT_SECONDS:-30}
 
-
-  # ----------------------------------------------------------
-  # OpenAI
-  # ----------------------------------------------------------
+  # AI Integrations
   OPENAI__API_KEY: ${OPENAI__API_KEY:-}
-
   OPENAI__EMBEDDING_MODEL: ${OPENAI__EMBEDDING_MODEL:-text-embedding-3-large}
-
-  # Keep this consistent with existing Qdrant collection dimensions.
   OPENAI__EMBEDDING_DIMENSIONS: ${OPENAI__EMBEDDING_DIMENSIONS:-3072}
-
   OPENAI__CHAT_MODEL: ${OPENAI__CHAT_MODEL:-gpt-5.5}
-
   OPENAI__REQUEST_TIMEOUT_SECONDS: ${OPENAI__REQUEST_TIMEOUT_SECONDS:-60}
-
-  # Empty means application should omit reasoning_effort.
   OPENAI__CHAT_REASONING_EFFORT: ${OPENAI__CHAT_REASONING_EFFORT:-}
 
-
-  # ----------------------------------------------------------
-  # Cohere
-  # ----------------------------------------------------------
   COHERE__API_KEY: ${COHERE__API_KEY:-}
   COHERE__RERANK_MODEL: ${COHERE__RERANK_MODEL:-rerank-v3.5}
-
-
-  # ----------------------------------------------------------
-  # Tavily
-  # ----------------------------------------------------------
   TAVILY__API_KEY: ${TAVILY__API_KEY:-}
 
-
-  # ----------------------------------------------------------
-  # Rate limiting
-  # ----------------------------------------------------------
+  # Rate Limits & Pipeline Processing
   RATE_LIMIT__REQUESTS_PER_WINDOW: ${RATE_LIMIT_REQUESTS_PER_WINDOW:-300}
   RATE_LIMIT__WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
-
-
-  # ----------------------------------------------------------
-  # Knowledge-base chunking
-  # ----------------------------------------------------------
   INGESTION__CHUNK_TOKENS: ${INGESTION_CHUNK_TOKENS:-700}
-
   INGESTION__CHUNK_OVERLAP_TOKENS: ${INGESTION_CHUNK_OVERLAP_TOKENS:-100}
-
   INGESTION__TOKENIZER_ENCODING: ${INGESTION_TOKENIZER_ENCODING:-cl100k_base}
-
-
-  # ----------------------------------------------------------
-  # PDF ingestion
-  # ----------------------------------------------------------
   INGESTION__PDF_TEXT_LAYER_FIRST: ${INGESTION_PDF_TEXT_LAYER_FIRST:-true}
-
   INGESTION__PDF_MIN_CHARS_PER_PAGE: ${INGESTION_PDF_MIN_CHARS_PER_PAGE:-50}
-
   INGESTION__PDF_MIN_TEXT_PAGE_RATIO: ${INGESTION_PDF_MIN_TEXT_PAGE_RATIO:-0.6}
 
-
-  # ----------------------------------------------------------
-  # Push notifications
-  # ----------------------------------------------------------
+  # Push Notifications
   PUSH__VAPID_PUBLIC_KEY: ${PUSH_VAPID_PUBLIC_KEY:-}
   PUSH__VAPID_PRIVATE_KEY: ${PUSH_VAPID_PRIVATE_KEY:-}
   PUSH__VAPID_SUBJECT: ${PUSH_VAPID_SUBJECT:-mailto:ops@example.com}
 
-
 # ============================================================
-# Shared Docker logging configuration
+# Shared Logging Anchor
 # ============================================================
-
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: "20m"
     max-file: "5"
 
-
 services:
-
-  # ==========================================================
-  # PostgreSQL
-  # ==========================================================
+  # ----------------------------------------------------------
+  # PostgreSQL Service
+  # ----------------------------------------------------------
   postgres:
     image: postgres:17-alpine
-
     environment:
       POSTGRES_USER: postgres
-
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD}
-
       POSTGRES_DB: ${DATABASE__NAME:-iam_platform}
-
-      # Make application role passwords available to
-      # /docker-entrypoint-initdb.d scripts.
       APP_TENANT_PASSWORD: ${APP_TENANT_PASSWORD:?set APP_TENANT_PASSWORD}
-
       APP_PLATFORM_PASSWORD: ${APP_PLATFORM_PASSWORD:?set APP_PLATFORM_PASSWORD}
-
     volumes:
       - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
       - pgdata:/var/lib/postgresql/data
-
-    # Development host access:
-    #
-    # localhost:15432 -> postgres container:5432
-    #
-    # Other applications can continue using host 5432.
     ports:
       - "127.0.0.1:15432:5432"
-
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U postgres -d ${DATABASE__NAME:-iam_platform}"
-        ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${DATABASE__NAME:-iam_platform}"]
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 10s
-
     restart: unless-stopped
-
     logging: *default-logging
 
-
-  # ==========================================================
-  # Redis
-  # ==========================================================
+  # ----------------------------------------------------------
+  # Redis Cache & Broker
+  # ----------------------------------------------------------
   redis:
     image: redis:7-alpine
-
-    # Development configuration.
-    #
-    # Redis is cache/rate-limit/Celery broker.
-    #
-    # Persistence intentionally disabled for local development.
-    command:
-      [
-        "redis-server",
-        "--save",
-        "",
-        "--appendonly",
-        "no"
-      ]
-
-    # localhost:56379 -> redis container:6379
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       - "127.0.0.1:56379:6379"
-
     healthcheck:
-      test:
-        [
-          "CMD",
-          "redis-cli",
-          "ping"
-        ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 5s
-
     restart: unless-stopped
-
     logging: *default-logging
 
-
-  # ==========================================================
-  # Qdrant
-  # ==========================================================
+  # ----------------------------------------------------------
+  # Qdrant Vector Engine
+  # ----------------------------------------------------------
   qdrant:
     image: qdrant/qdrant:v1.19.0
-
     environment:
-      # Configure Qdrant server-side API authentication when
-      # QDRANT__API_KEY is supplied.
+      # Explicitly set API key only if provided in host environment
       QDRANT__SERVICE__API_KEY: ${QDRANT__API_KEY:-}
-
     volumes:
       - qdrant-storage:/qdrant/storage
-
-    # localhost:56333 -> qdrant container:6333
     ports:
       - "127.0.0.1:56333:6333"
-
-    # TCP readiness check.
-    #
-    # This verifies that the actual Qdrant service is listening
-    # rather than merely checking whether the Qdrant binary exists.
     healthcheck:
-      test:
-        [
-          "CMD",
-          "bash",
-          "-ec",
-          "exec 3<>/dev/tcp/127.0.0.1/6333"
-        ]
+      # **Not curl.** The qdrant image does not contain it, so `curl -f ...`
+      # exits 127 ("not found") on every probe and the container can never
+      # become healthy -- which silently blocks every service that waits on
+      # it. The image does carry bash, so this opens a TCP connection to the
+      # port instead, which is a stronger check than running the binary with
+      # `--version` (that passes before the service is listening).
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/6333"]
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 15s
-
     restart: unless-stopped
-
     logging: *default-logging
 
-
-  # ==========================================================
-  # Alembic migrations
-  #
-  # Runs once before API/worker startup.
-  # ==========================================================
+  # ----------------------------------------------------------
+  # One-off Database Migrations
+  # ----------------------------------------------------------
   migrate:
-    # Same image as api/worker, built once by `api` -- see the note there.
     image: iam-platform-dev:latest
-
-    command:
-      [
-        "python",
-        "-m",
-        "alembic",
-        "upgrade",
-        "head"
-      ]
-
-    environment:
-
-      ENVIRONMENT: development
-
-      SECRET_PROVIDER: ${SECRET_PROVIDER:-env}
-
-      ALLOW_PLAINTEXT_SECRETS: ${ALLOW_PLAINTEXT_SECRETS:-true}
-
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-
-
-      # ------------------------------------------------------
-      # Database
-      # ------------------------------------------------------
-      DATABASE__HOST: postgres
-      DATABASE__PORT: "5432"
-      DATABASE__NAME: ${DATABASE__NAME:-iam_platform}
-
-      DATABASE__MIGRATOR_USER: ${DATABASE__MIGRATOR_USER:-postgres}
-
-      DATABASE__MIGRATOR_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD}
-
-      DATABASE__USER: ${DATABASE__USER:-app_tenant}
-
-      DATABASE__PASSWORD: ${APP_TENANT_PASSWORD:?set APP_TENANT_PASSWORD}
-
-      DATABASE__PLATFORM_USER: ${DATABASE__PLATFORM_USER:-app_platform}
-
-      DATABASE__PLATFORM_PASSWORD: ${APP_PLATFORM_PASSWORD:?set APP_PLATFORM_PASSWORD}
-
-
-      # ------------------------------------------------------
-      # Supporting settings that may be loaded by Settings
-      # during application startup / Alembic import.
-      # ------------------------------------------------------
-      REDIS__URL: redis://redis:6379/0
-
-      JWT__ISSUER: ${JWT_ISSUER:?set JWT_ISSUER}
-      JWT__AUDIENCE: ${JWT_AUDIENCE:?set JWT_AUDIENCE}
-
-      JWT__PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:?set JWT_PRIVATE_KEY_PEM}
-      JWT__PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:?set JWT_PUBLIC_KEY_PEM}
-
-      ENCRYPTION__DATA_KEY: ${ENCRYPTION_DATA_KEY:?set ENCRYPTION_DATA_KEY}
-
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-    restart: "no"
-
-    logging: *default-logging
-
-
-  # ==========================================================
-  # FastAPI API
-  # ==========================================================
-  api:
-    # The one service that builds. `migrate` and `worker` reference the tag it
-    # produces, so `up --build` builds once instead of three times and sends
-    # the build context once instead of three times.
-    build:
-      context: .
-    image: iam-platform-dev:latest
-
+    command: ["python", "-m", "alembic", "upgrade", "head"]
     environment:
       <<: *app-env
-
-
-      # ------------------------------------------------------
-      # CORS
-      # ------------------------------------------------------
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000"]}
-
-
-      # ------------------------------------------------------
-      # Public API URL
-      #
-      # Browser / third-party widget accesses API through host
-      # port 18000.
-      # ------------------------------------------------------
-      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://localhost:18000}
-
-
-      # ------------------------------------------------------
-      # Google OAuth
-      # ------------------------------------------------------
-      OAUTH_GOOGLE__ENABLED: ${OAUTH_GOOGLE_ENABLED:-false}
-
-      OAUTH_GOOGLE__CLIENT_ID: ${OAUTH_GOOGLE_CLIENT_ID:-}
-
-      OAUTH_GOOGLE__CLIENT_SECRET: ${OAUTH_GOOGLE_CLIENT_SECRET:-}
-
-      # Container listens on 8000 internally, but OAuth provider
-      # must redirect the browser to HOST port 18000.
-      OAUTH_GOOGLE__REDIRECT_URI: http://localhost:18000/v1/auth/oauth/google/callback
-
-
-      # ------------------------------------------------------
-      # Facebook OAuth
-      # ------------------------------------------------------
-      OAUTH_FACEBOOK__ENABLED: ${OAUTH_FACEBOOK_ENABLED:-false}
-
-      OAUTH_FACEBOOK__CLIENT_ID: ${OAUTH_FACEBOOK_CLIENT_ID:-}
-
-      OAUTH_FACEBOOK__CLIENT_SECRET: ${OAUTH_FACEBOOK_CLIENT_SECRET:-}
-
-      OAUTH_FACEBOOK__REDIRECT_URI: http://localhost:18000/v1/auth/oauth/facebook/callback
-
-
-    volumes:
-      - uploads:/var/lib/iam-platform/storage
-
-
-    # --------------------------------------------------------
-    # Host port 18000
-    #
-    # localhost:18000 -> API container:8000
-    #
-    # Existing application can continue using host :8000.
-    # --------------------------------------------------------
-    ports:
-      - "127.0.0.1:18000:8000"
-
-
+      DATABASE__MIGRATOR_USER: ${DATABASE__MIGRATOR_USER:-postgres}
+      DATABASE__MIGRATOR_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD}
     depends_on:
-      migrate:
-        condition: service_completed_successfully
-
-      redis:
+      # Postgres only. **`migrate` must not wait for `api`** -- it did, which
+      # inverted the whole startup order: migrate waited for api, api waited
+      # for qdrant, and qdrant was never healthy, so the migration never ran
+      # and the worker (which waits for migrate) never started either.
+      #
+      # It is also backwards on its own terms: the schema has to exist before
+      # the API serves a request, so the API waits for the migration, never
+      # the reverse.
+      #
+      # Nothing is lost by dropping it. `api` is the only service with a
+      # `build:` section, and Compose builds every such service *before*
+      # starting anything, so `iam-platform-dev:latest` already exists by the
+      # time this container is created. Build order and `depends_on` are
+      # independent.
+      postgres:
         condition: service_healthy
-
-      qdrant:
-        condition: service_healthy
-
-
-    stop_grace_period: 30s
-
-    restart: unless-stopped
-
-
-    # Keep application container filesystem immutable.
-    read_only: true
-
-    tmpfs:
-      - /tmp
-
-    security_opt:
-      - no-new-privileges:true
-
+    restart: "no"
     logging: *default-logging
 
+  # ----------------------------------------------------------
+  # FastAPI Application Server (Build Master)
+  # ----------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: iam-platform-dev:latest
+    environment:
+      <<: *app-env
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-"http://localhost:3000"}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://localhost:18000}
+      OAUTH_GOOGLE__ENABLED: ${OAUTH_GOOGLE_ENABLED:-false}
+      OAUTH_GOOGLE__CLIENT_ID: ${OAUTH_GOOGLE_CLIENT_ID:-}
+      OAUTH_GOOGLE__CLIENT_SECRET: ${OAUTH_GOOGLE_CLIENT_SECRET:-}
+      OAUTH_GOOGLE__REDIRECT_URI: http://localhost:18000/v1/auth/oauth/google/callback
+      OAUTH_FACEBOOK__ENABLED: ${OAUTH_FACEBOOK_ENABLED:-false}
+      OAUTH_FACEBOOK__CLIENT_ID: ${OAUTH_FACEBOOK_CLIENT_ID:-}
+      OAUTH_FACEBOOK__CLIENT_SECRET: ${OAUTH_FACEBOOK_CLIENT_SECRET:-}
+      OAUTH_FACEBOOK__REDIRECT_URI: http://localhost:18000/v1/auth/oauth/facebook/callback
+    volumes:
+      - uploads:/var/lib/iam-platform/storage
+    ports:
+      - "127.0.0.1:18000:8000"
+    depends_on:
+      # Waits for the schema to exist. Without this the API can start against
+      # an empty database and fail every request with "relation does not
+      # exist" -- and a failed migration would no longer stop the rollout.
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    stop_grace_period: 30s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
 
-  # ==========================================================
-  # Celery Worker
-  # ==========================================================
+  # ----------------------------------------------------------
+  # Celery Asynchronous Task Worker
+  # ----------------------------------------------------------
   worker:
     image: iam-platform-dev:latest
-
     command:
       - celery
       - -A
@@ -502,28 +242,17 @@ services:
       - --loglevel=${LOG_LEVEL:-INFO}
       - --pool=threads
       - --concurrency=${WORKER_CONCURRENCY:-4}
-
-
     environment:
       <<: *app-env
-
-
-    # Must be same storage volume used by API.
     volumes:
       - uploads:/var/lib/iam-platform/storage
-
-
     depends_on:
       migrate:
         condition: service_completed_successfully
-
       redis:
         condition: service_healthy
-
       qdrant:
         condition: service_healthy
-
-
     healthcheck:
       test:
         [
@@ -534,34 +263,19 @@ services:
       timeout: 15s
       retries: 3
       start_period: 60s
-
-
     stop_grace_period: 60s
-
     restart: unless-stopped
-
     read_only: true
-
     tmpfs:
       - /tmp
-
     security_opt:
       - no-new-privileges:true
-
     logging: *default-logging
 
-
 # ============================================================
-# Persistent volumes
+# Persistent Storage Volumes
 # ============================================================
-
 volumes:
-
-  # PostgreSQL database
   pgdata:
-
-  # Qdrant vectors
   qdrant-storage:
-
-  # Uploaded source files shared by API + worker
   uploads:
