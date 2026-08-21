@@ -24,19 +24,20 @@ You don't need to be a DevOps expert. Follow the steps in order and copy-paste t
 
 ## How this project is put together
 
-These run together:
+Six pieces run together, and **both development and production run all six in Docker** — the same `docker compose` model, just two different files (`docker-compose.dev.yml` vs `docker-compose.prod.yml`) with different port numbers and security settings:
 
-| Piece | What it is | In development | In production |
-|---|---|---|---|
-| **The API** | The actual application (Python/FastAPI) | Runs directly on your computer with `python` | Runs inside a Docker container |
-| **PostgreSQL** | The database | Runs inside Docker | Runs inside Docker |
-| **Redis** | A fast in-memory cache (login attempt counters, rate limits) and the background job queue | Runs inside Docker | Runs inside Docker |
-| **The worker** | A separate process that ingests uploaded documents in the background (Celery) | Runs directly on your computer with `celery` | Runs as its own container/service |
-| **Qdrant** | The vector database that makes document search work | Runs inside Docker | Runs inside Docker (self-hosted, not exposed to the internet) |
+| Piece | What it is |
+|---|---|
+| **`api`** | The application itself (Python/FastAPI) |
+| **`worker`** | A separate process that ingests uploaded documents in the background (Celery) — genuinely separate from the API: they share code but neither starts the other, so if it isn't running, uploads succeed and then sit on "Processing" forever |
+| **`migrate`** | Creates/updates the database tables, then exits — a one-time job, not a long-running service |
+| **`postgres`** | The database |
+| **`redis`** | Cache, login-attempt/rate-limit counters, and the job queue the worker consumes |
+| **`qdrant`** | Vector search over uploaded documents, for the knowledge-base / chat features |
 
-In development, only the databases and cache run in Docker — you run the API and worker directly so you can see errors instantly and restart them in a second. In production, **everything** runs in Docker, including the API itself, because that's what makes it reproducible and safe to deploy on a server you don't sit in front of.
+**Development and production differ only in where things are reachable from and what secrets look like.** In development, Postgres/Redis/Qdrant/the API are each published to `localhost` on an easy-to-remember port so you can poke at them directly; secrets are throwaway values in a git-ignored `.env`. In production, nothing but the API is reachable at all (and only from the server itself — Nginx is what the internet actually talks to), and secrets are real.
 
-> **The worker is genuinely separate from the API.** They share code and configuration but are two processes, and neither starts the other. If you run the API alone, document uploads will succeed and then sit on "Processing" forever, because nothing is there to do the work.
+> **Prefer to run the API and worker natively with `python`/`celery` instead of in Docker** — for a debugger attached, or faster edit-reload? That is still fully supported; see **"Running natively instead of Docker"** at the end of Part A. The Docker path below is the one actually exercised end-to-end and is what this guide recommends by default.
 
 ---
 
@@ -46,16 +47,18 @@ In development, only the databases and cache run in Docker — you run the API a
 
 | Tool | Why | Check you have it |
 |---|---|---|
-| **Docker Desktop** (Windows/Mac) or **Docker Engine** (Linux) | Runs PostgreSQL and Redis for you, no manual install | `docker --version` |
-| **Python 3.13 or newer** | Runs the application | `python3 --version` |
+| **Docker Desktop** (Windows/Mac) or **Docker Engine** (Linux) | Runs everything — the database, cache, vector store, API and worker | `docker --version` |
 | **Git** | Downloads the code | `git --version` |
+| **Node.js 20+** | Runs the admin console (Step 6) | `node --version` |
+| **Python 3.13+** | Only needed to run the automated test suite (Step 7) — the app itself runs entirely in Docker | `python3 --version` |
 
 If any of those commands fail, install the tool first:
 - Docker Desktop: https://www.docker.com/products/docker-desktop/
-- Python: https://www.python.org/downloads/
 - Git: https://git-scm.com/downloads
+- Node.js: https://nodejs.org/
+- Python: https://www.python.org/downloads/
 
-> **Windows users:** run all the commands below in **Git Bash** (installed together with Git) or **WSL**, not the plain Windows Command Prompt — the commands use Linux-style syntax. If a command below says `python3` and your terminal replies `command not found`, use `python` instead — some Windows Python installs only register that name.
+> **Windows users:** run all the commands below in **Git Bash** (installed together with Git) or **WSL**, not the plain Windows Command Prompt — the commands use Linux-style syntax.
 
 ### Step 1 — Get the code
 
@@ -66,209 +69,165 @@ cd ai_agent_by_Claude
 
 (If you already have the folder, just `cd` into it — you can skip cloning.)
 
-### Step 2 — Start the database, cache and vector store
+### Step 2 — Create your settings file
 
-This project ships a ready-made Docker Compose file that starts PostgreSQL, Redis and Qdrant for you, with the correct database roles already configured (this project uses PostgreSQL's Row-Level Security, so the setup is a little more specific than a stock database):
-
-```bash
-docker compose -f docker-compose.dev.yml up -d
-```
-
-Check both are healthy:
-
-```bash
-docker compose -f docker-compose.dev.yml ps
-```
-
-You should see `postgres`, `redis` and `qdrant` all listed as `running` (or `healthy`). Leave them running — you don't need to restart them every time you change code.
-
-> **Keep the Qdrant versions in step.** The Python client refuses to talk to a server more than one minor version away and warns loudly. If you bump `qdrant-client` in `pyproject.toml`, bump the image tag in `docker-compose.dev.yml` to match, and vice versa.
-
-### Step 3 — Set up Python
-
-Create an isolated Python environment (a "virtual environment" keeps this project's packages separate from everything else on your machine) and install the project into it:
-
-```bash
-python3 -m venv .venv
-```
-
-Activate it:
-
-```bash
-# Linux / macOS / Git Bash on Windows
-source .venv/bin/activate
-
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
-```
-
-You'll know it worked because your terminal prompt now starts with `(.venv)`. Now install the project and its development tools (tests, linter, type checker):
-
-```bash
-pip install -e ".[dev]"
-```
-
-This step takes a minute or two the first time.
-
-### Step 4 — Create your settings file
-
-The application reads its configuration from a file called `.env` in the project root. A template already exists — copy it:
+Everything — the app and Docker Compose's own setup — reads its configuration from one file called `.env` in the project root. A template already exists — copy it:
 
 ```bash
 cp .env.example .env
 ```
 
-Now you need to fill in three things that don't have safe defaults: a JWT signing keypair (used to issue login tokens) and a data-encryption key (used to protect stored AI-provider secrets like OpenAI API keys). Nothing here needs to be memorable — you generate it once and paste it in.
+Two things need real values before anything will start: a JWT signing keypair (used to issue login tokens) and a data-encryption key (used to protect stored AI-provider secrets like OpenAI API keys). Nothing here needs to be memorable — you generate each one once and paste it in.
 
-**4a. Generate a JWT keypair:**
+**2a. Generate a JWT keypair:**
 
 ```bash
 openssl genrsa -out jwt_private.pem 2048
 openssl rsa -in jwt_private.pem -pubout -out jwt_public.pem
 ```
 
-These two commands need to go into `.env` as **single-line** values (the `.env` format doesn't support multi-line values), so the actual line breaks in the file get replaced with the two characters `\n`. This little script does that for you and prints what to paste:
+These need to go into `.env` as **single-line** values (the `.env` format doesn't support real line breaks inside a value), so the actual line breaks get replaced with the two characters `\n`. This little script does that for you and prints what to paste:
 
-```powershell
-@'
+```bash
+python3 - <<'PY'
 for name, field in [
     ("jwt_private.pem", "JWT__PRIVATE_KEY_PEM"),
     ("jwt_public.pem", "JWT__PUBLIC_KEY_PEM"),
 ]:
     with open(name, encoding="utf-8") as f:
         value = f.read().strip().replace("\n", "\\n")
-
     print(f"{field}={value}")
     print()
-'@ | python
+PY
 ```
 
-Copy each printed line into `.env`, replacing the existing empty `JWT__PRIVATE_KEY_PEM=` and `JWT__PUBLIC_KEY_PEM=` lines.
+Copy each printed line into `.env`, replacing the existing empty `JWT__PRIVATE_KEY_PEM=` and `JWT__PUBLIC_KEY_PEM=` lines. Then delete the `.pem` files — the key belongs only in `.env` now:
 
-**4b. Generate the encryption key:**
+```bash
+rm -f jwt_private.pem jwt_public.pem
+```
 
-```powershell
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+**2b. Generate the encryption key:**
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
 Copy the printed value into `.env` as the value of `ENCRYPTION__DATA_KEY=`.
 
-**4c. Check the database/Redis lines match Step 2.** The rest of `.env.example`'s defaults already match `docker-compose.dev.yml`, so you shouldn't need to touch anything else — but it's worth glancing at these lines to confirm:
+**2c. Everything else in `.env.example` already has a working default** — the database/Redis/Qdrant ports match what `docker-compose.dev.yml` publishes, and the passwords are throwaway local-only values. Leave it as-is; you can revisit `docs/21-configuration-and-secrets.md` later for things like social login (Google/Facebook).
 
-```
-DATABASE__HOST=localhost
-DATABASE__PORT=55432
-REDIS__URL=redis://localhost:56379/0
-```
+> **If you replace any of the three database passwords, never use one containing a literal `$`.** Docker Compose interpolates `${VAR}`/`$VAR` patterns wherever it resolves a value from `.env` — including *inside another value*. A password like `my$ecret` gets silently mangled to `my` before it ever reaches Postgres or the app: Compose treats `$ecret` as a reference to an unset variable and drops it, with only a quiet `"ecret" variable is not set` warning buried in the build log to explain why authentication starts failing. `openssl rand -base64 32` (used throughout this guide) never produces `$`, so following the commands as written avoids this entirely. If you generate passwords with something else — a password manager, for instance — strip or avoid `$` in the result.
 
-Everything else in `.env.example` (OAuth login, rate limits, log level) has a working default. Leave it as-is for now — you can revisit `docs/21-configuration-and-secrets.md` later if you want social login (Google/Facebook) working locally.
-
-### Step 5 — Create the database tables
-
-The project uses [Alembic](https://alembic.sqlalchemy.org/) to manage the database schema. Run this once (and again any time you pull code that adds a new migration):
+### Step 3 — Build and start everything
 
 ```bash
-python -m alembic upgrade head
+docker compose -f docker-compose.dev.yml up -d --build
 ```
 
-If this succeeds silently (or prints a line ending in `... done`), your database now has all the required tables.
+This builds the application image once (used by `migrate`, `api` and `worker` alike), starts Postgres/Redis/Qdrant and waits until each is genuinely healthy, runs the database migration as a one-time job, then starts the API and the worker.
 
-### Step 6 — Run the server
+> **Expect the first build to take 20–45 minutes**, and to download roughly 2 GB — it installs PyTorch, docling's document-parsing models and a headless browser, so a fresh container never has to fetch them the moment you upload your first document. This is a one-time cost; later runs of this same command finish in well under a minute, because only the small top layer (your source code) needs rebuilding. If a later build unexpectedly re-downloads the whole 2 GB again, something invalidated the dependency layer — check whether `pyproject.toml` changed, since that's the file it's keyed on.
+
+Watch it happen:
 
 ```bash
-python -m iam_platform.asgi
+docker compose -f docker-compose.dev.yml logs -f
 ```
 
-You should see log lines confirming the server started, ending with something like `Uvicorn running on http://0.0.0.0:8000`.
+Press `Ctrl+C` to stop watching (this does **not** stop the containers).
 
-> **Note on restarting:** this project doesn't have "hot reload" wired up yet — after you change code, stop the server (`Ctrl+C`) and run the command again to pick up your changes.
+### Step 4 — Check it's working
 
-#### And the background worker, in a terminal of its own
-
-Document ingestion — parsing an uploaded PDF, splitting it into chunks, turning those into embeddings and indexing them — runs outside the API so a large upload never blocks a web request. That work happens in a **Celery worker**, which you start yourself:
+All six services should be listed, and `postgres`/`redis`/`qdrant`/`worker` should show `healthy`; `migrate` should show `Exited (0)`:
 
 ```bash
-celery -A iam_platform.workers.main:celery_app worker --loglevel=info --pool=threads --concurrency=4
+docker compose -f docker-compose.dev.yml ps
 ```
 
-Leave it running alongside the API. It reads the same `.env`, so there is nothing extra to configure — but it does need `OPENAI__API_KEY` and `QDRANT__URL` to be set, because embedding and indexing are the work it does.
-
-> **Mind the double underscore.** It is `OPENAI__API_KEY`, not `OPENAI_API_KEY` — the `__` is what nests the value under the `openai` settings group. The single-underscore form is the name OpenAI's own SDK uses, so it is an easy mistake, and it used to be swallowed silently: no error, and no key. The app now refuses to start and tells you the correct spelling.
-
-**The first PDF, Word, Excel, PowerPoint or image you upload will be slow** — a minute or two. Docling downloads its layout models from Hugging Face the first time it parses one, and caches them under `~/.cache/huggingface` for every run after. CSV, JSON and XML need no models and are fast from the start. (The production image bakes those models in at build time, so this only affects local development.)
-
-You can skip it if you're only working on identity, authorization or tenant administration; nothing in those areas touches it. You'll notice its absence the moment you upload a document: the upload succeeds, and the document then stays on **Processing** indefinitely.
-
-### Step 7 — Check it's working
-
-Open a **second terminal** (leave the server running in the first one) and try:
+Then check the API — note the port is **18000**, not 8000: that's where this compose file publishes the API container's internal port 8000 to your machine, to leave 8000 free for anything else you run locally.
 
 ```bash
-curl http://localhost:8000/livez
+curl http://localhost:18000/livez
 # {"status":"alive"}
 
-curl http://localhost:8000/readyz
+curl http://localhost:18000/readyz
 # {"status":"ready","dependencies":[...]}
 ```
 
-If `/readyz` reports `"ready"` with all dependencies `"healthy": true`, everything is wired up correctly — the API, database, and cache are all talking to each other.
+If `/readyz` reports `"ready"` with every dependency `"healthy": true`, the API, database and cache are all talking to each other. You can also browse to **http://localhost:18000/docs** for the interactive API documentation (Swagger UI).
 
-You can also browse to **http://localhost:8000/docs** in your web browser for the interactive API documentation (Swagger UI), where you can try out every endpoint directly.
+**Check the worker separately — `/readyz` doesn't cover it.** The API reports healthy whether or not anything is consuming the document-ingestion queue, so a dead worker is invisible from that endpoint alone:
 
-### Step 8 — Create your platform administrator account
-
-You can register an account through the API (or the admin console you'll start in Step 9), but a freshly registered account has **no permissions at all** — and it's not something you can fix by registering a "better" account either. Every platform-role grant in this system is gated by a self-escalation guard: an actor can only grant permissions they already hold. That's exactly the right rule for day-to-day use, but it means the *very first* platform administrator can never be created through the API — nobody holds any platform permission yet to grant one.
-
-There's a second, unrelated problem in the way too: registration normally requires clicking an emailed verification link, but this project's email sender only ever logs "email queued" to the console — there is no real email provider wired in yet (see the [Known gaps](docs/22-deployment-and-operations.md#known-gaps)), in **every** environment including production. So a freshly registered account can't even verify itself yet.
-
-`scripts/bootstrap_platform_admin.py` handles both problems in one step. It runs directly against the database with the same table-owner credentials Alembic migrations use — a deliberate, one-time bypass of the normal API authorization path, not a backdoor left lying around for routine use.
-
-First, register the account you want to make an admin (through `/register` in the console once you've started it in Step 9, or directly against the API):
-
-```powershell
-Invoke-RestMethod `
-  -Method POST `
-  -Uri "http://localhost:8000/v1/auth/register" `
-  -ContentType "application/json" `
-  -Body '{
-    "email": "admin@lait.co.uk",
-    "password": "Correct-Horse-9!"
-  }'
+```bash
+docker compose -f docker-compose.dev.yml exec worker \
+  celery -A iam_platform.workers.main:celery_app inspect ping
 ```
 
-Then bootstrap it:
+A `pong` means document ingestion will work. Anything else means uploads will be accepted and then sit on **Processing** forever, with nothing in the API's own log to explain why — check `docker compose -f docker-compose.dev.yml logs worker` instead.
 
-```powershell
-python scripts/bootstrap_platform_admin.py admin@lait.co.uk
+### Step 5 — Create your platform administrator account
+
+You can register an account through the API (or the admin console you'll start in Step 6), but a freshly registered account has **no permissions at all** — and that's not something a "better" registration fixes. Every platform-role grant in this system is gated by a self-escalation guard: an actor can only grant permissions they already hold. That's the right rule for day-to-day use, but it means the *very first* platform administrator can never be created through the API — nobody holds any platform permission yet to grant one.
+
+There's a second, unrelated gap in the way too: registration normally requires clicking an emailed verification link, but this project's email sender only ever logs "email queued" to the console — there's no real email provider wired in yet (see [Known gaps](docs/22-deployment-and-operations.md#known-gaps)), in **every** environment including production. So a freshly registered account can't even verify itself.
+
+`scripts/bootstrap_platform_admin.py` handles both in one step, running directly against the database with the same table-owning credentials Alembic migrations use — a deliberate, one-time bypass of the normal API authorization path.
+
+First, register the account you want to make an admin:
+
+```bash
+curl -X POST http://localhost:18000/v1/auth/register \
+  -H "content-type: application/json" \
+  -d '{"email": "admin@lait.co.uk", "password": "Correct-Horse-9!"}'
 ```
 
-This activates the account (skipping the email verification step that can't be completed yet) and grants it a `platform_super_admin` role holding every platform permission: `platform.tenants.create`, `platform.tenants.suspend`, `platform.support.impersonate`, `platform.users.read`, and `platform.users.manage`. It's safe to re-run — running it again against an account that already holds the role just confirms that and does nothing else, and re-running after an upgrade picks up any permissions added since. You can now log in as this account, either via `/v1/auth/login` directly or through the admin console.
+Then bootstrap it, running the script inside a one-off container that reuses the `migrate` service's database credentials — no local Python setup needed for this step:
+
+```bash
+docker compose -f docker-compose.dev.yml run --rm migrate python scripts/bootstrap_platform_admin.py admin@lait.co.uk
+```
+
+This activates the account (skipping the email verification that can't be completed yet) and grants it a `platform_super_admin` role: `platform.tenants.create`, `platform.tenants.suspend`, `platform.support.impersonate`, `platform.users.read`, `platform.users.manage`, `platform.model_configurations.manage`. It's idempotent — safe to re-run against an account that already holds the role, and re-running after you pull new code picks up any permissions added since.
 
 **Now seed the tenant role catalog too — this step is easy to miss and the console breaks in a non-obvious way without it:**
 
-```powershell
-python scripts/bootstrap_tenant_catalog.py
+```bash
+docker compose -f docker-compose.dev.yml run --rm migrate python scripts/bootstrap_tenant_catalog.py
 ```
 
-`bootstrap_platform_admin.py` only seeds the *platform*-scope catalog (fully separate tables, by design). Nothing seeds the *tenant*-scope one — `tenant_permissions` and the built-in Tenant Owner / Tenant Administrator / Member roles — until you run this. Skip it, and creating a tenant still "succeeds": the tenant exists, the owner has an active membership, but the console can't find a "Tenant Owner" role to grant them, so they land with **zero tenant permissions and a nearly-empty sidebar** (just Dashboard, Assistants, Knowledge bases, Conversations — the screens that don't need a permission). As of this fix, `CreateTenant` refuses outright with a 503 if you skip this step and try to create a tenant anyway, rather than succeeding silently. Also idempotent — safe to re-run.
+`bootstrap_platform_admin.py` only seeds the *platform*-scope catalog (fully separate tables, by design). Nothing seeds the *tenant*-scope one — `tenant_permissions` and the built-in Tenant Owner / Tenant Administrator / Member roles — until you run this. Skip it, and creating a tenant still "succeeds": the tenant exists, the owner has an active membership, but there's no "Tenant Owner" role to grant them, so they land with **zero tenant permissions and a nearly-empty sidebar**. `CreateTenant` refuses outright with a 503 if you try to create a tenant before this has run, rather than succeeding silently. Also idempotent.
 
-### Step 9 — Run the admin console (frontend)
+> **Want a populated console to explore instead of an empty one?** Once both bootstrap commands above have run:
+> ```bash
+> docker compose -f docker-compose.dev.yml run --rm migrate python scripts/seed_demo_data.py admin@lait.co.uk
+> ```
+> creates a demo tenant with three members, two AI assistants, and a knowledge base.
 
-The backend is a headless API — day-to-day administration (managing tenants, roles, members, AI resources) is done through the Next.js admin console in `frontend/`. In a **third terminal** (leave the backend running in the first):
+### Step 6 — Run the admin console (frontend)
+
+The backend is a headless API — day-to-day administration (tenants, roles, members, AI resources) is done through the Next.js admin console in `frontend/`. This one piece runs outside Docker, directly with Node:
 
 ```bash
 cd frontend
+cp -n .env.example .env.local   # only copies if .env.local doesn't already exist
 npm install
 npm run dev
 ```
 
-Browse to **http://localhost:3000** and log in with the account you bootstrapped in Step 8. See [frontend/README.md](frontend/README.md) for the console's architecture (it never exposes your JWT to the browser — it proxies every request through a same-origin BFF route that holds tokens in an `httpOnly` cookie).
+**Confirm `frontend/.env.local` points at the right place** before you rely on it — open the file and check it reads:
+
+```
+BACKEND_API_URL=http://localhost:18000
+```
+
+Not `:8000` — that's the container's *internal* port, nothing on your machine is listening there. Pointing at the wrong port is the single most common reason the console loads but every screen fails with a fetch/connection error.
+
+Browse to **http://localhost:3000** and log in with the account you bootstrapped in Step 5. See [frontend/README.md](frontend/README.md) for the console's architecture (it never exposes your JWT to the browser — it proxies every request through a same-origin BFF route that holds tokens in an `httpOnly` cookie).
 
 **Where you land depends on who you are.** `/` routes you by your actual permissions: a platform administrator goes to **/platform** (which works with zero tenants — it's where you create the first one), someone with exactly one tenant goes straight to that tenant's dashboard, and anyone else gets the tenant picker. The sidebar shows every scope you hold, so a platform admin who is also a tenant member sees both sections at once.
 
 **Working with an empty database is expected on a fresh install.** With no tenants yet, go to **Platform → Tenants → New tenant**. The form derives the URL slug from the organization name (you can override it) and warns before you submit if that slug is taken; the owner is chosen from a searchable list of users, not by pasting a UUID. If you need a user to own it first, create one under **Platform → Users → New user**.
-
-> **Want a populated console to explore instead?** `python scripts/seed_demo_data.py admin@lait.co.uk` (run from the repo root, after Step 8) creates a demo tenant with three members, two AI assistants, and a knowledge base.
 
 #### What you can do from the console
 
@@ -287,17 +246,62 @@ Browse to **http://localhost:3000** and log in with the account you bootstrapped
 
 Suspending or deleting a user takes effect immediately — every session is revoked and they cannot sign in again until reactivated. Deletion is a soft delete: the account disappears from the directory and can no longer authenticate, but the row is kept because audit history references it.
 
-### Step 10 — Run the automated tests (optional but recommended)
+### Step 7 — Run the automated tests (optional but recommended)
+
+Unlike every previous step, the test suite runs **natively**, not in a container — it needs a local Python environment, and it talks to the same dockerized Postgres/Redis/Qdrant over the ports Step 3 published.
+
+**7a. Set up a virtual environment, once:**
+
+```bash
+python3 -m venv .venv
+
+# Linux / macOS / Git Bash on Windows
+source .venv/bin/activate
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+pip install -e ".[dev]"
+```
+
+You'll know activation worked because your terminal prompt now starts with `(.venv)`.
+
+**7b. Create the test database, once.** The suite runs against a completely separate database (`iam_platform_test`) so its teardown — which **truncates every table** — can never touch the data you're working with in `iam_platform`. `docker-compose.dev.yml` only creates `iam_platform` automatically; the test one needs creating the first time:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -i postgres \
+  psql -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+CREATE DATABASE iam_platform_test OWNER postgres;
+\c iam_platform_test
+GRANT CONNECT ON DATABASE iam_platform_test TO app_tenant;
+GRANT USAGE ON SCHEMA public TO app_tenant;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_tenant;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_tenant;
+GRANT CONNECT ON DATABASE iam_platform_test TO app_platform;
+GRANT USAGE ON SCHEMA public TO app_platform;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_platform;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_platform;
+SQL
+```
+
+Then migrate it, the same way Step 3 migrated the main one:
+
+```bash
+docker compose -f docker-compose.dev.yml run --rm -e DATABASE__NAME=iam_platform_test migrate
+```
+
+> **`-i` on the first command matters.** Without it, `docker compose exec` doesn't forward the SQL on your terminal's input to `psql` at all, and the command silently does nothing — no error, no database.
+
+**7c. Run the suite:**
 
 ```bash
 python -m pytest
 ```
 
-This runs the full test suite (hundreds of tests) against your local database and Redis.
+This runs the full test suite (hundreds of tests) against `iam_platform_test` and the same dockerized Redis.
 
-**Expect around 20 minutes, and don't mistake the quiet for a hang.** The HTTP-level tests each build a complete application — two database connection pools, a Redis pool, an HTTP client — and then wipe every table on the way out, so a single one costs 10–20 seconds before any of its own work happens. That's deliberate: it's what makes them exercise the real request path instead of a mock. It also means the suite spends most of its time waiting rather than computing, so it looks idle while it's working, and progress output is buffered when you redirect it to a file.
+**Expect around 20 minutes, and don't mistake the quiet for a hang.** The HTTP-level tests each build a complete application — two database connection pools, a Redis pool, an HTTP client — and then wipe every table in `iam_platform_test` on the way out, so a single test costs 10–20 seconds before any of its own work happens. That's deliberate: it's what makes them exercise the real request path instead of a mock.
 
-**Never run two copies at once.** They compete for the same database and each other's teardown truncations, and the whole thing slows to a crawl — which reads exactly like a deadlock and isn't one.
+**Never run two copies at once.** They compete for the same test database and each other's teardown truncations, and the whole thing slows to a crawl — which reads exactly like a deadlock and isn't one.
 
 For a quick check while you're editing code, the subset that doesn't touch the database finishes in seconds:
 
@@ -305,22 +309,73 @@ For a quick check while you're editing code, the subset that doesn't touch the d
 python -m pytest -m "not integration"
 ```
 
-> Never run the full suite against a database you care about — teardown truncates every table. Stop the API server first, too: the suite and a running server compete for the same Postgres and Redis, and both start timing out.
+> Only `iam_platform_test` is ever truncated — your real `iam_platform` database (and everything you've clicked together in the console) is untouched by any of this, precisely because the two live in separate databases.
 
 ### Everyday development workflow
 
 Once set up, your day-to-day loop is:
 
-1. Make sure Postgres/Redis/Qdrant are running: `docker compose -f docker-compose.dev.yml up -d` (only needed if you'd stopped them)
-2. Activate your virtual environment: `source .venv/bin/activate`
-3. Run the server: `python -m iam_platform.asgi`
-4. If you're working on document ingestion: `celery -A iam_platform.workers.main:celery_app worker --loglevel=info --pool=threads --concurrency=4` in its own terminal
-5. If you're working on the admin console too: `cd frontend && npm run dev` in its own terminal
-6. Edit code, stop the affected process (`Ctrl+C`), run it again to see your change — the frontend's `npm run dev` uses Turbopack and hot-reloads on its own
-7. When you're done for the day: `docker compose -f docker-compose.dev.yml down` (stops the containers; add `-v` only if you also want to wipe the database data)
+1. Make sure everything's running: `docker compose -f docker-compose.dev.yml up -d` (only needed if you'd stopped it)
+2. Edit backend code, then rebuild just the API to see your change: `docker compose -f docker-compose.dev.yml up -d --build api` — fast after the first build, since only your source layer needs rebuilding
+3. Editing the worker instead? Same idea: `docker compose -f docker-compose.dev.yml up -d --build worker`
+4. The frontend hot-reloads on its own (Turbopack) — no restart needed for console changes
+5. Watch logs while you work: `docker compose -f docker-compose.dev.yml logs -f api worker`
+6. When you're done for the day: `docker compose -f docker-compose.dev.yml down` (stops the containers; add `-v` only if you also want to wipe all the data, including `iam_platform_test`)
 
 ---
 
+### Running natively instead of Docker (optional, advanced)
+
+Useful for attaching a debugger, or for a faster edit-run loop than rebuilding an image each time. This still uses Docker for the three datastores — only the API and worker run directly on your machine.
+
+**Start only the datastores** (not `api`/`worker`/`migrate`):
+
+```bash
+docker compose -f docker-compose.dev.yml up -d postgres redis qdrant
+```
+
+**Set up Python** (same as Step 7a above if you haven't already):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # or .venv\Scripts\Activate.ps1 on Windows
+pip install -e ".[dev]"
+```
+
+**Create the database tables:**
+
+```bash
+python -m alembic upgrade head
+```
+
+**Run the server:**
+
+```bash
+python -m iam_platform.asgi
+```
+
+You should see log lines ending with something like `Uvicorn running on http://0.0.0.0:8000` — native, so it's port **8000** here, not 18000. There's no hot reload wired up; after changing code, stop the server (`Ctrl+C`) and run the command again.
+
+**And the background worker, in a terminal of its own:**
+
+```bash
+celery -A iam_platform.workers.main:celery_app worker --loglevel=info --pool=threads --concurrency=4
+```
+
+It reads the same `.env`, so there's nothing extra to configure — but it does need `OPENAI__API_KEY` and `QDRANT__URL` set, since embedding and indexing are the work it does. You can skip it if you're only working on identity, authorization or tenant administration; you'll notice its absence the moment you upload a document, which will then sit on **Processing** indefinitely.
+
+**The first PDF, Word, Excel, PowerPoint or image you upload this way will be slow** — a minute or two. Docling downloads its layout models from Hugging Face the first time it parses one and caches them under `~/.cache/huggingface` for every run after. CSV, JSON and XML need no models and are fast from the start. (The Docker image bakes those models in at build time, which is why this only affects the native path.)
+
+**Bootstrap your admin account the same way as Step 5**, just calling the script directly instead of through `docker compose run`:
+
+```bash
+python scripts/bootstrap_platform_admin.py admin@lait.co.uk
+python scripts/bootstrap_tenant_catalog.py
+```
+
+**The admin console (Step 6) is unaffected either way** — point `frontend/.env.local`'s `BACKEND_API_URL` at whichever port your API is actually listening on (`8000` here, `18000` for the Docker path).
+
+---
 ## Part B — Production (run it on a cloud Ubuntu server)
 
 This section assumes you have a fresh Ubuntu server from a cloud provider (AWS, DigitalOcean, Hetzner, Linode, Azure, etc. — any of them work identically from here on) and can connect to it over SSH.
@@ -338,7 +393,7 @@ Everything runs on this one server: the API, the background worker, PostgreSQL, 
 
 | Container | What it does | Reachable from outside? |
 |---|---|---|
-| `api` | Serves the API and the embeddable chat widget | Only through Nginx (bound to `127.0.0.1:8000`) |
+| `api` | Serves the API and the embeddable chat widget | Only through Nginx (bound to `127.0.0.1:8100` by default -- see Step 4d) |
 | `worker` | Ingests uploaded documents in the background | No |
 | `migrate` | Creates/updates database tables, then exits | No — it is a job, not a service |
 | `postgres` | The database | No |
@@ -422,6 +477,8 @@ You're creating five pieces of secret material, all of which live in one `chmod 
 openssl rand -base64 32   # run this three times, write down each result
 ```
 
+> **Stick with `openssl rand -base64 32` specifically — don't substitute a password manager's generator here.** Docker Compose interpolates `${VAR}`/`$VAR` patterns wherever it resolves a value from `.env`, including *inside another value it's already resolved*. A password containing a literal `$` — common output from many password-manager generators — gets silently truncated at that point: `my$ecret` becomes `my`, with only a `"ecret" variable is not set` warning buried in the build log to explain the resulting authentication failures. Base64's alphabet (letters, digits, `+`, `/`, `=`) never contains `$`, so the command above is immune to this by construction.
+
 **4b. Generate a fresh JWT keypair** (don't copy your dev keys to production):
 
 ```bash
@@ -437,8 +494,7 @@ for name in ["jwt_private.pem", "jwt_public.pem"]:
 PY
 ```
 
-The keys must be **single-line** values with real line breaks replaced by the two characters `
-` — that's what the script above prints. Keep both handy for Step 4d.
+The keys must be **single-line** values with real line breaks replaced by the two characters `\n` — that's what the script above prints. Keep both handy for Step 4d.
 
 Once they're pasted into `.env` (Step 4d), delete the `.pem` files — leaving a second copy of the signing key lying in the project directory defeats the point of locking down `.env`:
 
@@ -473,16 +529,10 @@ APP_TENANT_PASSWORD=paste-your-app-tenant-password-here
 APP_PLATFORM_PASSWORD=paste-your-app-platform-password-here
 
 # --- Application secrets (from Steps 4b and 4c) ---
-# Single-line values: the PEMs must have their line breaks written as the two
-# characters 
-, which is what the script in Step 4b prints for you.
-JWT_PRIVATE_KEY_PEM=-----BEGIN PRIVATE KEY-----
-MIIEvQ...
------END PRIVATE KEY-----
-JWT_PUBLIC_KEY_PEM=-----BEGIN PUBLIC KEY-----
-MIIBIjA...
------END PUBLIC KEY-----
-ENCRYPTION_DATA_KEY=paste-your-fernet-key-here
+# Single-line values: the PEMs must have their line breaks written as the two characters `\n`, which is what the script in Step 4b prints for you.
+JWT__PRIVATE_KEY_PEM=-----BEGIN PRIVATE KEY-----\nMIIEvQ...\n-----END PRIVATE KEY-----
+JWT__PUBLIC_KEY_PEM=-----BEGIN PUBLIC KEY-----\nMIIBIjA...\n-----END PUBLIC KEY-----
+ENCRYPTION__DATA_KEY=paste-your-fernet-key-here
 
 # --- AI answering, document ingestion and search ---
 # Required if you use the knowledge-base / chatbot / widget features. Without
@@ -514,9 +564,21 @@ STORAGE__MODE=local
 # the code would default to `example.invalid`, so compose now refuses to start
 # without it rather than baking a placeholder into live tokens. Use the URL
 # users reach this deployment at.
-JWT_ISSUER=https://yourdomain.com
+JWT__ISSUER=https://yourdomain.com
 
 # --- Everything else ---
+
+# Which port on THIS SERVER the API answers on, reachable only from the
+# server itself (Nginx connects to it over loopback -- see Step 8). Defaults
+# to 8100 if you omit this entirely. Change it only if 8100 is *also* already
+# taken on this server -- check first:
+#   sudo ss -ltnp | grep 8100
+# Nothing on the public internet depends on this number, since Nginx is the
+# only thing that ever connects to it; if you do change it, use the same
+# value in the Nginx `proxy_pass` line in Step 8 and every `curl` example in
+# this guide that targets `localhost:8100`.
+API_HOST_PORT=8100
+
 CORS_ALLOWED_ORIGINS=["https://yourdomain.com"]
 
 # Where third-party websites reach this API. Only used to build the one-line
@@ -586,7 +648,7 @@ docker compose -f docker-compose.prod.yml ps
 Then check the API:
 
 ```bash
-curl http://localhost:8000/readyz
+curl http://localhost:8100/readyz
 ```
 
 You should see `{"status":"ready", ...}`. If you see `503` or `"not_ready"`, check the logs:
@@ -611,7 +673,7 @@ docker compose -f docker-compose.prod.yml logs worker
 
 ### Step 7 — Create your platform administrator account
 
-Same underlying reason as in development (Part A, Step 8): the self-escalation guard means nobody can grant the *first* platform role through the API — nobody holds any platform permission yet to grant one — and this project's email sender doesn't deliver real mail in any environment yet, so a freshly registered account can't self-verify either. `scripts/bootstrap_platform_admin.py` (now baked into the image, see the Dockerfile) handles both by running directly against the database with the migrator role's credentials — the same authority the migration job already uses, and the same one-time, deliberate bypass as in development.
+Same underlying reason as in development (Part A, Step 5): the self-escalation guard means nobody can grant the *first* platform role through the API — nobody holds any platform permission yet to grant one — and this project's email sender doesn't deliver real mail in any environment yet, so a freshly registered account can't self-verify either. `scripts/bootstrap_platform_admin.py` (now baked into the image, see the Dockerfile) handles both by running directly against the database with the migrator role's credentials — the same authority the migration job already uses, and the same one-time, deliberate bypass as in development.
 
 Register the account you want to make an admin:
 
@@ -621,7 +683,7 @@ curl -X POST https://yourdomain.com/v1/auth/register \
   -d '{"email": "you@yourdomain.com", "password": "a-strong-unique-password"}'
 ```
 
-(If you haven't put HTTPS in front of the API yet — that's the next step — substitute `http://localhost:8000` here.)
+(If you haven't put HTTPS in front of the API yet — that's the next step — substitute `http://localhost:8100` here.)
 
 Then bootstrap it, running the script inside a one-off container that reuses the `migrate` service's existing database credentials:
 
@@ -643,7 +705,7 @@ This step is easy to miss and the failure mode isn't obvious: `bootstrap_platfor
 
 ### Step 8 — Put a real domain and HTTPS in front of it
 
-Right now the API is only reachable on port 8000, without encryption. For a real deployment you want a domain name with HTTPS, using **Nginx** as a reverse proxy and **Let's Encrypt** (via Certbot) for a free TLS certificate.
+Right now the API is only reachable on port 8100 (or whatever `API_HOST_PORT` you set), without encryption. For a real deployment you want a domain name with HTTPS, using **Nginx** as a reverse proxy and **Let's Encrypt** (via Certbot) for a free TLS certificate.
 
 **8a. Install Nginx and Certbot:**
 
@@ -667,7 +729,7 @@ server {
     server_name yourdomain.com;
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:8100;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -698,20 +760,20 @@ sudo certbot --nginx -d yourdomain.com
 
 Certbot will ask for an email address (for renewal notices) and automatically edit your Nginx config to redirect HTTP to HTTPS. Certificates auto-renew; you don't need to do anything further.
 
-**8e. Confirm port 8000 is not exposed to the internet.** `docker-compose.prod.yml` already binds it to the loopback address only:
+**8e. Confirm the API's port is not exposed to the internet.** `docker-compose.prod.yml` already binds it to the loopback address only:
 
 ```yaml
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_HOST_PORT:-8100}:8000"
 ```
 
 Nginx reaches the API over the loopback; nothing outside the server can. Verify from your own machine (**not** over SSH on the server) — this should time out or be refused:
 
 ```bash
-curl --max-time 5 http://YOUR_SERVER_IP:8000/livez
+curl --max-time 5 http://YOUR_SERVER_IP:8100/livez
 ```
 
-> **Do not change this to `"8000:8000"`, and do not rely on the firewall to cover it if you do.** Docker publishes ports by writing its own iptables rules in the `DOCKER` chain, and those are evaluated **before** ufw's. A `ufw deny 8000` does not block a Docker-published port. If the API were bound to `0.0.0.0`, it would be reachable from the internet over plain HTTP — bypassing Nginx, your TLS certificate, and the security headers and rate limiting the proxy adds — and `ufw status` would still look correct.
+> **Do not drop the `127.0.0.1:` prefix from this line, and do not rely on the firewall to cover it if you do.** Docker publishes ports by writing its own iptables rules in the `DOCKER` chain, and those are evaluated **before** ufw's. A `ufw deny 8100` does not block a Docker-published port. If the API were bound to `0.0.0.0` (no `127.0.0.1:` prefix), it would be reachable from the internet over plain HTTP on whatever `API_HOST_PORT` is set to — bypassing Nginx, your TLS certificate, and the security headers and rate limiting the proxy adds — and `ufw status` would still look correct.
 
 ### Step 9 — Lock down the firewall
 
@@ -722,7 +784,7 @@ sudo ufw allow 'Nginx Full'   # opens 80 and 443
 sudo ufw status
 ```
 
-Port 8000 should **not** appear in `ufw status`. What actually keeps it private is the `127.0.0.1` binding in Step 8e, **not** this firewall — see the warning there. ufw is what protects everything else on the host that isn't published by Docker.
+The API's port (8100 by default) should **not** appear in `ufw status`. What actually keeps it private is the `127.0.0.1` binding in Step 8e, **not** this firewall — see the warning there. ufw is what protects everything else on the host that isn't published by Docker.
 
 ### Step 10 — Confirm auto-start on reboot
 
@@ -759,7 +821,7 @@ curl https://yourdomain.com/readyz
 For metrics (Prometheus format, only reachable from the server itself per the Nginx config above):
 
 ```bash
-curl http://localhost:8000/metrics
+curl http://localhost:8100/metrics
 ```
 
 ### Deploying an update
@@ -837,7 +899,7 @@ Go through this list once before pointing real users at the server:
 - [ ] `.env` file permissions are `600` (owner-read-only) — `chmod 600 .env`
 - [ ] `.env` is not committed to git (`git status` should not show it — it's already in `.gitignore`)
 - [ ] `CORS_ALLOWED_ORIGINS` in `.env` lists only your real frontend domain(s), not `*` or `localhost`
-- [ ] Port 8000 is bound to `127.0.0.1` only (Step 8e) and is not in `ufw status`'s allowed list
+- [ ] The API's port (`API_HOST_PORT`, 8100 by default) is bound to `127.0.0.1` only (Step 8e) and is not in `ufw status`'s allowed list
 - [ ] `/metrics` is blocked at the Nginx layer (Step 8c) — it has no authentication of its own
 - [ ] HTTPS is working (`https://yourdomain.com`, not just `http://`) and HTTP redirects to it
 - [ ] You generated **fresh** production secrets rather than reusing development ones
@@ -852,7 +914,20 @@ Go through this list once before pointing real users at the server:
 
 ## Troubleshooting
 
-**`password authentication failed for user "app_tenant"` (or `app_platform`), but the password in `.env` is correct** — the database was created by an older version of `docker/postgres-init/01-roles.sh`, which was a `.sql` file that hard-coded `dev_only_password` for both roles. `.sql` files get no environment expansion, so the roles were created with a password nothing connects with. The script now takes the real passwords.
+**`password authentication failed for user "app_platform"` (or `app_tenant`), and the password in `.env` genuinely does contain a `$`** — this is the Compose interpolation bug explained in Step 4a's warning above, not a typo. Confirm it's this by looking for a line like `"ecret" variable is not set. Defaulting to a blank string.` in the output of `docker compose -f docker-compose.prod.yml config` (the word after `$` in your password is what shows up in quotes) — that confirms Compose silently truncated the value at the `$` before it ever reached the container.
+
+The fix is to stop using a password containing `$`, not to re-type the same one:
+
+```bash
+NEW_PW=$(openssl rand -base64 32)
+echo "New password: $NEW_PW"   # save it -- you'll paste it into .env next
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  psql -U postgres -v pw="$NEW_PW" -c "ALTER ROLE app_platform LOGIN PASSWORD :'pw';"
+```
+
+Then update **both** `APP_PLATFORM_PASSWORD` and `DATABASE__PLATFORM_PASSWORD` in `.env` to the same new value (they must always match each other — see Step 4d), and restart so the containers pick it up: `docker compose -f docker-compose.prod.yml up -d`. Repeat for `app_tenant`/`APP_TENANT_PASSWORD` if that one also contains a `$`.
+
+**`password authentication failed for user "app_tenant"` (or `app_platform`), but the password in `.env` is correct and contains no `$`** — the database was created by an older version of `docker/postgres-init/01-roles.sh`, which was a `.sql` file that hard-coded `dev_only_password` for both roles. `.sql` files get no environment expansion, so the roles were created with a password nothing connects with. The script now takes the real passwords.
 
 The init scripts run **only when the data directory is empty**, so fixing the script does nothing to a database that already exists. Either recreate it (destroys all data):
 
@@ -864,16 +939,21 @@ docker compose -f docker-compose.prod.yml up -d
 or, to keep the data, set the passwords on the existing roles:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec postgres   psql -U postgres -d iam_platform   -v tenant_pw="$(grep '^APP_TENANT_PASSWORD=' .env | cut -d= -f2-)"   -v platform_pw="$(grep '^APP_PLATFORM_PASSWORD=' .env | cut -d= -f2-)"   -c "ALTER ROLE app_tenant LOGIN PASSWORD :'tenant_pw';"   -c "ALTER ROLE app_platform LOGIN PASSWORD :'platform_pw';"
+docker compose -f docker-compose.prod.yml exec postgres\
+  psql -U postgres -d iam_platform\
+  -v tenant_pw="$(grep '^APP_TENANT_PASSWORD=' .env | cut -d= -f2-)"\
+  -v platform_pw="$(grep '^APP_PLATFORM_PASSWORD=' .env | cut -d= -f2-)"\
+  -c "ALTER ROLE app_tenant LOGIN PASSWORD :'tenant_pw';"\
+  -c "ALTER ROLE app_platform LOGIN PASSWORD :'platform_pw';"
 ```
 
 **`password authentication failed for user "postgres"` during the migration job** — on an older checkout, the connection URL was assembled without escaping the credentials, so a password containing `#`, `%`, `@`, `/` or `:` was silently mangled (`#` starts a URL fragment and truncated it). It is fixed; pull the latest code and rebuild the image. If you are on the current code and still see it, the database was initialised with a *different* superuser password than the one now in `.env` — the `POSTGRES_PASSWORD` only takes effect on first creation, so recreate the volume or `ALTER ROLE postgres` as above.
 
-**A button in the admin console does nothing / an action returns a 500** — if you're on an older checkout, several separate defects caused exactly this and are now fixed: menu items used the wrong Base UI prop and were inert, the console's BFF proxy crashed on every `204 No Content` reply (which is what most successful actions return), permission-denied tenant actions raised an unmapped exception, and creating a *second* tenant for the same owner violated a unique index. Pull the latest code, run `python -m alembic upgrade head`, and restart both the backend and `npm run dev`.
+**A button in the admin console does nothing / an action returns a 500** — if you're on an older checkout, several separate defects caused exactly this and are now fixed: menu items used the wrong Base UI prop and were inert, the console's BFF proxy crashed on every `204 No Content` reply (which is what most successful actions return), permission-denied tenant actions raised an unmapped exception, and creating a *second* tenant for the same owner violated a unique index. Pull the latest code and rebuild: `docker compose -f docker-compose.dev.yml up -d --build` (migrations run automatically as part of that), then restart `npm run dev`. Running natively instead? `python -m alembic upgrade head`, restart the API and the worker, then restart `npm run dev`.
 
-**The console is empty and the sidebar only shows "My identity"** — that's a database with no data plus an account with no permissions. Two common causes: you never ran `scripts/bootstrap_platform_admin.py` (Step 8), or you ran the backend test suite, whose teardown truncates every table — including your admin account and its role grants. Re-run the bootstrap script, then `scripts/seed_demo_data.py` if you want demo content back.
+**The console is empty and the sidebar only shows "My identity"** — that's a database with no data plus an account with no permissions. Two common causes: you never ran `scripts/bootstrap_platform_admin.py` (Part A Step 5 / Part B Step 7), or you ran the backend test suite against the wrong database, whose teardown truncates every table — including your admin account and its role grants (this shouldn't happen if you followed Part A Step 7's separate-test-database setup). Re-run the bootstrap script, then `scripts/seed_demo_data.py` if you want demo content back.
 
-**I created a tenant and its owner's sidebar only shows Dashboard, Assistants, Knowledge bases, and Conversations — no Members, no Roles & permissions, no Provider credentials** — the owner's membership has no role assigned, because `scripts/bootstrap_tenant_catalog.py` (Step 8) was never run and there was no "Tenant Owner" role for `CreateTenant` to grant. Run it now, then assign the role to the affected membership by hand (there's no "repair an existing tenant" button, since this shouldn't happen again — `CreateTenant` now refuses with a 503 instead of creating a tenant this way going forward):
+**I created a tenant and its owner's sidebar only shows Dashboard, Assistants, Knowledge bases, and Conversations — no Members, no Roles & permissions, no Provider credentials** — the owner's membership has no role assigned, because `scripts/bootstrap_tenant_catalog.py` (Part A Step 5 / Part B Step 7) was never run and there was no "Tenant Owner" role for `CreateTenant` to grant. Run it now, then assign the role to the affected membership by hand (there's no "repair an existing tenant" button, since this shouldn't happen again — `CreateTenant` now refuses with a 503 instead of creating a tenant this way going forward):
 
 ```sql
 INSERT INTO tenant_membership_roles (id, tenant_id, membership_id, role_id, granted_by_user_id)
@@ -884,7 +964,7 @@ SELECT gen_random_uuid(), '<tenant-id>', '<membership-id>',
 
 **I upgraded and the Users screen disappeared** — `platform.users.read`/`platform.users.manage` were added after the first release. Re-run `python scripts/bootstrap_platform_admin.py <your-email>`; it's idempotent and picks up permissions added since.
 
-**I registered an account and never got a verification email** — this isn't a misconfiguration on your end. The project's email sender (`ConsoleEmailSender`) only ever logs "email queued" to the console — no real provider (SES, SendGrid, etc.) is wired in yet, in development *or* production. For the platform administrator account, `scripts/bootstrap_platform_admin.py` (Part A Step 8 / Part B Step 7) activates the account directly and sidesteps this entirely. For any other account, someone holding database access has to flip that user's `status` to `'active'` by hand until a real email provider is added — see [docs/22-deployment-and-operations.md](docs/22-deployment-and-operations.md#known-gaps).
+**I registered an account and never got a verification email** — this isn't a misconfiguration on your end. The project's email sender (`ConsoleEmailSender`) only ever logs "email queued" to the console — no real provider (SES, SendGrid, etc.) is wired in yet, in development *or* production. For the platform administrator account, `scripts/bootstrap_platform_admin.py` (Part A Step 5 / Part B Step 7) activates the account directly and sidesteps this entirely. For any other account, someone holding database access has to flip that user's `status` to `'active'` by hand until a real email provider is added — see [docs/22-deployment-and-operations.md](docs/22-deployment-and-operations.md#known-gaps).
 
 **`docker compose` says "command not found"** — you have an old Docker install with the separate `docker-compose` (with a hyphen) tool. Either install the current Docker (Step 2 does this correctly) or substitute `docker-compose` for `docker compose` throughout — the commands are otherwise identical.
 

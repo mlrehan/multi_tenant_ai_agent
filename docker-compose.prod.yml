@@ -41,11 +41,11 @@ x-app-env: &app-env
   REDIS__URL: redis://redis:6379/0
   # Defaulted to `example.invalid` in code, which would be baked into the
   # `iss` claim of every token this deployment issues.
-  JWT__ISSUER: ${JWT_ISSUER:?set JWT_ISSUER, e.g. https://yourdomain.com}
-  JWT__AUDIENCE: ${JWT_AUDIENCE:-iam-platform-api}
-  JWT__PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:?}
-  JWT__PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:?}
-  ENCRYPTION__DATA_KEY: ${ENCRYPTION_DATA_KEY:?}
+  JWT__ISSUER: ${JWT__ISSUER:?set JWT__ISSUER, e.g. https://yourdomain.com}
+  JWT__AUDIENCE: ${JWT__AUDIENCE:-iam-platform-api}
+  JWT__PRIVATE_KEY_PEM: ${JWT__PRIVATE_KEY_PEM:?}
+  JWT__PUBLIC_KEY_PEM: ${JWT__PUBLIC_KEY_PEM:?}
+  ENCRYPTION__DATA_KEY: ${ENCRYPTION__DATA_KEY:?}
   # --- Knowledge base / RAG ---------------------------------------------
   # Uploaded bytes stay on this server, under the `uploads` named volume
   # below. The container root filesystem is read-only and must stay that way,
@@ -77,9 +77,9 @@ x-app-env: &app-env
   TAVILY__API_KEY: ${TAVILY__API_KEY:-}
   # Web Push, so an agent is alerted with the console closed. Blank disables
   # it; the inbox still works, the notification simply never arrives.
-  PUSH__VAPID_PUBLIC_KEY: ${PUSH_VAPID_PUBLIC_KEY:-}
-  PUSH__VAPID_PRIVATE_KEY: ${PUSH_VAPID_PRIVATE_KEY:-}
-  PUSH__VAPID_SUBJECT: ${PUSH_VAPID_SUBJECT:-mailto:ops@example.com}
+  PUSH__VAPID_PUBLIC_KEY: ${PUSH__VAPID_PUBLIC_KEY:-}
+  PUSH__VAPID_PRIVATE_KEY: ${PUSH__VAPID_PRIVATE_KEY:-}
+  PUSH__VAPID_SUBJECT: ${PUSH__VAPID_SUBJECT:-mailto:ops@example.com}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
 # Log rotation. Without this the json-file driver grows without limit until
@@ -193,9 +193,9 @@ services:
       DATABASE__PLATFORM_USER: app_platform
       DATABASE__PLATFORM_PASSWORD: ${APP_PLATFORM_PASSWORD:?set APP_PLATFORM_PASSWORD}
       REDIS__URL: redis://redis:6379/0
-      JWT__PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:?}
-      JWT__PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:?}
-      ENCRYPTION__DATA_KEY: ${ENCRYPTION_DATA_KEY:?}
+      JWT__PRIVATE_KEY_PEM: ${JWT__PRIVATE_KEY_PEM:?}
+      JWT__PUBLIC_KEY_PEM: ${JWT__PUBLIC_KEY_PEM:?}
+      ENCRYPTION__DATA_KEY: ${ENCRYPTION__DATA_KEY:?}
     depends_on:
       postgres:
         condition: service_healthy
@@ -225,7 +225,15 @@ services:
       # block it: the API would be reachable from the internet directly, over
       # plain HTTP, bypassing Nginx, TLS, and the security headers and rate
       # limits the proxy adds. Nginx reaches it on the loopback instead.
-      - "127.0.0.1:8000:8000"
+      #
+      # The HOST side is configurable via API_HOST_PORT -- only Nginx ever
+      # connects to it (over loopback), so nothing else on the internet-facing
+      # side depends on which number this is. Defaults to 8100, clear of the
+      # common 8000/8080/3000 range a host is more likely to already have
+      # something bound to. The CONTAINER side stays 8000 always -- that is
+      # what uvicorn binds to inside the process, set in the Dockerfile's
+      # `EXPOSE` and unrelated to what the host maps it to.
+      - "127.0.0.1:${API_HOST_PORT:-8100}:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
