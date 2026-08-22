@@ -244,6 +244,10 @@ services:
       - --concurrency=${WORKER_CONCURRENCY:-4}
     environment:
       <<: *app-env
+      # See docker-compose.prod.yml's worker service for why: crawl4ai writes
+      # a cache under $HOME/.crawl4ai on import, and this container's rootfs
+      # is read-only too -- redirect it to the tmpfs /tmp mount.
+      CRAWL4_AI_BASE_DIRECTORY: /tmp/crawl4ai
     volumes:
       - uploads:/var/lib/iam-platform/storage
     depends_on:

@@ -273,6 +273,13 @@ services:
       - --concurrency=${WORKER_CONCURRENCY:-4}
     environment:
       <<: *app-env
+      # crawl4ai writes a local SQLite cache under `$HOME/.crawl4ai` the first
+      # time it's imported (async_database.py), and `$HOME` here is
+      # `/home/app` -- on the read-only rootfs below. Redirected at the one
+      # writable path this container has (the tmpfs `/tmp` mount) rather than
+      # relaxing `read_only`, which would widen the attack surface for every
+      # other process in the container just to accommodate one library.
+      CRAWL4_AI_BASE_DIRECTORY: /tmp/crawl4ai
     volumes:
       # The same volume the API writes uploads to. Two separate volumes would
       # mean the worker parsing a file the API had not written -- an immediate

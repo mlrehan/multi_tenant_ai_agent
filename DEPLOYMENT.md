@@ -177,7 +177,7 @@ There's a second, unrelated gap in the way too: registration normally requires c
 First, register the account you want to make an admin:
 
 ```bash
-curl -X POST http://localhost:18000/v1/auth/register \
+curl -X POST https://localhost:18000/v1/auth/register \
   -H "content-type: application/json" \
   -d '{"email": "admin@lait.co.uk", "password": "Correct-Horse-9!"}'
 ```
@@ -678,9 +678,9 @@ Same underlying reason as in development (Part A, Step 5): the self-escalation g
 Register the account you want to make an admin:
 
 ```bash
-curl -X POST https://yourdomain.com/v1/auth/register \
+curl -X POST http://localhost:8100/v1/auth/register \
   -H "content-type: application/json" \
-  -d '{"email": "you@yourdomain.com", "password": "a-strong-unique-password"}'
+  -d '{"email": "admin@lait.co.uk", "password": "Correct-Horse-9!"}'
 ```
 
 (If you haven't put HTTPS in front of the API yet — that's the next step — substitute `http://localhost:8100` here.)
@@ -688,7 +688,7 @@ curl -X POST https://yourdomain.com/v1/auth/register \
 Then bootstrap it, running the script inside a one-off container that reuses the `migrate` service's existing database credentials:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm migrate python scripts/bootstrap_platform_admin.py you@yourdomain.com
+docker compose -f docker-compose.prod.yml run --rm migrate python scripts/bootstrap_platform_admin.py admin@lait.co.uk
 ```
 
 This activates the account and grants it a `platform_super_admin` role (`platform.tenants.create`, `platform.tenants.suspend`, `platform.support.impersonate`). It's idempotent — safe to re-run against an account that already holds the role, it'll just report that and do nothing else.
