@@ -56,6 +56,15 @@ class ChatbotSettingsResponse(BaseModel):
     effective_daily_message_limit: int | None
     share_visitor_location: bool
     conversation_retention_days: int
+    #: The tenant's own brief, raw ("" when never written) so the console can
+    #: distinguish "unset, showing the default above as a placeholder" from
+    #: "the tenant typed the default in". Written by the separate
+    #: `PUT /chatbot-settings/behaviour` route, which is why they are absent
+    #: from `UpdateChatbotSettingsRequest`.
+    role_instructions: str = ""
+    avoid_instructions: str = ""
+    personality: str = "neutral"
+    response_length: str = "balanced"
     updated_at: datetime
 
 
@@ -84,13 +93,10 @@ class TenantPlanResponse(BaseModel):
     max_chat_widgets: int | None
     max_messages_per_day: int | None
     max_tokens_per_month: int | None
-    allow_own_provider_credentials: bool
-    allow_create_assistant: bool
     allow_invite_members: bool
     allow_create_roles: bool
     knowledge_bases_used: int
     chat_widgets_used: int
-    assistants_used: int
     messages_used_today: int | None
     tokens_used_this_month: int | None
     effective_daily_message_limit: int | None
@@ -115,8 +121,8 @@ class SaveTeamRequest(BaseModel):
     member_ids: list[UUID] = Field(default_factory=list)
 
 
-class AssistantBehaviourRequest(BaseModel):
-    """The assistant's brief, as the Behaviour tab edits it."""
+class ChatbotBehaviourRequest(BaseModel):
+    """The chatbot's brief, as the Behaviour tab edits it. Tenant-wide."""
 
     role_instructions: str = ""
     avoid_instructions: str = ""
@@ -135,7 +141,6 @@ class WidgetPresentationRequest(BaseModel):
     avatar_key: str | None = Field(default=None, max_length=50)
     greeting: str | None = Field(default=None, max_length=300)
     show_quick_reply_suggestions: bool = True
-    assistant_id: UUID | None = None
 
 
 class CreateDirectTextSourceRequest(BaseModel):
@@ -202,8 +207,7 @@ class UnsubscribeFromPushRequest(BaseModel):
     endpoint: str = Field(min_length=1, max_length=2000)
 
 
-class AssistantBehaviourResponse(BaseModel):
-    assistant_id: UUID
+class ChatbotBehaviourResponse(BaseModel):
     role_instructions: str
     avoid_instructions: str
     personality: str
@@ -219,7 +223,6 @@ class WidgetPresentationResponse(BaseModel):
     """
 
     widget_id: UUID
-    assistant_id: UUID | None
     chatbot_name: str
     chatbot_title: str
     avatar_key: str

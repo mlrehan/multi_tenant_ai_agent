@@ -38,11 +38,12 @@ import { useTenants } from "@/features/platform/hooks";
 import { isApiError } from "@/lib/api-client";
 import type { TenantEntitlements } from "@/lib/types";
 
-/** The four capability flags, in the order the requirement lists them. Kept as
- *  data so the form and the table cannot drift apart. */
+/** The capability flags, kept as data so the form and the table cannot drift
+ *  apart. `allow_own_provider_credentials` and `allow_create_assistant` were
+ *  removed with the features they gated (migration f1c94a70b2d8) -- a toggle
+ *  that governs nothing is worse than an absent one, because an operator sets
+ *  it and believes they have changed something. */
 const CAPABILITIES = [
-  { key: "allow_own_provider_credentials", label: "Own provider credentials", hint: "Bring their own API key, billed to them" },
-  { key: "allow_create_assistant", label: "Create assistants", hint: "Build and configure AI assistants" },
   { key: "allow_invite_members", label: "Invite members", hint: "Add people to the tenant" },
   { key: "allow_create_roles", label: "Create roles", hint: "Define custom tenant roles" },
 ] as const;
@@ -239,8 +240,6 @@ function EditPlanDialog({
           max_chat_widgets: parseLimit(limits.max_chat_widgets),
           max_messages_per_day: parseLimit(limits.max_messages_per_day),
           max_tokens_per_month: parseLimit(limits.max_tokens_per_month),
-          allow_own_provider_credentials: flags.allow_own_provider_credentials,
-          allow_create_assistant: flags.allow_create_assistant,
           allow_invite_members: flags.allow_invite_members,
           allow_create_roles: flags.allow_create_roles,
         },

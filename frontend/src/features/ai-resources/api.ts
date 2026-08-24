@@ -1,7 +1,5 @@
 import { apiFetch } from "@/lib/api-client";
 import type {
-  Assistant,
-  AccessLevel,
   Conversation,
   CrawlMode,
   ChatWidget,
@@ -12,120 +10,18 @@ import type {
   KnowledgeBaseQueryHit,
   ConversationThread,
   ModelConfiguration,
-  ProviderCredential,
   Visibility,
 } from "@/lib/types";
 
-// ---- Assistants ----
-
-export function listAssistants(tenantId: string) {
-  return apiFetch<{ assistants: Assistant[] }>(`v1/tenants/${tenantId}/assistants`, { tenantId });
-}
-
-export function getAssistant(tenantId: string, assistantId: string) {
-  return apiFetch<Assistant>(`v1/tenants/${tenantId}/assistants/${assistantId}`, { tenantId });
-}
-
-export function createAssistant(
-  tenantId: string,
-  body: {
-    name: string;
-    description: string | null;
-    modelConfigurationId: string;
-    visibility: Visibility;
-    departmentId: string | null;
-    teamId: string | null;
-    systemPrompt: string | null;
-  },
-) {
-  return apiFetch<{ id: string }>(`v1/tenants/${tenantId}/assistants`, {
-    method: "POST",
-    tenantId,
-    body: {
-      name: body.name,
-      description: body.description,
-      model_configuration_id: body.modelConfigurationId,
-      visibility: body.visibility,
-      department_id: body.departmentId,
-      team_id: body.teamId,
-      system_prompt: body.systemPrompt,
-    },
-  });
-}
-
-export function updateAssistant(
-  tenantId: string,
-  assistantId: string,
-  body: {
-    name: string;
-    description: string | null;
-    modelConfigurationId: string;
-    systemPrompt: string | null;
-  },
-) {
-  return apiFetch<void>(`v1/tenants/${tenantId}/assistants/${assistantId}`, {
-    method: "PATCH",
-    tenantId,
-    body: {
-      name: body.name,
-      description: body.description,
-      model_configuration_id: body.modelConfigurationId,
-      system_prompt: body.systemPrompt,
-    },
-  });
-}
-
-export function archiveAssistant(tenantId: string, assistantId: string) {
-  return apiFetch<void>(`v1/tenants/${tenantId}/assistants/${assistantId}/archive`, {
-    method: "POST",
-    tenantId,
-  });
-}
+// Assistant CRUD was removed with the tenant-facing Assistants screen: the
+// platform owns assistant configuration now. `listModelConfigurations` stays
+// -- it is the tenant's read-only view of what the platform granted them.
 
 export function listModelConfigurations(tenantId: string) {
   return apiFetch<{ model_configurations: ModelConfiguration[] }>(
     `v1/tenants/${tenantId}/model-configurations`,
     { tenantId },
   );
-}
-
-export function publishAssistant(tenantId: string, assistantId: string) {
-  return apiFetch<void>(`v1/tenants/${tenantId}/assistants/${assistantId}/publish`, {
-    method: "POST",
-    tenantId,
-  });
-}
-
-export function changeAssistantVisibility(
-  tenantId: string,
-  assistantId: string,
-  body: { visibility: Visibility; departmentId: string | null; teamId: string | null },
-) {
-  return apiFetch<void>(`v1/tenants/${tenantId}/assistants/${assistantId}/visibility`, {
-    method: "PUT",
-    tenantId,
-    body: { visibility: body.visibility, department_id: body.departmentId, team_id: body.teamId },
-  });
-}
-
-export function grantAssistantAccess(
-  tenantId: string,
-  assistantId: string,
-  membershipId: string,
-  accessLevel: AccessLevel,
-) {
-  return apiFetch<{ id: string }>(`v1/tenants/${tenantId}/assistants/${assistantId}/members`, {
-    method: "POST",
-    tenantId,
-    body: { membership_id: membershipId, access_level: accessLevel },
-  });
-}
-
-export function revokeAssistantAccess(tenantId: string, assistantId: string, membershipId: string) {
-  return apiFetch<void>(`v1/tenants/${tenantId}/assistants/${assistantId}/members/${membershipId}`, {
-    method: "DELETE",
-    tenantId,
-  });
 }
 
 // ---- Knowledge bases ----
@@ -377,25 +273,6 @@ export function startConversation(tenantId: string, assistantId: string, title: 
   });
 }
 
-// ---- Provider credentials ----
-
-/** Bring-your-own-key: bill this tenant's own provider account for one model.
- *  Pass null to detach and return the model to the platform's key. */
-export function setModelCredential(
-  tenantId: string,
-  modelConfigurationId: string,
-  providerCredentialId: string | null,
-) {
-  return apiFetch<void>(
-    `v1/tenants/${tenantId}/model-configurations/${modelConfigurationId}/credential`,
-    {
-      method: "PUT",
-      body: { provider_credential_id: providerCredentialId },
-      tenantId,
-    },
-  );
-}
-
 export function getConversationMessages(
   tenantId: string,
   conversationId: string,
@@ -443,30 +320,5 @@ export function listTenantConversations(tenantId: string) {
   );
 }
 
-export function listProviderCredentials(tenantId: string) {
-  return apiFetch<{ credentials: ProviderCredential[] }>(`v1/tenants/${tenantId}/provider-credentials`, {
-    tenantId,
-  });
-}
-
-export function storeProviderCredential(tenantId: string, provider: string, secret: string) {
-  return apiFetch<ProviderCredential>(`v1/tenants/${tenantId}/provider-credentials`, {
-    method: "POST",
-    tenantId,
-    body: { provider, secret },
-  });
-}
-
-export function rotateProviderCredential(tenantId: string, credentialId: string, newSecret: string) {
-  return apiFetch<ProviderCredential>(
-    `v1/tenants/${tenantId}/provider-credentials/${credentialId}/rotate`,
-    { method: "POST", tenantId, body: { new_secret: newSecret } },
-  );
-}
-
-export function revokeProviderCredential(tenantId: string, credentialId: string) {
-  return apiFetch<void>(`v1/tenants/${tenantId}/provider-credentials/${credentialId}`, {
-    method: "DELETE",
-    tenantId,
-  });
-}
+// Provider-credential calls were removed with the tenant-facing BYOK surface.
+// The platform owns every credential now; the tenant has no route to call.

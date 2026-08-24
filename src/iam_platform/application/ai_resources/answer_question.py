@@ -413,6 +413,7 @@ class AnswerQuestion:
         chat_model: ChatModel,
         *,
         token_usage: TokenUsageStore | None = None,
+        tenant_quota: Any | None = None,
         clock: Clock | None = None,
         retrieve_candidates: int = DEFAULT_RETRIEVE_CANDIDATES,
         context_passages: int = DEFAULT_CONTEXT_PASSAGES,
@@ -426,6 +427,14 @@ class AnswerQuestion:
         # `token_budget_per_month` is a field on a model configuration, so an
         # answer that resolves no configuration has nothing to enforce.
         self._token_usage = token_usage
+        # The *tenant-level* monthly counter, distinct from `token_usage`
+        # above and needed alongside it. `token_usage` is keyed by (tenant,
+        # model configuration) and exists to enforce one model's budget; this
+        # one is keyed by tenant alone and is what the dashboards read. An
+        # answer that resolves no configuration -- the platform default, which
+        # is every widget answer -- reaches the second and not the first, so
+        # metering only the first left widget traffic uncounted everywhere.
+        self._tenant_quota = tenant_quota
         self._clock = clock or SystemClock()
         self._retrieve_candidates = retrieve_candidates
         self._context_passages = context_passages
@@ -802,11 +811,17 @@ class AnswerQuestion:
     ) -> AsyncIterator[str]:
         # Asking for a usage figure is what makes the adapter request one, so
         # an unmetered answer sends the request it always sent.
+        # Metered when a tenant is known and *some* store will use the figure.
+        # Previously this also required a `model_configuration_id`, which every
+        # platform-default answer lacks -- so the widget never even asked the
+        # provider for a usage count, and no counter anywhere could have moved.
         meter = (
             TokenUsage()
-            if self._token_usage is not None
-            and tenant_id is not None
-            and model_configuration_id is not None
+            if tenant_id is not None
+            and (
+                self._tenant_quota is not None
+                or (self._token_usage is not None and model_configuration_id is not None)
+            )
             else None
         )
         offered = {item.label for item in context}
@@ -837,13 +852,27 @@ class AnswerQuestion:
             # counted completed reads would be trivially avoidable by
             # disconnecting.
             if meter is not None and meter.total > 0:
-                assert self._token_usage is not None  # implied by `meter`
-                assert tenant_id is not None and model_configuration_id is not None
-                await self._token_usage.record(
-                    tenant_id=tenant_id,
-                    model_configuration_id=model_configuration_id,
-                    tokens=meter.total,
-                )
+                assert tenant_id is not None  # implied by `meter`
+                # Per-configuration, for budget enforcement. Only when the
+                # answer actually resolved one.
+                if self._token_usage is not None and model_configuration_id is not None:
+                    await self._token_usage.record(
+                        tenant_id=tenant_id,
+                        model_configuration_id=model_configuration_id,
+                        tokens=meter.total,
+                    )
+                # Per-tenant, for the dashboards. **Fails open**, like every
+                # other recording path: the money is already spent, and raising
+                # here would show an error for an answer that succeeded.
+                if self._tenant_quota is not None:
+                    try:
+                        await self._tenant_quota.record_tokens(
+                            tenant_id=tenant_id, usage=meter
+                        )
+                    except Exception:
+                        logger.warning(
+                            "tenant token usage could not be recorded for %s", tenant_id
+                        )
             # Same `finally`, same reason: an abandoned answer was still
             # generated, and a thread that silently drops it would show the
             # question with no reply and re-ask it with no memory of having

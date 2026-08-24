@@ -165,6 +165,21 @@ export function useEndImpersonation() {
   });
 }
 
+/** The operator dashboard.
+ *
+ *  Refetched on an interval because it is a live spend view someone leaves
+ *  open — a number that was true when the tab was opened this morning is worse
+ *  than no number, since it reads as current. 60s rather than seconds: the
+ *  request fans out across every tenant (see `platform_overview.py`), and
+ *  token budgets do not move fast enough to justify hammering it. */
+export function usePlatformOverview() {
+  return useQuery({
+    queryKey: ["platform-overview"],
+    queryFn: () => api.getPlatformOverview(),
+    refetchInterval: 60_000,
+  });
+}
+
 const modelConfigurationsKey = ["platform-model-configurations"];
 
 export function usePlatformModelConfigurations() {

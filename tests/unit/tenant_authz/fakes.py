@@ -406,8 +406,6 @@ class FakeTenantEntitlementRepository:
             max_chat_widgets=None,
             max_messages_per_day=None,
             max_tokens_per_month=None,
-            allow_own_provider_credentials=True,
-            allow_create_assistant=True,
             allow_invite_members=True,
             allow_create_roles=True,
             created_at=now,

@@ -216,8 +216,6 @@ class TenantEntitlementsRequest(BaseModel):
     max_chat_widgets: int | None = Field(ge=0)
     max_messages_per_day: int | None = Field(ge=0)
     max_tokens_per_month: int | None = Field(ge=0)
-    allow_own_provider_credentials: bool
-    allow_create_assistant: bool
     allow_invite_members: bool
     allow_create_roles: bool
 
@@ -228,8 +226,6 @@ class TenantEntitlementsResponse(BaseModel):
     max_chat_widgets: int | None
     max_messages_per_day: int | None
     max_tokens_per_month: int | None
-    allow_own_provider_credentials: bool
-    allow_create_assistant: bool
     allow_invite_members: bool
     allow_create_roles: bool
     updated_at: datetime
@@ -258,3 +254,61 @@ class ProviderCapabilityResponse(BaseModel):
 
 class ProviderCapabilityListResponse(BaseModel):
     providers: list[ProviderCapabilityResponse]
+
+
+# --- Platform overview dashboard ---------------------------------------------
+#
+# Every usage field below is `int | None`. `None` means the counter could not
+# be read, which is deliberately distinct from `0` -- rendering an unreadable
+# counter as zero would claim nothing has been spent, and the console is told
+# to show `?` instead. The `running_low` / `remaining_*` flags are computed
+# server-side so this screen and the tenant's own screen cannot disagree about
+# what "running low" means.
+
+
+class ProviderSpendResponse(BaseModel):
+    provider: str
+    model_count: int
+    #: Sum of the per-tenant budgets for this provider's models. `None` when at
+    #: least one configuration is unbudgeted, because a total that silently
+    #: excludes the biggest spender is worse than no total.
+    total_tokens: int | None
+    used_tokens: int | None
+    remaining_tokens: int | None
+    running_low: bool
+    has_unbudgeted: bool
+
+
+class TenantModelSpendResponse(BaseModel):
+    model_configuration_id: UUID
+    model_name: str
+    provider: str
+    token_budget_per_month: int | None
+    used_tokens: int | None
+
+
+class TenantSpendResponse(BaseModel):
+    tenant_id: UUID
+    slug: str
+    display_name: str
+    max_tokens_per_month: int | None
+    used_tokens: int | None
+    remaining_tokens: int | None
+    running_low: bool
+    max_messages_per_day: int | None
+    used_messages_today: int | None
+    remaining_messages_today: int | None
+    #: Per-model rows behind this tenant's total, for the drill-down modal.
+    models: list[TenantModelSpendResponse] = []
+
+
+class PlatformOverviewResponse(BaseModel):
+    providers: list[ProviderSpendResponse]
+    #: Tenants running low are returned first -- the ordering is the server's
+    #: decision, so every client puts what needs attention at the top.
+    tenants: list[TenantSpendResponse]
+    tenants_running_low: int
+    #: The threshold the flags above were computed with, so the console can
+    #: explain *why* something is highlighted rather than restating a number
+    #: that could drift from the server's.
+    low_remaining_fraction: float

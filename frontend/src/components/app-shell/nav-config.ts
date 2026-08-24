@@ -1,10 +1,10 @@
 import type { LucideIcon } from "lucide-react";
 import {
+  BarChart3,
   Bot,
   Building2,
   Cpu,
   Inbox,
-  Fingerprint,
   Gauge,
   KeyRound,
   KeySquare,
@@ -13,7 +13,6 @@ import {
   ShieldCheck,
   ShieldQuestion,
   SlidersHorizontal,
-  Sparkles,
   UserCircle,
   Users,
 } from "lucide-react";
@@ -22,6 +21,10 @@ export interface NavItem {
   label: string;
   href: string;
   icon: LucideIcon;
+  /** Opens in a new tab. Set for destinations outside this console: leaving
+   *  the app in the same tab would drop whatever the person was doing, and an
+   *  external tool is somewhere they return *from*, not navigate *to*. */
+  external?: boolean;
   /** Platform-scope permission required to show this item; omitted = always visible to a platform user. */
   requiresPlatformPermission?: string;
   /** Tenant-scope permission required; omitted = always visible to any active member. */
@@ -67,6 +70,21 @@ export const accountNavItems: NavItem[] = [
   { label: "My identity", href: "/account", icon: UserCircle },
 ];
 
+/** Tools that live outside this console.
+ *
+ *  Its own group rather than an entry in Account, because it is neither about
+ *  the signed-in person nor part of this application -- and because the group
+ *  label is what tells someone the link will take them elsewhere before they
+ *  click it. */
+export const dataAnalysisNavItems: NavItem[] = [
+  {
+    label: "Nursery analytics",
+    href: "https://nursery.falgoon.co.uk/",
+    icon: BarChart3,
+    external: true,
+  },
+];
+
 export function tenantNavItems(tenantId: string): NavItem[] {
   return [
     { label: "Dashboard", href: `/tenant/${tenantId}/dashboard`, icon: Gauge },
@@ -94,11 +112,6 @@ export function tenantNavItems(tenantId: string): NavItem[] {
       requiresTenantPermission: "tenant.conversations.view",
     },
     {
-      label: "Assistants",
-      href: `/tenant/${tenantId}/assistants`,
-      icon: Sparkles,
-    },
-    {
       label: "Knowledge bases",
       href: `/tenant/${tenantId}/knowledge-bases`,
       icon: LayoutGrid,
@@ -107,12 +120,6 @@ export function tenantNavItems(tenantId: string): NavItem[] {
       label: "Conversations",
       href: `/tenant/${tenantId}/conversations`,
       icon: MessagesSquare,
-    },
-    {
-      label: "Provider credentials",
-      href: `/tenant/${tenantId}/credentials`,
-      icon: Fingerprint,
-      requiresTenantPermission: "tenant.provider_credentials.manage",
     },
   ];
 }

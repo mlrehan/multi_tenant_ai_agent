@@ -39,6 +39,11 @@ from iam_platform.application.ai_resources.manage_model_configuration import (
     UpdateModelConfiguration,
     UpdateModelConfigurationCommand,
 )
+from iam_platform.application.ai_resources.platform_overview import (
+    LOW_REMAINING_FRACTION,
+    GetPlatformOverview,
+    PlatformOverviewQuery,
+)
 from iam_platform.application.identity.ports import AccessTokenClaims
 from iam_platform.application.platform_authz.effective_permissions import (
     ResolvePlatformEffectivePermissions,
@@ -519,6 +524,66 @@ async def _tenant_usage(
     return results
 
 
+@router.get("/overview", response_model=schemas.PlatformOverviewResponse)
+async def get_platform_overview(
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.PlatformOverviewResponse:
+    """Spend across every provider and tenant, for the operator dashboard.
+
+    Computed live -- see the note in `platform_overview.py` on why, and on what
+    the fix is when the tenant count makes that stop being reasonable.
+    """
+    use_case = GetPlatformOverview(
+        container.platform_uow_factory,
+        container.clock,
+        container.token_usage,
+        container.tenant_quota,
+    )
+    overview = await use_case.execute(PlatformOverviewQuery(actor_user_id=str(claims.user_id)))
+    return schemas.PlatformOverviewResponse(
+        providers=[
+            schemas.ProviderSpendResponse(
+                provider=p.provider,
+                model_count=p.model_count,
+                total_tokens=p.total_tokens,
+                used_tokens=p.used_tokens,
+                remaining_tokens=p.remaining_tokens,
+                running_low=p.running_low,
+                has_unbudgeted=p.has_unbudgeted,
+            )
+            for p in overview.providers
+        ],
+        tenants=[
+            schemas.TenantSpendResponse(
+                tenant_id=t.tenant_id,
+                slug=t.slug,
+                display_name=t.display_name,
+                max_tokens_per_month=t.max_tokens_per_month,
+                used_tokens=t.used_tokens,
+                remaining_tokens=t.remaining_tokens,
+                running_low=t.running_low,
+                max_messages_per_day=t.max_messages_per_day,
+                used_messages_today=t.used_messages_today,
+                remaining_messages_today=t.remaining_messages_today,
+                models=[
+                    schemas.TenantModelSpendResponse(
+                        model_configuration_id=m.model_configuration_id,
+                        model_name=m.model_name,
+                        provider=m.provider,
+                        token_budget_per_month=m.token_budget_per_month,
+                        used_tokens=m.used_tokens,
+                    )
+                    for m in t.models
+                ],
+            )
+            for t in overview.tenants
+        ],
+        tenants_running_low=overview.tenants_running_low,
+        low_remaining_fraction=LOW_REMAINING_FRACTION,
+    )
+
+
 @router.get(
     "/model-configurations",
     response_model=schemas.PlatformModelConfigurationListResponse,
@@ -725,8 +790,6 @@ async def set_tenant_entitlements(
             max_chat_widgets=body.max_chat_widgets,
             max_messages_per_day=body.max_messages_per_day,
             max_tokens_per_month=body.max_tokens_per_month,
-            allow_own_provider_credentials=body.allow_own_provider_credentials,
-            allow_create_assistant=body.allow_create_assistant,
             allow_invite_members=body.allow_invite_members,
             allow_create_roles=body.allow_create_roles,
         )
@@ -770,8 +833,6 @@ def _entitlements_response(
         max_chat_widgets=entitlements.max_chat_widgets,
         max_messages_per_day=entitlements.max_messages_per_day,
         max_tokens_per_month=entitlements.max_tokens_per_month,
-        allow_own_provider_credentials=entitlements.allow_own_provider_credentials,
-        allow_create_assistant=entitlements.allow_create_assistant,
         allow_invite_members=entitlements.allow_invite_members,
         allow_create_roles=entitlements.allow_create_roles,
         updated_at=entitlements.updated_at,

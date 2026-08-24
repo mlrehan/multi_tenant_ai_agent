@@ -1,5 +1,5 @@
 """``/v1/tenants/{tenant_id}/...`` -- assistants, knowledge bases, documents,
-conversations, and provider credentials.
+and conversations.
 
 Every handler resolves the caller's effective tenant permissions through the
 standard dependency chain and passes them into the use case, which applies
@@ -34,29 +34,9 @@ from iam_platform.application.ai_resources.exceptions import (
     UnsupportedDocumentTypeError,
 )
 from iam_platform.application.ai_resources.manage_assistant import (
-    ArchiveAssistant,
-    ArchiveAssistantCommand,
-    ChangeAssistantVisibility,
-    ChangeAssistantVisibilityCommand,
-    CreateAssistant,
-    CreateAssistantCommand,
-    GetAssistant,
-    GetAssistantQuery,
-    ListAssistants,
-    ListAssistantsQuery,
     ListModelConfigurations,
     ListModelConfigurationsQuery,
-    PublishAssistant,
-    PublishAssistantCommand,
     TenantModelOption,
-    UpdateAssistant,
-    UpdateAssistantCommand,
-)
-from iam_platform.application.ai_resources.manage_assistant_members import (
-    GrantAssistantAccess,
-    GrantAssistantAccessCommand,
-    RevokeAssistantAccess,
-    RevokeAssistantAccessCommand,
 )
 from iam_platform.application.ai_resources.manage_chat_widget import (
     CreateChatWidget,
@@ -111,19 +91,6 @@ from iam_platform.application.ai_resources.manage_knowledge_base import (
     UploadDocument,
     UploadDocumentCommand,
 )
-from iam_platform.application.ai_resources.manage_provider_credential import (
-    ListProviderCredentials,
-    ListProviderCredentialsQuery,
-    ProviderCredentialSummary,
-    RevokeProviderCredential,
-    RevokeProviderCredentialCommand,
-    RotateProviderCredential,
-    RotateProviderCredentialCommand,
-    SetModelCredential,
-    SetModelCredentialCommand,
-    StoreProviderCredential,
-    StoreProviderCredentialCommand,
-)
 from iam_platform.application.identity.ports import AccessTokenClaims
 from iam_platform.domain.ai_resources.entities import (
     AiAssistant,
@@ -172,7 +139,6 @@ def _model_configuration_response(
         model_name=option.configuration.model_name,
         token_budget_per_month=option.configuration.token_budget_per_month,
         tokens_used_this_month=used,
-        provider_credential_id=option.provider_credential_id,
     )
 
 
@@ -287,150 +253,7 @@ def _knowledge_base_response(kb: KnowledgeBase) -> schemas.KnowledgeBaseResponse
     )
 
 
-def _credential_response(
-    summary: ProviderCredentialSummary,
-) -> schemas.ProviderCredentialResponse:
-    return schemas.ProviderCredentialResponse(
-        id=summary.id,
-        provider=summary.provider,
-        key_hint=summary.key_hint,
-        created_at=summary.created_at,
-        rotated_at=summary.rotated_at,
-        revoked_at=summary.revoked_at,
-    )
-
-
 # --- Assistants --------------------------------------------------------------
-
-
-@router.post(
-    "/assistants",
-    status_code=status.HTTP_201_CREATED,
-    response_model=schemas.CreateAssistantResponse,
-)
-async def create_assistant(
-    tenant_id: str,
-    body: schemas.CreateAssistantRequest,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> schemas.CreateAssistantResponse:
-    use_case = CreateAssistant(container.ai_resource_uow_factory, container.clock)
-    assistant_id = await use_case.execute(
-        CreateAssistantCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            permissions=permissions,
-            name=body.name,
-            description=body.description,
-            model_configuration_id=str(body.model_configuration_id),
-            visibility=body.visibility,
-            department_id=str(body.department_id) if body.department_id else None,
-            team_id=str(body.team_id) if body.team_id else None,
-            system_prompt=body.system_prompt,
-        )
-    )
-    return schemas.CreateAssistantResponse(id=assistant_id)
-
-
-@router.get("/assistants", response_model=schemas.AssistantListResponse)
-async def list_assistants(
-    tenant_id: str,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> schemas.AssistantListResponse:
-    use_case = ListAssistants(container.ai_resource_uow_factory)
-    assistants = await use_case.execute(
-        ListAssistantsQuery(
-            actor_user_id=str(claims.user_id), tenant_id=tenant_id, permissions=permissions
-        )
-    )
-    return schemas.AssistantListResponse(
-        assistants=[_assistant_response(a) for a in assistants]
-    )
-
-
-@router.get("/assistants/{assistant_id}", response_model=schemas.AssistantResponse)
-async def get_assistant(
-    tenant_id: str,
-    assistant_id: str,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> schemas.AssistantResponse:
-    use_case = GetAssistant(container.ai_resource_uow_factory)
-    assistant = await use_case.execute(
-        GetAssistantQuery(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            assistant_id=assistant_id,
-            permissions=permissions,
-        )
-    )
-    return _assistant_response(assistant)
-
-
-@router.post("/assistants/{assistant_id}/publish", status_code=status.HTTP_204_NO_CONTENT)
-async def publish_assistant(
-    tenant_id: str,
-    assistant_id: str,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> None:
-    use_case = PublishAssistant(container.ai_resource_uow_factory, container.clock)
-    await use_case.execute(
-        PublishAssistantCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            assistant_id=assistant_id,
-            permissions=permissions,
-        )
-    )
-
-
-@router.patch("/assistants/{assistant_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def update_assistant(
-    tenant_id: str,
-    assistant_id: str,
-    body: schemas.UpdateAssistantRequest,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> None:
-    use_case = UpdateAssistant(container.ai_resource_uow_factory, container.clock)
-    await use_case.execute(
-        UpdateAssistantCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            assistant_id=assistant_id,
-            permissions=permissions,
-            name=body.name,
-            description=body.description,
-            system_prompt=body.system_prompt,
-            model_configuration_id=str(body.model_configuration_id),
-        )
-    )
-
-
-@router.post("/assistants/{assistant_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
-async def archive_assistant(
-    tenant_id: str,
-    assistant_id: str,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> None:
-    use_case = ArchiveAssistant(container.ai_resource_uow_factory, container.clock)
-    await use_case.execute(
-        ArchiveAssistantCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            assistant_id=assistant_id,
-            permissions=permissions,
-        )
-    )
 
 
 @router.get("/model-configurations", response_model=schemas.ModelConfigurationListResponse)
@@ -451,107 +274,6 @@ async def list_model_configurations(
             _model_configuration_response(c, await _tenant_spend(container, tenant_id, c))
             for c in configs
         ]
-    )
-
-
-@router.put(
-    "/model-configurations/{model_configuration_id}/credential",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-async def set_model_credential(
-    tenant_id: str,
-    model_configuration_id: str,
-    body: schemas.SetModelCredentialRequest,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> None:
-    """Bring-your-own-key: bill this tenant's own provider account for this model."""
-    use_case = SetModelCredential(container.ai_resource_uow_factory)
-    await use_case.execute(
-        SetModelCredentialCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            model_configuration_id=model_configuration_id,
-            permissions=permissions,
-            provider_credential_id=(
-                str(body.provider_credential_id) if body.provider_credential_id else None
-            ),
-        )
-    )
-
-
-@router.put("/assistants/{assistant_id}/visibility", status_code=status.HTTP_204_NO_CONTENT)
-async def change_assistant_visibility(
-    tenant_id: str,
-    assistant_id: str,
-    body: schemas.ChangeVisibilityRequest,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> None:
-    use_case = ChangeAssistantVisibility(container.ai_resource_uow_factory, container.clock)
-    await use_case.execute(
-        ChangeAssistantVisibilityCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            assistant_id=assistant_id,
-            permissions=permissions,
-            visibility=body.visibility,
-            department_id=str(body.department_id) if body.department_id else None,
-            team_id=str(body.team_id) if body.team_id else None,
-        )
-    )
-
-
-@router.post(
-    "/assistants/{assistant_id}/members",
-    status_code=status.HTTP_201_CREATED,
-    response_model=schemas.GrantAssistantAccessResponse,
-)
-async def grant_assistant_access(
-    tenant_id: str,
-    assistant_id: str,
-    body: schemas.GrantAssistantAccessRequest,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> schemas.GrantAssistantAccessResponse:
-    use_case = GrantAssistantAccess(container.ai_resource_uow_factory, container.clock)
-    member_id = await use_case.execute(
-        GrantAssistantAccessCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            assistant_id=assistant_id,
-            target_membership_id=str(body.membership_id),
-            access_level=body.access_level,
-            permissions=permissions,
-        )
-    )
-    return schemas.GrantAssistantAccessResponse(id=member_id)
-
-
-@router.delete(
-    "/assistants/{assistant_id}/members/{membership_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-async def revoke_assistant_access(
-    tenant_id: str,
-    assistant_id: str,
-    membership_id: str,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> None:
-    use_case = RevokeAssistantAccess(container.ai_resource_uow_factory)
-    await use_case.execute(
-        RevokeAssistantAccessCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            assistant_id=assistant_id,
-            target_membership_id=membership_id,
-            permissions=permissions,
-        )
     )
 
 
@@ -1043,6 +765,7 @@ async def answer_question(
         container.reranker,
         container.chat_model,
         token_usage=container.token_usage,
+        tenant_quota=container.tenant_quota,
     )
     result = await use_case.execute(
         AnswerQuestionQuery(
@@ -1303,99 +1026,17 @@ async def get_conversation(
 
 
 # --- Provider credentials ----------------------------------------------------
-
-
-@router.post(
-    "/provider-credentials",
-    status_code=status.HTTP_201_CREATED,
-    response_model=schemas.ProviderCredentialResponse,
-)
-async def store_provider_credential(
-    tenant_id: str,
-    body: schemas.StoreProviderCredentialRequest,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> schemas.ProviderCredentialResponse:
-    use_case = StoreProviderCredential(
-        container.ai_resource_uow_factory, container.credential_encryptor, container.clock
-    )
-    summary = await use_case.execute(
-        StoreProviderCredentialCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            permissions=permissions,
-            provider=body.provider,
-            secret=body.secret,
-        )
-    )
-    return _credential_response(summary)
-
-
-@router.get("/provider-credentials", response_model=schemas.ProviderCredentialListResponse)
-async def list_provider_credentials(
-    tenant_id: str,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> schemas.ProviderCredentialListResponse:
-    use_case = ListProviderCredentials(container.ai_resource_uow_factory)
-    summaries = await use_case.execute(
-        ListProviderCredentialsQuery(
-            actor_user_id=str(claims.user_id), tenant_id=tenant_id, permissions=permissions
-        )
-    )
-    return schemas.ProviderCredentialListResponse(
-        credentials=[_credential_response(s) for s in summaries]
-    )
-
-
-@router.post(
-    "/provider-credentials/{credential_id}/rotate",
-    response_model=schemas.ProviderCredentialResponse,
-)
-async def rotate_provider_credential(
-    tenant_id: str,
-    credential_id: str,
-    body: schemas.RotateProviderCredentialRequest,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> schemas.ProviderCredentialResponse:
-    use_case = RotateProviderCredential(
-        container.ai_resource_uow_factory, container.credential_encryptor, container.clock
-    )
-    summary = await use_case.execute(
-        RotateProviderCredentialCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            credential_id=credential_id,
-            permissions=permissions,
-            new_secret=body.new_secret,
-        )
-    )
-    return _credential_response(summary)
-
-
-@router.delete(
-    "/provider-credentials/{credential_id}", status_code=status.HTTP_204_NO_CONTENT
-)
-async def revoke_provider_credential(
-    tenant_id: str,
-    credential_id: str,
-    claims: AccessTokenClaims = Depends(get_current_claims),
-    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
-    container: AppContainer = Depends(get_container),
-) -> None:
-    use_case = RevokeProviderCredential(container.ai_resource_uow_factory, container.clock)
-    await use_case.execute(
-        RevokeProviderCredentialCommand(
-            actor_user_id=str(claims.user_id),
-            tenant_id=tenant_id,
-            credential_id=credential_id,
-            permissions=permissions,
-        )
-    )
+#
+# **Removed from the tenant surface.** Bring-your-own-key was withdrawn: the
+# platform now owns every provider credential, sets every token budget, and
+# grants model configurations out to tenants. `provider_credentials` still
+# exists and still holds platform-owned rows -- only the tenant-facing routes
+# are gone, so a tenant can no longer store, rotate, revoke, or attach one.
+#
+# The table and its tenant-owned rows are deliberately left in place rather
+# than dropped: an unreachable row costs nothing, and deleting encrypted
+# credentials a tenant may still be able to rotate at their provider is not
+# this change's business.
 
 
 @router.get(

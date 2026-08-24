@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 from iam_platform.application.ai_resources.authorize import load_visible_assistant
-from iam_platform.application.ai_resources.entitlements import guard_capability
 from iam_platform.application.ai_resources.exceptions import (
     AssistantNotFoundError,
     ModelConfigurationNotFoundError,
@@ -65,15 +64,10 @@ class CreateAssistant:
             if CREATE_ASSISTANT_PERMISSION not in command.permissions:
                 raise PermissionDeniedError(CREATE_ASSISTANT_PERMISSION)
 
-            # A capability, not a count: the platform either lets this tenant
-            # build assistants or it does not. Existing assistants keep
-            # working if it is later withdrawn -- nothing on a read path asks.
-            await guard_capability(
-                uow,
-                tenant_id=tenant_id,
-                clock=self._clock,
-                capability="allow_create_assistant",
-            )
+            # No capability gate: `allow_create_assistant` was dropped with
+            # the tenant-facing assistant routes (migration f1c94a70b2d8).
+            # This use case is reachable only from platform-side code now, and
+            # the permission check above is the gate.
 
             requester = await build_requester_context(
                 uow, tenant_id=tenant_id, user_id=actor_id, permissions=command.permissions

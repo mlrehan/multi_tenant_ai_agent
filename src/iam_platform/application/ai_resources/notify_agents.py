@@ -165,7 +165,13 @@ def _build_message(command: NotifyAgentsCommand) -> PushMessage:
         # Team name only. The visitor's own words stay on the server -- see the
         # module docstring.
         body=f"Someone has asked to speak with {team}.",
-        url="/",
+        # **The inbox for this tenant, not the console root.** A notification
+        # that says someone is waiting and then lands the agent on a dashboard
+        # makes them navigate to the queue themselves -- at exactly the moment
+        # the point was to save them the seconds. A relative path, resolved by
+        # the service worker against the console's own origin, so a payload can
+        # never send an authenticated tab to another site.
+        url=f"/tenant/{command.tenant_id}/inbox",
         tag=f"{_TAG_PREFIX}:{command.team_id or 'unassigned'}",
     )
 

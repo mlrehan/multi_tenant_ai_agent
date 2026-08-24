@@ -73,12 +73,22 @@ export function setHandoffSoundEnabled(on: boolean): void {
 }
 
 /**
- * A short two-tone chime via WebAudio.
+ * The handoff alert tone via WebAudio.
  *
- * No audio file: shipping one for a two-note alert is a network request and an
- * asset to host. Browsers block audio until the page has been interacted with,
- * so this is wrapped — a blocked chime must never surface as an error, the
- * toast and the system notification already carry the message.
+ * No audio file: shipping one for an alert is a network request and an asset
+ * to host, and a generated tone cannot 404 or arrive late.
+ *
+ * **Deliberately insistent, not a polite ping.** This is the sound that tells
+ * a nursery someone is waiting to speak to a human, and the previous
+ * two-note chime at 0.12 gain was routinely missed in a room with any
+ * background noise. It now repeats three times over ~1.4s at a much higher
+ * gain, alternating two tones -- a pattern the ear reads as an alarm rather
+ * than as a notification, which is the point.
+ *
+ * Browsers block audio until the page has been interacted with, so the whole
+ * thing is wrapped: a blocked tone must never surface as an error, because the
+ * system notification, the toast, the tab title and the vibration all still
+ * fired.
  */
 export function chimeForHandoff(): void {
   try {
@@ -87,20 +97,31 @@ export function chimeForHandoff(): void {
       (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctx) return;
     const ctx = new Ctx();
-    [880, 1174].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.frequency.value = freq;
-      osc.type = "sine";
-      gain.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.12);
-      gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + i * 0.12 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.12 + 0.18);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(ctx.currentTime + i * 0.12);
-      osc.stop(ctx.currentTime + i * 0.12 + 0.2);
-    });
-    setTimeout(() => void ctx.close(), 800);
+
+    // Three rising two-note pairs. `repeat` and the per-note offsets are what
+    // make it read as urgent; a single pair is what it used to be.
+    const REPEATS = 3;
+    const PAIR_SECONDS = 0.46;
+    for (let repeat = 0; repeat < REPEATS; repeat += 1) {
+      [880, 1174].forEach((freq, i) => {
+        const at = ctx.currentTime + repeat * PAIR_SECONDS + i * 0.16;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = freq;
+        // A square wave carries further through room noise than a sine at the
+        // same gain, which is the whole reason for the change.
+        osc.type = "square";
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.exponentialRampToValueAtTime(0.45, at + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.22);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(at);
+        osc.stop(at + 0.24);
+      });
+    }
+    // Closed after the last note has finished, or the tail is cut off.
+    setTimeout(() => void ctx.close(), REPEATS * PAIR_SECONDS * 1000 + 600);
   } catch {
-    /* Autoplay policy or no WebAudio — the other channels still fired. */
+    /* Autoplay policy or no WebAudio -- the other channels still fired. */
   }
 }

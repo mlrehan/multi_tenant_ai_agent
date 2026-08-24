@@ -201,12 +201,9 @@ class TenantEntitlementModel(TimestampMixin, Base):
     max_chat_widgets: Mapped[int | None]
     max_messages_per_day: Mapped[int | None]
     max_tokens_per_month: Mapped[int | None] = mapped_column(BigInteger)
-    allow_own_provider_credentials: Mapped[bool] = mapped_column(
-        nullable=False, server_default=text("false")
-    )
-    allow_create_assistant: Mapped[bool] = mapped_column(
-        nullable=False, server_default=text("false")
-    )
+    # `allow_own_provider_credentials` and `allow_create_assistant` were
+    # dropped by migration f1c94a70b2d8 -- the capabilities they gated no
+    # longer exist on the tenant surface.
     allow_invite_members: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
@@ -371,4 +368,20 @@ class TenantChatbotSettingsModel(TimestampMixin, Base):
     )
     conversation_retention_days: Mapped[int] = mapped_column(
         nullable=False, server_default=text("30")
+    )
+    #: The chatbot's brief. Moved here from `ai_assistants` when assistant
+    #: management was withdrawn from tenants -- one company, one brief.
+    #:
+    #: NULL on the two text columns means "the platform's default, named for
+    #: this company", which is not the same as '' (a tenant clearing it).
+    role_instructions: Mapped[str | None] = mapped_column(Text)
+    avoid_instructions: Mapped[str | None] = mapped_column(Text)
+    #: Enum-backed. The stored label never reaches the model -- it selects one
+    #: of four fixed instruction strings -- so this column is not a prompt
+    #: injection surface even if a row is written by hand.
+    personality: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'neutral'")
+    )
+    response_length: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'balanced'")
     )

@@ -1,6 +1,7 @@
 "use client";
 
 import { use as usePromise, useState } from "react";
+import Link from "next/link";
 import {
   Bot,
   Building,
@@ -37,12 +38,12 @@ import {
   useChatbotSettings,
   useTeams,
   useTenantPlan,
-  useUpdateAssistantBehaviour,
+  useUpdateChatbotBehaviour,
   useUpdateChatbotSettings,
   useUpdateWidgetPresentation,
   useWidgetPresentation,
 } from "@/features/chatbot/hooks";
-import { useAssistants, useChatWidgets } from "@/features/ai-resources/hooks";
+import { useChatWidgets } from "@/features/ai-resources/hooks";
 import { useHasTenantPermission } from "@/features/rbac/hooks";
 import { isApiError } from "@/lib/api-client";
 import { AVATAR_KEYS, type AvatarKey, type Personality, type ResponseLength } from "@/lib/types";
@@ -74,7 +75,6 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
   const settings = useChatbotSettings(tenantId);
   const plan = useTenantPlan(tenantId);
   const teams = useTeams(tenantId, true);
-  const assistants = useAssistants(tenantId);
   const widgets = useChatWidgets(tenantId);
 
   // Identity is stored per widget, so the tab has to say *which* one. It
@@ -88,7 +88,7 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
 
   const saveSettings = useUpdateChatbotSettings(tenantId);
   const savePresentation = useUpdateWidgetPresentation(tenantId);
-  const saveBehaviour = useUpdateAssistantBehaviour(tenantId);
+  const saveBehaviour = useUpdateChatbotBehaviour(tenantId);
 
   // --- form state, hydrated once each query lands ---------------------------
   const [enabled, setEnabled] = useState(true);
@@ -106,9 +106,7 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
   const [avatarKey, setAvatarKey] = useState<AvatarKey>("nursery-default");
   const [greeting, setGreeting] = useState("");
   const [quickReplies, setQuickReplies] = useState(true);
-  const [boundAssistant, setBoundAssistant] = useState<string>("none");
 
-  const [assistantId, setAssistantId] = useState<string>("");
   const [role, setRole] = useState("");
   const [avoid, setAvoid] = useState("");
   const [personality, setPersonality] = useState<Personality>("neutral");
@@ -133,6 +131,14 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
     setAiForUnassigned(s.allow_ai_for_unassigned_conversations);
     setDailyLimit(s.daily_message_limit?.toString() ?? "");
     setShareLocation(s.share_visitor_location);
+    // The brief arrives with the settings row now, not from an assistant.
+    // Empty means "never written": show the shipped default so Save stores
+    // something coherent rather than an empty string that silently means
+    // "use the default".
+    setRole(s.role_instructions || s.default_role);
+    setAvoid(s.avoid_instructions || s.default_avoid);
+    setPersonality(s.personality);
+    setResponseLength(s.response_length);
   }
 
   const [presentationStamp, setPresentationStamp] = useState<string | null>(null);
@@ -144,31 +150,6 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
     setAvatarKey(p.avatar_key);
     setGreeting(p.greeting ?? "");
     setQuickReplies(p.show_quick_reply_suggestions);
-    setBoundAssistant(p.assistant_id ?? "none");
-  }
-
-  // The Behaviour tab edits one assistant at a time. Defaulting to the first
-  // keeps the tab from being an empty form waiting for a selection nobody made.
-  const assistantList = assistants.data?.assistants ?? [];
-  const selectedAssistantId = assistantId || assistantList[0]?.id || "";
-  const [behaviourStamp, setBehaviourStamp] = useState<string | null>(null);
-  const selectedAssistant = assistantList.find((a) => a.id === selectedAssistantId);
-  // Keyed on the settings too, not the assistant alone. The defaults arrive
-  // with the settings query, which may resolve *after* the assistants one --
-  // hydrating on the assistant alone left an assistant with no brief showing
-  // an empty box for ever, because the stamp had already been claimed.
-  const behaviourKey = selectedAssistant
-    ? `${selectedAssistant.id}:${settings.data?.updated_at ?? ""}`
-    : null;
-  if (selectedAssistant && behaviourKey && behaviourStamp !== behaviourKey) {
-    setBehaviourStamp(behaviourKey);
-    // An assistant that has never been given a brief is shown the shipped one
-    // rather than a blank field, so Save stores something coherent instead of
-    // an empty string that silently means "use the default".
-    setRole(selectedAssistant.role_instructions ?? settings.data?.default_role ?? "");
-    setAvoid(selectedAssistant.avoid_instructions ?? settings.data?.default_avoid ?? "");
-    setPersonality(selectedAssistant.personality ?? "neutral");
-    setResponseLength(selectedAssistant.response_length ?? "balanced");
   }
 
   const ceiling = plan.data?.max_messages_per_day ?? null;
@@ -231,7 +212,6 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
         avatarKey,
         greeting: greeting.trim() || null,
         showQuickReplySuggestions: quickReplies,
-        assistantId: boundAssistant === "none" ? null : boundAssistant,
       });
       toast.success("Identity saved.");
     } catch (err) {
@@ -240,10 +220,8 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
   }
 
   async function handleSaveBehaviour() {
-    if (!selectedAssistantId) return;
     try {
       await saveBehaviour.mutateAsync({
-        assistantId: selectedAssistantId,
         roleInstructions: role,
         avoidInstructions: avoid,
         personality,
@@ -261,7 +239,7 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
     <div>
       <PageHeader
         title="AI Chatbot"
-        description="One place to configure who your assistant is, how it behaves, and when it should fetch a colleague."
+        description="One place to configure who your chatbot is, how it behaves, and when it should fetch a colleague."
       />
 
       {knownReadOnly && (
@@ -270,8 +248,8 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
           <AlertTitle>Read only</AlertTitle>
           <AlertDescription>
             You can see this configuration but not change it. Editing needs the
-            &ldquo;{MANAGE}&rdquo; permission — the same authority as changing what the
-            assistant knows.
+            &ldquo;{MANAGE}&rdquo; permission — the same authority as changing what your
+            chatbot knows.
           </AlertDescription>
         </Alert>
       )}
@@ -282,7 +260,7 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
             <CardContent className="flex items-center justify-between gap-4 py-4">
               <div>
                 <div className="flex items-center gap-2 font-medium">
-                  <Sparkles className="size-4 text-primary" /> AI assistant
+                  <Sparkles className="size-4 text-primary" /> AI Chatbot
                   <Badge variant={enabled ? "default" : "outline"}>
                     {enabled ? "On" : "Off"}
                   </Badge>
@@ -329,17 +307,28 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                 <CardHeader>
                   <CardTitle className="text-base">Identity</CardTitle>
                   <CardDescription>
-                    How the assistant introduces itself on your website. Per widget, so a
+                    How your chatbot introduces itself on your website. Set per embed, so a
                     parent portal and a public site can differ.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {presentation.isLoading && <Skeleton className="h-24 w-full" />}
+                  {!selectedWidgetId && widgets.isLoading && (
+                    <Skeleton className="h-24 w-full" />
+                  )}
                   {!selectedWidgetId && !widgets.isLoading && (
-                    <p className="text-sm text-muted-foreground">
-                      No chat widget yet. Create one on the Knowledge bases screen, then its
-                      identity can be set here.
-                    </p>
+                    <div className="space-y-3">
+                      <p className="text-sm text-muted-foreground">
+                        You haven&rsquo;t created your chatbot yet. Go to{" "}
+                        <strong>Knowledge bases</strong>, choose the knowledge base it
+                        should answer from, and select <strong>Embed</strong> — that
+                        creates it and gives you the code for your website. Come back
+                        here afterwards to set its name, avatar and greeting.
+                      </p>
+                      <Button render={<Link href={`/tenant/${tenantId}/knowledge-bases`} />}>
+                        Go to Knowledge bases
+                      </Button>
+                    </div>
                   )}
                   {selectedWidgetId && (
                     <>
@@ -406,7 +395,7 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                       <div>
                         <Label>Avatar</Label>
                         <p className="mb-2 text-xs text-muted-foreground">
-                          Shipped with the platform. Not a URL — that would let the widget
+                          Shipped with the platform. Not a URL — that would let your chatbot
                           load an image from a third-party origin on your visitors&rsquo;
                           browsers.
                         </p>
@@ -442,31 +431,6 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                         />
                       </div>
 
-                      <div>
-                        <Label htmlFor="bound-assistant">Answering assistant</Label>
-                        <p className="mb-1.5 text-xs text-muted-foreground">
-                          Which assistant&rsquo;s model and persona this widget uses. Leave
-                          unset to use the platform default, exactly as before.
-                        </p>
-                        <Select
-                          value={boundAssistant}
-                          onValueChange={(v) => setBoundAssistant(v ?? "none")}
-                          disabled={!canManage}
-                        >
-                          <SelectTrigger id="bound-assistant">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="none">Platform default</SelectItem>
-                            {(assistants.data?.assistants ?? []).map((a) => (
-                              <SelectItem key={a.id} value={a.id}>
-                                {a.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
                       <Button
                         onClick={handleSavePresentation}
                         disabled={!canManage || savePresentation.isPending}
@@ -485,60 +449,36 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                 <CardHeader>
                   <CardTitle className="text-base">Role &amp; boundaries</CardTitle>
                   <CardDescription>
-                    What the assistant is for, and what it must not do. Both are added to the
+                    What your chatbot is for, and what it must not do. Both are added to the
                     platform&rsquo;s own rules — they never replace them, so grounding and
                     citation stay enforced.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {(assistants.data?.assistants.length ?? 0) === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      No assistants yet. Create one on the Assistants screen first.
-                    </p>
-                  ) : (
-                    <>
-                      <div>
-                        <Label htmlFor="which-assistant">Assistant</Label>
-                        <Select value={selectedAssistantId} onValueChange={(v) => setAssistantId(v ?? "")}>
-                          <SelectTrigger id="which-assistant" className="mt-1.5">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {(assistants.data?.assistants ?? []).map((a) => (
-                              <SelectItem key={a.id} value={a.id}>
-                                {a.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <CharField
-                        id="role"
-                        label="Role"
-                        hint="What this assistant helps with."
-                        value={role}
-                        rows={6}
-                        disabled={!canManage}
-                        onChange={setRole}
-                      />
-                      <CharField
-                        id="avoid"
-                        label="Avoid"
-                        hint="Topics and actions to refuse or escalate. These only ever add restrictions."
-                        value={avoid}
-                        rows={6}
-                        disabled={!canManage}
-                        onChange={setAvoid}
-                      />
-                      <Button
-                        onClick={handleSaveBehaviour}
-                        disabled={!canManage || saveBehaviour.isPending}
-                      >
-                        {saveBehaviour.isPending ? "Saving…" : "Save behaviour"}
-                      </Button>
-                    </>
-                  )}
+                  <CharField
+                    id="role"
+                    label="Role"
+                    hint="What your chatbot helps with."
+                    value={role}
+                    rows={6}
+                    disabled={!canManage}
+                    onChange={setRole}
+                  />
+                  <CharField
+                    id="avoid"
+                    label="Avoid"
+                    hint="Topics and actions to refuse or escalate. These only ever add restrictions."
+                    value={avoid}
+                    rows={6}
+                    disabled={!canManage}
+                    onChange={setAvoid}
+                  />
+                  <Button
+                    onClick={handleSaveBehaviour}
+                    disabled={!canManage || saveBehaviour.isPending}
+                  >
+                    {saveBehaviour.isPending ? "Saving…" : "Save behaviour"}
+                  </Button>
                 </CardContent>
               </Card>
             </TabsContent>
@@ -550,67 +490,32 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                   <CardTitle className="text-base">Tone &amp; style</CardTitle>
                   <CardDescription>
                     Fixed options rather than free text: each maps to a vetted instruction, so
-                    a tone setting can never become a way to rewrite the assistant&rsquo;s
+                    a tone setting can never become a way to rewrite your chatbot&rsquo;s
                     rules.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
-                  {/* Tone lives on an *assistant* row (`ai_assistants.personality` /
-                      `.response_length`), not on the tenant — so with no assistant
-                      there is nothing to save to. This tab used to render the
-                      choices anyway and disable Save on `!selectedAssistantId`,
-                      which left an admin changing settings that highlighted
-                      correctly against a button that could never enable and never
-                      said why. Same guard and same picker as Behaviour, because
-                      both tabs write the same row through the same mutation. */}
-                  {assistantList.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      No assistants yet. Tone &amp; style is set per assistant, so create
-                      one on the Assistants screen first.
-                    </p>
-                  ) : (
-                    <>
-                      <div>
-                        <Label htmlFor="tone-assistant">Assistant</Label>
-                        <Select
-                          value={selectedAssistantId}
-                          onValueChange={(v) => setAssistantId(v ?? "")}
-                        >
-                          <SelectTrigger id="tone-assistant" className="mt-1.5">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {assistantList.map((a) => (
-                              <SelectItem key={a.id} value={a.id}>
-                                {a.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <ChoiceGroup
-                        label="Personality"
-                        options={PERSONALITIES}
-                        value={personality}
-                        disabled={!canManage}
-                        onChange={(v) => setPersonality(v as Personality)}
-                      />
-                      <Separator />
-                      <ChoiceGroup
-                        label="Response length"
-                        options={LENGTHS}
-                        value={responseLength}
-                        disabled={!canManage}
-                        onChange={(v) => setResponseLength(v as ResponseLength)}
-                      />
-                      <Button
-                        onClick={handleSaveBehaviour}
-                        disabled={!canManage || saveBehaviour.isPending || !selectedAssistantId}
-                      >
-                        {saveBehaviour.isPending ? "Saving…" : "Save tone & style"}
-                      </Button>
-                    </>
-                  )}
+                  <ChoiceGroup
+                    label="Personality"
+                    options={PERSONALITIES}
+                    value={personality}
+                    disabled={!canManage}
+                    onChange={(v) => setPersonality(v as Personality)}
+                  />
+                  <Separator />
+                  <ChoiceGroup
+                    label="Response length"
+                    options={LENGTHS}
+                    value={responseLength}
+                    disabled={!canManage}
+                    onChange={(v) => setResponseLength(v as ResponseLength)}
+                  />
+                  <Button
+                    onClick={handleSaveBehaviour}
+                    disabled={!canManage || saveBehaviour.isPending}
+                  >
+                    {saveBehaviour.isPending ? "Saving…" : "Save tone & style"}
+                  </Button>
                 </CardContent>
               </Card>
             </TabsContent>
@@ -621,7 +526,7 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                 <CardHeader>
                   <CardTitle className="text-base">Company context</CardTitle>
                   <CardDescription>
-                    Background the assistant can draw on. This is what the bot calls your
+                    Background your chatbot can draw on. This is what it calls your
                     organisation — <strong>it does not rename your account</strong>.
                   </CardDescription>
                 </CardHeader>
@@ -685,7 +590,7 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                   />
                   <ToggleRow
                     label="Use visitor location"
-                    hint="Let the assistant use approximate country/city when it's relevant. Precise browser location is never collected silently."
+                    hint="Let your chatbot use approximate country/city when it's relevant. Precise browser location is never collected silently."
                     checked={shareLocation}
                     disabled={!canManage}
                     onChange={setShareLocation}
@@ -715,13 +620,13 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                 <CardHeader>
                   <CardTitle className="text-base">Human handoff</CardTitle>
                   <CardDescription>
-                    When the assistant should fetch a colleague, and what happens then.
+                    When your chatbot should fetch a colleague, and what happens then.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <ToggleRow
                     label="Allow transfer to a colleague"
-                    hint="The assistant offers a transfer when asked, or when a question needs staff judgement."
+                    hint="Your chatbot offers a transfer when asked, or when a question needs staff judgement."
                     checked={allowHandoff}
                     disabled={!canManage}
                     onChange={setAllowHandoff}
@@ -735,7 +640,7 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                   />
                   <ToggleRow
                     label="AI answers unassigned conversations"
-                    hint="Let the assistant respond first while nobody has claimed the conversation. After a human takes over, it stays quiet until deliberately handed back."
+                    hint="Let your chatbot respond first while nobody has claimed the conversation. After a human takes over, it stays quiet until deliberately handed back."
                     checked={aiForUnassigned}
                     disabled={!canManage}
                     onChange={setAiForUnassigned}

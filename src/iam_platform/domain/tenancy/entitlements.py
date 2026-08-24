@@ -8,12 +8,12 @@ in the ai_resources module), which can only ever reduce spending.
 
 Two rules shape the whole design and are worth stating before the fields:
 
-**A limit governs creation, never existence.** Withdrawing
-`allow_create_assistant` from a tenant that already has three assistants must
-not break those three -- they were created under an entitlement that was valid
-at the time, and a platform that silently disables working resources when an
-operator edits a number is a platform nobody can safely administer.
-`may_create_*` is therefore asked at the point of creation and nowhere else.
+**A limit governs creation, never existence.** Lowering `max_knowledge_bases`
+for a tenant that already has three must not break those three -- they were
+created under an entitlement that was valid at the time, and a platform that
+silently disables working resources when an operator edits a number is a
+platform nobody can safely administer. `may_create_*` is therefore asked at
+the point of creation and nowhere else.
 
 **`None` means unbounded, and it is not the same as `0`.** Zero is a real,
 enforceable limit meaning "none at all"; `None` says the platform has chosen
@@ -60,8 +60,11 @@ class TenantEntitlements(Entity):
     #: granted is one the tenant does not have. Defaulting these to true would
     #: mean every tenant created before an operator visits this screen can do
     #: everything, which is the opposite of what an entitlement is for.
-    allow_own_provider_credentials: bool = False
-    allow_create_assistant: bool = False
+    # `allow_own_provider_credentials` and `allow_create_assistant` were
+    # dropped (migration f1c94a70b2d8): bring-your-own-key and assistant
+    # management are no longer tenant capabilities, so a flag governing them
+    # governed nothing. A toggle an operator can set that changes no behaviour
+    # is worse than an absent one.
     allow_invite_members: bool = False
     allow_create_roles: bool = False
 

@@ -167,10 +167,15 @@ class PromptLayers:
             # Named for this nursery. `DEFAULT_ROLE` carries the shipped name,
             # which would introduce the assistant as the wrong company to every
             # tenant that has not written their own brief.
-            role=role or default_role(company_name),
-            avoid=avoid or DEFAULT_AVOID,
-            personality=personality or Personality.NEUTRAL,
-            response_length=response_length or ResponseLength.BALANCED,
+            #
+            # The explicit argument still wins where a caller passes one, but
+            # the brief's home is now `TenantChatbotSettings` -- it moved off
+            # `ai_assistants` when assistant management left the tenant surface.
+            role=role or (settings.resolved_role(company_name) if settings else default_role(company_name)),
+            avoid=avoid or (settings.resolved_avoid() if settings else DEFAULT_AVOID),
+            personality=personality or (settings.personality if settings else Personality.NEUTRAL),
+            response_length=response_length
+            or (settings.response_length if settings else ResponseLength.BALANCED),
             # Both halves required. A tenant that permits handoff but has
             # configured no teams cannot actually transfer anyone, and telling
             # the model otherwise produces an offer that dead-ends.

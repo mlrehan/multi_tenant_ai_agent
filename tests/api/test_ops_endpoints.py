@@ -94,8 +94,8 @@ class TestMetrics:
     ) -> None:
         """Label cardinality guard: labelling by raw path would mint a series
         per tenant UUID and eventually take down the metrics backend."""
-        await client.get("/v1/tenants/11111111-1111-1111-1111-111111111111/assistants")
-        await client.get("/v1/tenants/22222222-2222-2222-2222-222222222222/assistants")
+        await client.get("/v1/tenants/11111111-1111-1111-1111-111111111111/knowledge-bases")
+        await client.get("/v1/tenants/22222222-2222-2222-2222-222222222222/knowledge-bases")
 
         resp = await client.get("/metrics")
         assert "11111111-1111-1111-1111-111111111111" not in resp.text

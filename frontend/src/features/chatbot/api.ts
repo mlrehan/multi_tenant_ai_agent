@@ -1,6 +1,6 @@
 import { apiFetch } from "@/lib/api-client";
 import type {
-  AssistantBehaviour,
+  ChatbotBehaviour,
   ChatbotSettings,
   Personality,
   ProviderCapability,
@@ -55,8 +55,18 @@ export function updateChatbotSettings(
     ChatbotSettings,
     // Server-derived, never sent back: the effective limit is the clamped
     // one, and the defaults are what the server falls back to rather than
-    // anything the tenant is setting.
-    "updated_at" | "effective_daily_message_limit" | "default_role" | "default_avoid"
+    // anything the tenant is setting. The four brief fields are excluded too
+    // -- they are written by `updateChatbotBehaviour` against a separate
+    // endpoint, and including them here would let a Company-tab save
+    // overwrite a brief the admin never opened.
+    | "updated_at"
+    | "effective_daily_message_limit"
+    | "default_role"
+    | "default_avoid"
+    | "role_instructions"
+    | "avoid_instructions"
+    | "personality"
+    | "response_length"
   >,
 ) {
   return apiFetch<ChatbotSettings>(`v1/tenants/${tenantId}/chatbot-settings`, {
@@ -97,11 +107,12 @@ export function saveTeam(
       });
 }
 
-// ---- Assistant behaviour and widget presentation ----
+// ---- Chatbot behaviour and widget presentation ----
 
-export function updateAssistantBehaviour(
+/** Tenant-wide, no assistant id: the brief moved to chatbot settings when
+ *  assistant management left the tenant surface. */
+export function updateChatbotBehaviour(
   tenantId: string,
-  assistantId: string,
   body: {
     roleInstructions: string;
     avoidInstructions: string;
@@ -109,8 +120,8 @@ export function updateAssistantBehaviour(
     responseLength: ResponseLength;
   },
 ) {
-  return apiFetch<AssistantBehaviour>(
-    `v1/tenants/${tenantId}/assistants/${assistantId}/behaviour`,
+  return apiFetch<ChatbotBehaviour>(
+    `v1/tenants/${tenantId}/chatbot-settings/behaviour`,
     {
       method: "PUT",
       tenantId,
@@ -140,7 +151,6 @@ export function updateWidgetPresentation(
     avatarKey: string;
     greeting: string | null;
     showQuickReplySuggestions: boolean;
-    assistantId: string | null;
   },
 ) {
   return apiFetch<WidgetPresentation>(
@@ -154,7 +164,6 @@ export function updateWidgetPresentation(
         avatar_key: body.avatarKey,
         greeting: body.greeting,
         show_quick_reply_suggestions: body.showQuickReplySuggestions,
-        assistant_id: body.assistantId,
       },
     },
   );

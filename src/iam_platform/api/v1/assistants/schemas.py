@@ -1,9 +1,7 @@
 """Request/response DTOs for the AI-resource endpoints.
 
-Two shapes here exist specifically to enforce boundaries the domain can't:
+One shape here exists specifically to enforce a boundary the domain can't:
 
-- ``ProviderCredentialResponse`` has no ciphertext field, matching
-  ``ProviderCredentialSummary`` -- see docs/16-schema-ai-resources.md.
 - ``ConversationSummaryResponse`` vs ``ConversationResponse``: a non-owner who
   reached a conversation via ``tenant.conversations.view`` gets the former
   (metadata only), per docs/16's auditor rule.
@@ -101,23 +99,6 @@ class ModelConfigurationResponse(BaseModel):
     #: `None` means the counter could not be read -- never rendered as 0, which
     #: would claim nothing has been spent.
     tokens_used_this_month: int | None = None
-    #: This tenant's own provider key for this model, if they attached one.
-    #: `None` means the platform's key answers and the platform is billed --
-    #: the default for every grant. Only the id: a `key_hint` belongs to the
-    #: credential list, and the ciphertext belongs nowhere near a response.
-    provider_credential_id: UUID | None = None
-
-
-class SetModelCredentialRequest(BaseModel):
-    """Attach a credential, or detach with an explicit null.
-
-    Only an id: the plaintext key is never accepted here. It enters once,
-    through the credential-creation endpoint, and is envelope-encrypted
-    immediately -- letting a second route take a raw secret would be a second
-    place for one to be logged.
-    """
-
-    provider_credential_id: UUID | None = None
 
 
 class ModelConfigurationListResponse(BaseModel):
@@ -421,25 +402,7 @@ class ConversationListResponse(BaseModel):
     conversations: list[ConversationResponse]
 
 
-class StoreProviderCredentialRequest(BaseModel):
-    provider: str = Field(min_length=1, max_length=100)
-    secret: str = Field(min_length=1)
-
-
-class RotateProviderCredentialRequest(BaseModel):
-    new_secret: str = Field(min_length=1)
-
-
-class ProviderCredentialResponse(BaseModel):
-    """No ciphertext field, by construction -- see the module docstring."""
-
-    id: UUID
-    provider: str
-    key_hint: str
-    created_at: datetime
-    rotated_at: datetime | None
-    revoked_at: datetime | None
-
-
-class ProviderCredentialListResponse(BaseModel):
-    credentials: list[ProviderCredentialResponse]
+# Provider-credential schemas were removed with the tenant-facing BYOK
+# surface: the platform owns every credential now, so a tenant has nothing to
+# store, rotate, revoke or attach and therefore no request or response shape
+# to carry one.

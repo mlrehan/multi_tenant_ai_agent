@@ -2,41 +2,11 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "@/features/ai-resources/api";
-import type { AccessLevel, CrawlMode, Visibility } from "@/lib/types";
+import type { CrawlMode, Visibility } from "@/lib/types";
 
-// ---- Assistants ----
-
-export function useAssistants(tenantId: string | null) {
-  return useQuery({
-    queryKey: ["assistants", tenantId],
-    queryFn: () => api.listAssistants(tenantId!),
-    enabled: Boolean(tenantId),
-  });
-}
-
-export function useAssistant(tenantId: string | null, assistantId: string | null) {
-  return useQuery({
-    queryKey: ["assistant", tenantId, assistantId],
-    queryFn: () => api.getAssistant(tenantId!, assistantId!),
-    enabled: Boolean(tenantId && assistantId),
-  });
-}
-
-export function useCreateAssistant(tenantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (body: {
-      name: string;
-      description: string | null;
-      modelConfigurationId: string;
-      visibility: Visibility;
-      departmentId: string | null;
-      teamId: string | null;
-      systemPrompt: string | null;
-    }) => api.createAssistant(tenantId, body),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["assistants", tenantId] }),
-  });
-}
+// Assistant hooks were removed with the tenant-facing Assistants screen.
+// `useModelConfigurations` stays: it is the tenant's read-only view of the
+// models the platform granted them, used to show budget and spend.
 
 export function useModelConfigurations(tenantId: string | null) {
   return useQuery({
@@ -44,80 +14,6 @@ export function useModelConfigurations(tenantId: string | null) {
     queryFn: () => api.listModelConfigurations(tenantId!),
     enabled: Boolean(tenantId),
   });
-}
-
-export function useUpdateAssistant(tenantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      assistantId,
-      ...body
-    }: {
-      assistantId: string;
-      name: string;
-      description: string | null;
-      modelConfigurationId: string;
-      systemPrompt: string | null;
-    }) => api.updateAssistant(tenantId, assistantId, body),
-    onSuccess: (_, vars) => {
-      queryClient.invalidateQueries({ queryKey: ["assistants", tenantId] });
-      queryClient.invalidateQueries({ queryKey: ["assistant", tenantId, vars.assistantId] });
-    },
-  });
-}
-
-export function useArchiveAssistant(tenantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (assistantId: string) => api.archiveAssistant(tenantId, assistantId),
-    onSuccess: (_, assistantId) => {
-      queryClient.invalidateQueries({ queryKey: ["assistants", tenantId] });
-      queryClient.invalidateQueries({ queryKey: ["assistant", tenantId, assistantId] });
-    },
-  });
-}
-
-export function usePublishAssistant(tenantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (assistantId: string) => api.publishAssistant(tenantId, assistantId),
-    onSuccess: (_, assistantId) => {
-      queryClient.invalidateQueries({ queryKey: ["assistants", tenantId] });
-      queryClient.invalidateQueries({ queryKey: ["assistant", tenantId, assistantId] });
-    },
-  });
-}
-
-export function useChangeAssistantVisibility(tenantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      assistantId,
-      visibility,
-      departmentId,
-      teamId,
-    }: {
-      assistantId: string;
-      visibility: Visibility;
-      departmentId: string | null;
-      teamId: string | null;
-    }) => api.changeAssistantVisibility(tenantId, assistantId, { visibility, departmentId, teamId }),
-    onSuccess: (_, vars) => {
-      queryClient.invalidateQueries({ queryKey: ["assistants", tenantId] });
-      queryClient.invalidateQueries({ queryKey: ["assistant", tenantId, vars.assistantId] });
-    },
-  });
-}
-
-export function useAssistantAccess(tenantId: string, assistantId: string) {
-  const grant = useMutation({
-    mutationFn: ({ membershipId, accessLevel }: { membershipId: string; accessLevel: AccessLevel }) =>
-      api.grantAssistantAccess(tenantId, assistantId, membershipId, accessLevel),
-  });
-  const revoke = useMutation({
-    mutationFn: (membershipId: string) => api.revokeAssistantAccess(tenantId, assistantId, membershipId),
-  });
-  return { grant, revoke };
 }
 
 // ---- Knowledge bases ----
@@ -319,51 +215,7 @@ export function useStartConversation(tenantId: string) {
   });
 }
 
-// ---- Provider credentials ----
-
-export function useProviderCredentials(tenantId: string | null) {
-  return useQuery({
-    queryKey: ["provider-credentials", tenantId],
-    queryFn: () => api.listProviderCredentials(tenantId!),
-    enabled: Boolean(tenantId),
-  });
-}
-
-export function useStoreProviderCredential(tenantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ provider, secret }: { provider: string; secret: string }) =>
-      api.storeProviderCredential(tenantId, provider, secret),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["provider-credentials", tenantId] }),
-  });
-}
-
-export function useRotateProviderCredential(tenantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ credentialId, newSecret }: { credentialId: string; newSecret: string }) =>
-      api.rotateProviderCredential(tenantId, credentialId, newSecret),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["provider-credentials", tenantId] }),
-  });
-}
-
-export function useRevokeProviderCredential(tenantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (credentialId: string) => api.revokeProviderCredential(tenantId, credentialId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["provider-credentials", tenantId] }),
-  });
-}
-
-export function useSetModelCredential(tenantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (vars: { modelConfigurationId: string; providerCredentialId: string | null }) =>
-      api.setModelCredential(tenantId, vars.modelConfigurationId, vars.providerCredentialId),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["model-configurations", tenantId] }),
-  });
-}
+// Provider-credential hooks were removed with the tenant-facing BYOK surface.
 
 export function useChatWidgets(tenantId: string | null) {
   return useQuery({

@@ -82,7 +82,7 @@ class TestPreflight:
     @pytest.mark.parametrize(
         "path",
         [
-            "/v1/tenants/00000000-0000-0000-0000-000000000000/assistants",
+            "/v1/tenants/00000000-0000-0000-0000-000000000000/knowledge-bases",
             "/v1/auth/login",
             "/v1/platform/users",
         ],

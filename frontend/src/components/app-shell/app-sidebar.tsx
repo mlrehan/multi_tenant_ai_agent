@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ShieldHalf } from "lucide-react";
+import { ExternalLink, ShieldHalf } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/sidebar";
 import {
   accountNavItems,
+  dataAnalysisNavItems,
   platformNavItems,
   tenantNavItems,
   type NavItem,
@@ -52,6 +53,32 @@ function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
   // so a prefix match would light up Overview on every screen in the section.
   // Section indexes match exactly; everything else matches by prefix so a
   // detail route still highlights its parent nav item.
+  // An external destination is never "where you are", so it skips the active
+  // matching entirely -- and uses a plain anchor rather than `next/link`,
+  // which is for in-app navigation and would prefetch a third-party origin.
+  if (item.external) {
+    return (
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          tooltip={item.label}
+          render={
+            <a
+              href={item.href}
+              target="_blank"
+              // `noreferrer` as well as `noopener`: the opened page has no
+              // business knowing which console screen it was launched from.
+              rel="noopener noreferrer"
+            />
+          }
+        >
+          <item.icon />
+          <span>{item.label}</span>
+          <ExternalLink className="ml-auto size-3 opacity-60" />
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  }
+
   const segments = item.href.split("/").filter(Boolean);
   const isSectionIndex = segments.length <= 1;
   const isActive = isSectionIndex
@@ -157,6 +184,17 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {accountNavItems.map((item) => (
+                <NavLink key={item.href} item={item} pathname={pathname} />
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Data analysis</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {dataAnalysisNavItems.map((item) => (
                 <NavLink key={item.href} item={item} pathname={pathname} />
               ))}
             </SidebarMenu>

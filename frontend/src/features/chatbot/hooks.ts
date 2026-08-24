@@ -59,10 +59,16 @@ export function useUpdateChatbotSettings(tenantId: string) {
     mutationFn: (
       body: Omit<
         ChatbotSettings,
-        // Server-derived, never sent back: the effective limit is the clamped
-        // one, and the defaults are what the server falls back to rather than
-        // anything the tenant is setting.
-        "updated_at" | "effective_daily_message_limit" | "default_role" | "default_avoid"
+        // Mirrors `api.updateChatbotSettings` -- see the note there for why
+        // the brief fields are excluded alongside the server-derived ones.
+        | "updated_at"
+        | "effective_daily_message_limit"
+        | "default_role"
+        | "default_avoid"
+        | "role_instructions"
+        | "avoid_instructions"
+        | "personality"
+        | "response_length"
       >,
     ) => api.updateChatbotSettings(tenantId, body),
     onSuccess: () => {
@@ -107,17 +113,20 @@ export function useSaveTeam(tenantId: string) {
   });
 }
 
-export function useUpdateAssistantBehaviour(tenantId: string) {
+export function useUpdateChatbotBehaviour(tenantId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (args: {
-      assistantId: string;
       roleInstructions: string;
       avoidInstructions: string;
       personality: Personality;
       responseLength: ResponseLength;
-    }) => api.updateAssistantBehaviour(tenantId, args.assistantId, args),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["assistants", tenantId] }),
+    }) => api.updateChatbotBehaviour(tenantId, args),
+    // The brief now lives on the settings row, so that is the query to
+    // refresh -- invalidating "assistants" would leave the form showing the
+    // value it had before the save.
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["chatbot-settings", tenantId] }),
   });
 }
 
@@ -139,7 +148,6 @@ export function useUpdateWidgetPresentation(tenantId: string) {
       avatarKey: string;
       greeting: string | null;
       showQuickReplySuggestions: boolean;
-      assistantId: string | null;
     }) => api.updateWidgetPresentation(tenantId, args.widgetId, args),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ["widget-presentation", tenantId] }),

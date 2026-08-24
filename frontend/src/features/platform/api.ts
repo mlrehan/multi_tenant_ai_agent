@@ -5,6 +5,7 @@ import type {
   RolePermissionMap,
   Tenant,
   PlatformModelConfiguration,
+  PlatformOverview,
 } from "@/lib/types";
 
 export function listTenants() {
@@ -91,6 +92,11 @@ export function endImpersonation(impersonationSessionId: string) {
     method: "POST",
     body: { impersonation_session_id: impersonationSessionId },
   });
+}
+
+/** Spend across every provider and tenant. Computed live server-side. */
+export function getPlatformOverview() {
+  return apiFetch<PlatformOverview>("v1/platform/overview");
 }
 
 export function listPlatformModelConfigurations() {

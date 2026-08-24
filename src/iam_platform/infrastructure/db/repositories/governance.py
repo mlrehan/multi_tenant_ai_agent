@@ -27,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from iam_platform.domain.ai_resources.chatbot import (
     DEFAULT_INDUSTRY,
     TenantChatbotSettings,
+    coerce_personality,
+    coerce_response_length,
 )
 from iam_platform.domain.ai_resources.entities import ConversationState, HandoffInitiator
 from iam_platform.domain.ai_resources.push import PushSubscription
@@ -60,8 +62,6 @@ def _entitlements(row: TenantEntitlementModel) -> TenantEntitlements:
         max_chat_widgets=row.max_chat_widgets,
         max_messages_per_day=row.max_messages_per_day,
         max_tokens_per_month=row.max_tokens_per_month,
-        allow_own_provider_credentials=row.allow_own_provider_credentials,
-        allow_create_assistant=row.allow_create_assistant,
         allow_invite_members=row.allow_invite_members,
         allow_create_roles=row.allow_create_roles,
         updated_by_user_id=row.updated_by_user_id,
@@ -108,8 +108,6 @@ class SqlTenantEntitlementRepository:
                 max_chat_widgets=entitlements.max_chat_widgets,
                 max_messages_per_day=entitlements.max_messages_per_day,
                 max_tokens_per_month=entitlements.max_tokens_per_month,
-                allow_own_provider_credentials=entitlements.allow_own_provider_credentials,
-                allow_create_assistant=entitlements.allow_create_assistant,
                 allow_invite_members=entitlements.allow_invite_members,
                 allow_create_roles=entitlements.allow_create_roles,
                 updated_by_user_id=entitlements.updated_by_user_id,
@@ -123,10 +121,6 @@ class SqlTenantEntitlementRepository:
                     "max_chat_widgets": entitlements.max_chat_widgets,
                     "max_messages_per_day": entitlements.max_messages_per_day,
                     "max_tokens_per_month": entitlements.max_tokens_per_month,
-                    "allow_own_provider_credentials": (
-                        entitlements.allow_own_provider_credentials
-                    ),
-                    "allow_create_assistant": entitlements.allow_create_assistant,
                     "allow_invite_members": entitlements.allow_invite_members,
                     "allow_create_roles": entitlements.allow_create_roles,
                     "updated_by_user_id": entitlements.updated_by_user_id,
@@ -200,6 +194,12 @@ class SqlTenantChatbotSettingsRepository:
             daily_message_limit=row.daily_message_limit,
             share_visitor_location=row.share_visitor_location,
             conversation_retention_days=row.conversation_retention_days,
+            role_instructions=row.role_instructions,
+            avoid_instructions=row.avoid_instructions,
+            # Coerced, not trusted: a stored value outside the enum degrades to
+            # the default rather than reaching the prompt builder as free text.
+            personality=coerce_personality(row.personality),
+            response_length=coerce_response_length(row.response_length),
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
@@ -218,6 +218,10 @@ class SqlTenantChatbotSettingsRepository:
             "daily_message_limit": settings.daily_message_limit,
             "share_visitor_location": settings.share_visitor_location,
             "conversation_retention_days": settings.conversation_retention_days,
+            "role_instructions": settings.role_instructions,
+            "avoid_instructions": settings.avoid_instructions,
+            "personality": settings.personality.value,
+            "response_length": settings.response_length.value,
             "updated_at": settings.updated_at,
         }
         stmt = (

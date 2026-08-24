@@ -59,8 +59,6 @@ class TestResourceCeilings:
         everything. This is the path a tenant created between a deploy and an
         operator's first visit takes."""
         e = TenantEntitlements.defaults_for(uuid4(), now=NOW, entitlement_id=uuid4())
-        assert not e.allow_create_assistant
-        assert not e.allow_own_provider_credentials
         assert not e.allow_invite_members
         assert not e.allow_create_roles
         assert e.max_knowledge_bases == 1

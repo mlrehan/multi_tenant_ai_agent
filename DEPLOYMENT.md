@@ -824,15 +824,47 @@ For metrics (Prometheus format, only reachable from the server itself per the Ng
 curl http://localhost:8100/metrics
 ```
 
-### Deploying an update
+### Deploying an update — the safe way, every time
+
+**Use these same five steps for every update, no matter how small or large the change is** — a one-line text fix and a database schema change both go through the identical procedure. You never have to guess which kind you're dealing with.
+
+Why this is safe by design, before you even get to the backup: this project's database changes ("migrations") are written to only ever *add* — a new column, a new table — never to silently destroy something the running app still needs. A migration that adds a table can't lose data that already exists, because it never touches existing rows. That said, "the design is careful" is not the same guarantee as "nothing can ever go wrong" — a mistake is still possible, which is exactly what Step 1 protects you from. Treat it as non-negotiable, not optional.
+
+**Step 1 — Back up the database. Always, every time, no exceptions.**
 
 ```bash
 cd ai_agent_by_Claude
+mkdir -p backups
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_dump -U postgres --clean --if-exists iam_platform | gzip > backups/backup-$(date +%F-%H%M).sql.gz
+ls -lh backups/
+```
+
+This takes a few seconds even with real data in the database, and it doesn't interrupt the running app at all — visitors and staff using the system right now won't notice. The `ls` at the end confirms the file actually landed and has a real size (not 0 bytes).
+
+**Step 2 — Get the new code.**
+
+```bash
 git pull
+```
+
+**Step 3 — Deploy.**
+
+```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-This rebuilds the image, re-runs migrations (skipping any already applied), and restarts both the API and the worker with zero manual steps. The old container keeps serving traffic until the new one is healthy and ready to take over.
+This one command rebuilds the image, applies any new database changes (skipping ones already applied — it never re-runs an old one), and restarts the API and worker. The old containers keep answering traffic until the new ones are confirmed healthy, so there's no window where the site is down.
+
+**Step 4 — Confirm it actually worked.**
+
+```bash
+curl https://yourdomain.com/readyz
+docker compose -f docker-compose.prod.yml logs --tail=50 migrate
+docker compose -f docker-compose.prod.yml logs --tail=50 api
+```
+
+You're looking for `"status":"ready"` from the first command, and no `ERROR` lines in the `migrate` log. If both look clean, you're done — carry on with the rest of your day.
 
 **After an upgrade that adds permissions, re-run the bootstrap script.** New platform permissions don't attach themselves to existing roles, so an administrator who upgraded before `platform.users.read`/`platform.users.manage` existed won't see the Users screen until:
 
@@ -842,14 +874,71 @@ docker compose -f docker-compose.prod.yml run --rm migrate python scripts/bootst
 
 It's idempotent — safe on every deploy, and a no-op when there's nothing new to grant.
 
+**Step 5 — If something looks wrong**, there are two different problems, fixed two different ways. Work out which one you have first:
+
+- **The app is up but behaving badly (a bug in the new code)** — your data is untouched. Just go back to the previous version:
+
+  ```bash
+  git log --oneline -5    # find the commit hash from before your update
+  git checkout <that-commit-hash>
+  docker compose -f docker-compose.prod.yml up -d --build
+  ```
+
+  This is always safe to do. The containers hold no data themselves — everything that matters lives in the database and the two storage volumes, none of which this touches.
+
+- **The `migrate` step itself failed, or the data now looks wrong** — this is what Step 1's backup exists for. See **"Restoring from a backup"** directly below. Stop here and don't experiment further on the live database first — restore, then try the update again once you understand what went wrong.
+
+**One command to never run on a production server you care about:** `docker compose -f docker-compose.prod.yml down -v`. The `-v` deletes the database, the search index, and every uploaded document — permanently, all three at once. Nothing in the normal update flow above ever needs it.
+
 ### Backing up the database
 
+The same command from Step 1 above, for taking a backup on its own (not tied to an update):
+
 ```bash
-docker compose -f docker-compose.prod.yml exec postgres \
-  pg_dump -U postgres iam_platform | gzip > backup-$(date +%F).sql.gz
+cd ai_agent_by_Claude
+mkdir -p backups
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_dump -U postgres --clean --if-exists iam_platform | gzip > backups/backup-$(date +%F-%H%M).sql.gz
 ```
 
-Consider putting this in a daily cron job and copying the resulting file off the server (e.g., to S3 or another remote location) — a backup that lives only on the server it's backing up doesn't protect you if that server is lost.
+Put this in a **daily cron job** and copy the resulting file off the server (S3, another machine, anywhere remote) — a backup that only lives on the server it's backing up doesn't protect you if that server is lost entirely:
+
+```cron
+0 2 * * * cd /home/deploy/ai_agent_by_Claude && docker compose -f docker-compose.prod.yml exec -T postgres pg_dump -U postgres --clean --if-exists iam_platform | gzip > backups/backup-$(date +\%F).sql.gz
+```
+
+**What this backup does and doesn't cover:** it captures every tenant, user, role, conversation, and message — all of the actual data. It does **not** include uploaded document files or the Qdrant search index, which live in two separate Docker volumes (`uploads` and `qdrant-storage`). A routine `git pull` + deploy never touches those volumes at all, so you don't need to back them up for ordinary updates — only the database matters there. If you ever want extra peace of mind before an unusually large change, you can additionally copy those volumes:
+
+```bash
+docker run --rm -v ai_agent_by_claude_uploads:/data -v "$(pwd)/backups":/backup alpine \
+  tar czf /backup/uploads-$(date +%F).tar.gz -C /data .
+```
+
+(Check the exact volume name first with `docker volume ls | grep uploads` — Compose prefixes it with the project directory name, which may differ from the example above.)
+
+### Restoring from a backup
+
+**Only needed if Step 5 above sent you here.** Most updates never require this — read it once so you know it exists, and come back to it if you actually need it.
+
+```bash
+cd ai_agent_by_Claude
+
+# 1. Stop the app so nothing writes to the database while you restore.
+#    Postgres itself stays running -- only the API and worker stop.
+docker compose -f docker-compose.prod.yml stop api worker
+
+# 2. Restore your chosen backup file. Replace the filename with the real one
+#    from `ls backups/` -- this example uses the one Step 1 just made.
+gunzip -c backups/backup-2026-08-23-1400.sql.gz | \
+  docker compose -f docker-compose.prod.yml exec -T postgres psql -U postgres iam_platform
+
+# 3. Start everything back up.
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Because the backup was taken with `--clean --if-exists`, restoring it cleanly replaces the existing tables rather than erroring out on ones that already exist — you don't need to manually drop or recreate the database first.
+
+**This does overwrite everything back to the moment the backup was taken** — any conversations, uploads, or changes made *after* that backup and before you restore are gone. That's the correct behavior for undoing a bad migration, but make sure it's actually what you want before running Step 2. If you're at all unsure, copy the backup file somewhere safe first and take a fresh backup of the *current* (possibly broken) state too, so you have both — you can't get back a state you didn't save.
 
 ### Deleting expired conversations
 

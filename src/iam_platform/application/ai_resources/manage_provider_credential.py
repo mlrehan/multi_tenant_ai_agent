@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from iam_platform.application.ai_resources.entitlements import guard_capability
 from iam_platform.application.ai_resources.exceptions import (
     ModelConfigurationNotFoundError,
     PermissionDeniedError,
@@ -92,15 +91,10 @@ class StoreProviderCredential:
             if MANAGE_CREDENTIALS_PERMISSION not in command.permissions:
                 raise PermissionDeniedError(MANAGE_CREDENTIALS_PERMISSION)
 
-            # BYOK is a plan feature: a tenant that may not bring its own key
-            # cannot store one either, or it would sit there looking active
-            # while the platform kept paying the bill.
-            await guard_capability(
-                uow,
-                tenant_id=tenant_id,
-                clock=self._clock,
-                capability="allow_own_provider_credentials",
-            )
+            # No capability gate: `allow_own_provider_credentials` was dropped
+            # with the tenant-facing BYOK routes (migration f1c94a70b2d8).
+            # Nothing tenant-facing reaches this use case; the platform owns
+            # every credential now.
 
             credential = ProviderCredential(
                 id=uuid4(),

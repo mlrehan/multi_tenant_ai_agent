@@ -78,8 +78,6 @@ import {
   useDeleteDocument,
   useDocumentDetail,
   useResyncDataSource,
-  useAssistants,
-  useStartConversation,
 } from "@/features/ai-resources/hooks";
 import { isApiError } from "@/lib/api-client";
 import { streamAnswer } from "@/features/ai-resources/api";
@@ -1265,24 +1263,15 @@ function DataSourceRow({
   );
 }
 
-/** No assistant is scoped to a specific knowledge base -- see
- * `useAssistants`' caller below -- so this sentinel stands in for "the
- * platform default model" in the picker, and is translated to `undefined`
- * (never sent) before it reaches `streamAnswer`. */
-const PLATFORM_DEFAULT_ASSISTANT = "__platform_default__";
-
 /** Ask the knowledge base a question and watch the answer stream in.
  *
  * Sources render before the first token: the backend sends them first because
  * they are known before generation begins. A reader can therefore see what the
  * answer is allowed to draw on even if generation fails partway.
  *
- * **"Answer as" lists every one of the tenant's assistants, not just ones
- * meant for this knowledge base** -- `ai_assistants` has no field linking it
- * to one, so there is no narrower list to offer honestly. Picking one applies
- * its model and persona to this question; picking nothing uses the platform
- * default, exactly as this dialog behaved before assistants had any effect
- * here at all. */
+ * There is no "answer as" picker: assistant management left the tenant
+ * surface, so every question here uses the platform's model with this
+ * tenant's own brief from the AI Chatbot screen. */
 function AskDialog({
   tenantId,
   knowledgeBase,
@@ -1295,19 +1284,7 @@ function AskDialog({
   const [citations, setCitations] = useState<AnswerCitation[]>([]);
   const [cited, setCited] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
-  const [assistantId, setAssistantId] = useState(PLATFORM_DEFAULT_ASSISTANT);
-  // The thread this dialog is currently continuing. Created lazily on the
-  // first question, because a conversation requires an assistant and most
-  // asks here are one-off lookups that should not litter the history.
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const startConversation = useStartConversation(tenantId);
   const abortRef = useRef<AbortController | null>(null);
-  const { data: assistantsData } = useAssistants(tenantId);
-  // Archived is off the record for new use, mirroring the server: naming one
-  // here would only ever come back as a 404.
-  const assistants = (assistantsData?.assistants ?? []).filter(
-    (a) => a.status !== "archived",
-  );
 
   async function ask() {
     abortRef.current?.abort();
@@ -1319,30 +1296,14 @@ function AskDialog({
     setCited([]);
     setStreaming(true);
     try {
-      // Memory needs a thread, and a thread needs an assistant -- the platform
-      // default resolves no assistant, so those asks stay stateless. Failing
-      // to create one must not lose the question, so it degrades to a
-      // one-off answer rather than raising.
-      let thread = conversationId;
-      if (!thread && assistantId !== PLATFORM_DEFAULT_ASSISTANT) {
-        try {
-          const created = await startConversation.mutateAsync({
-            assistantId,
-            title: null,
-          });
-          thread = created.id;
-          setConversationId(created.id);
-        } catch {
-          toast.warning("Answering without conversation history.");
-        }
-      }
+      // Stateless by design: a stored conversation needs an assistant, which
+      // tenants no longer have. Asks here are one-off lookups against the
+      // knowledge base -- the widget is where visitor threads are kept.
       for await (const frame of streamAnswer(
         tenantId,
         knowledgeBase.id,
         question,
         controller.signal,
-        assistantId === PLATFORM_DEFAULT_ASSISTANT ? undefined : assistantId,
-        thread ?? undefined,
       )) {
         if (frame.event === "sources") {
           setCitations((frame.data.citations as AnswerCitation[]) ?? []);
@@ -1374,41 +1335,6 @@ function AskDialog({
       </DialogHeader>
 
       <div className="space-y-4 py-2">
-        {assistants.length > 0 && (
-          <div>
-            <Label htmlFor="ask-as-assistant" className="text-xs text-muted-foreground">
-              Answer as
-            </Label>
-            <Select
-              value={assistantId}
-              onValueChange={(v) => setAssistantId(v ?? PLATFORM_DEFAULT_ASSISTANT)}
-            >
-              <SelectTrigger id="ask-as-assistant" className="mt-1 w-full">
-                {/* A plain <SelectValue> resolves its label from the
-                    currently-mounted <SelectItem>s, which is unreliable the
-                    instant the value changes (see ModelConfigurationField in
-                    assistants/page.tsx for the same defect found there
-                    first). The render-prop form looks the label up directly
-                    instead of depending on item-mount timing. */}
-                <SelectValue placeholder="Platform default">
-                  {(v: string | null) =>
-                    !v || v === PLATFORM_DEFAULT_ASSISTANT
-                      ? "Platform default"
-                      : (assistants.find((a) => a.id === v)?.name ?? v)
-                  }
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={PLATFORM_DEFAULT_ASSISTANT}>Platform default</SelectItem>
-                {assistants.map((a) => (
-                  <SelectItem key={a.id} value={a.id}>
-                    {a.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
         <div className="flex gap-2">
           <Input
             value={question}

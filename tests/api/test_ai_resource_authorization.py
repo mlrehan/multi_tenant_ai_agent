@@ -133,12 +133,12 @@ async def _seed_tenant_with_member(user_id: str, *, permissions: list[str]) -> s
 
 class TestAuthenticationIsRequired:
     async def test_unauthenticated_request_is_rejected(self, client: httpx.AsyncClient) -> None:
-        resp = await client.get(f"/v1/tenants/{uuid4()}/assistants")
+        resp = await client.get(f"/v1/tenants/{uuid4()}/knowledge-bases")
         assert resp.status_code in (401, 403)
 
     async def test_garbage_bearer_token_is_rejected(self, client: httpx.AsyncClient) -> None:
         resp = await client.get(
-            f"/v1/tenants/{uuid4()}/assistants",
+            f"/v1/tenants/{uuid4()}/knowledge-bases",
             headers={"Authorization": "Bearer not-a-real-jwt"},
         )
         assert resp.status_code == 401
@@ -155,7 +155,7 @@ class TestTenantScopingAtTheRouteBoundary:
         stranger_tenant_id = uuid4()
 
         resp = await client.get(
-            f"/v1/tenants/{stranger_tenant_id}/assistants",
+            f"/v1/tenants/{stranger_tenant_id}/knowledge-bases",
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "X-Tenant-Id": str(stranger_tenant_id),
@@ -167,11 +167,11 @@ class TestTenantScopingAtTheRouteBoundary:
         self, client: httpx.AsyncClient, email_sender: CapturingEmailSender
     ) -> None:
         user_id, access_token = await _register_and_login(client, email_sender, "tenant-a@example.com")
-        await _seed_tenant_with_member(user_id, permissions=["tenant.assistants.create"])
+        await _seed_tenant_with_member(user_id, permissions=["tenant.knowledge_bases.create"])
         someone_elses_tenant = uuid4()
 
         resp = await client.get(
-            f"/v1/tenants/{someone_elses_tenant}/assistants",
+            f"/v1/tenants/{someone_elses_tenant}/knowledge-bases",
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "X-Tenant-Id": str(someone_elses_tenant),
@@ -188,19 +188,16 @@ class TestPermissionEnforcementAtTheRouteBoundary:
         the chain is wired, not just that the use case works in isolation."""
         user_id, access_token = await _register_and_login(client, email_sender, "reader@example.com")
         tenant_id = await _seed_tenant_with_member(
-            user_id, permissions=["tenant.resources.read"]  # NOT assistants.create
+            user_id, permissions=["tenant.resources.read"]  # NOT knowledge_bases.create
         )
 
         resp = await client.post(
-            f"/v1/tenants/{tenant_id}/assistants",
+            f"/v1/tenants/{tenant_id}/knowledge-bases",
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "X-Tenant-Id": tenant_id,
             },
-            json={
-                "name": "Unauthorized Bot",
-                "model_configuration_id": str(uuid4()),
-            },
+            json={"name": "Unauthorized KB"},
         )
         assert resp.status_code == 403
 
@@ -209,56 +206,49 @@ class TestPermissionEnforcementAtTheRouteBoundary:
     ) -> None:
         """Guards against the previous test passing because *everything* 403s.
 
-        The request still fails -- the model configuration doesn't exist -- but
-        with 404, proving it cleared the permission gate and reached the use
-        case's own validation.
+        A 201 here proves the request cleared the permission gate and reached
+        the use case. Previously this asserted a 404 from a deliberately
+        nonexistent model configuration on the assistant route; that route is
+        gone, and a success is the stronger signal anyway -- a 404 can be
+        produced by a dozen unrelated failures, a 201 by exactly one path.
         """
         user_id, access_token = await _register_and_login(client, email_sender, "creator@example.com")
         tenant_id = await _seed_tenant_with_member(
-            user_id, permissions=["tenant.assistants.create"]
+            user_id, permissions=["tenant.knowledge_bases.create"]
         )
 
         resp = await client.post(
-            f"/v1/tenants/{tenant_id}/assistants",
+            f"/v1/tenants/{tenant_id}/knowledge-bases",
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "X-Tenant-Id": tenant_id,
             },
-            json={
-                "name": "Authorized Bot",
-                "model_configuration_id": str(uuid4()),  # nonexistent
-            },
+            json={"name": "Authorized KB"},
         )
-        assert resp.status_code == 404
-        assert resp.status_code != 403  # explicitly: not a permission failure
-
-    async def test_provider_credential_listing_requires_manage_permission(
-        self, client: httpx.AsyncClient, email_sender: CapturingEmailSender
-    ) -> None:
-        user_id, access_token = await _register_and_login(client, email_sender, "nosecrets@example.com")
-        tenant_id = await _seed_tenant_with_member(
-            user_id, permissions=["tenant.resources.read"]
-        )
-
-        resp = await client.get(
-            f"/v1/tenants/{tenant_id}/provider-credentials",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "X-Tenant-Id": tenant_id,
-            },
-        )
-        assert resp.status_code == 403
+        assert resp.status_code == 201, resp.text
 
 
-class TestSecretsNeverAppearInResponses:
-    async def test_stored_credential_response_omits_the_secret(
+class TestTheTenantBringYourOwnKeySurfaceIsGone:
+    """Bring-your-own-key was withdrawn from tenants entirely.
+
+    These previously asserted that the routes existed and were permission-
+    gated. The stronger claim now is that they are **not routed at all**: a
+    404 from the router cannot be re-opened by a misconfigured role, a stale
+    custom permission row, or an entitlement flag someone forgets to clear.
+
+    Asserted against a caller holding the *old* permission on purpose --
+    granting `tenant.provider_credentials.manage` must no longer buy anything,
+    since the permission row can outlive this change in a live database until
+    Phase 3's migration removes it.
+    """
+
+    async def test_storing_a_credential_is_not_routed(
         self, client: httpx.AsyncClient, email_sender: CapturingEmailSender
     ) -> None:
         user_id, access_token = await _register_and_login(client, email_sender, "keeper@example.com")
         tenant_id = await _seed_tenant_with_member(
             user_id, permissions=["tenant.provider_credentials.manage"]
         )
-        secret = "sk-do-not-leak-me-1234"
 
         resp = await client.post(
             f"/v1/tenants/{tenant_id}/provider-credentials",
@@ -266,15 +256,18 @@ class TestSecretsNeverAppearInResponses:
                 "Authorization": f"Bearer {access_token}",
                 "X-Tenant-Id": tenant_id,
             },
-            json={"provider": "anthropic", "secret": secret},
+            json={"provider": "anthropic", "secret": "sk-do-not-leak-me-1234"},
         )
-        assert resp.status_code == 201
-        assert secret not in resp.text
-        body = resp.json()
-        assert body["key_hint"] == "1234"
-        assert "credential_ciphertext" not in body
+        assert resp.status_code == 404
 
-        # ...and not on the way back out either.
+    async def test_listing_credentials_is_not_routed(
+        self, client: httpx.AsyncClient, email_sender: CapturingEmailSender
+    ) -> None:
+        user_id, access_token = await _register_and_login(client, email_sender, "nosecrets@example.com")
+        tenant_id = await _seed_tenant_with_member(
+            user_id, permissions=["tenant.provider_credentials.manage"]
+        )
+
         resp = await client.get(
             f"/v1/tenants/{tenant_id}/provider-credentials",
             headers={
@@ -282,5 +275,22 @@ class TestSecretsNeverAppearInResponses:
                 "X-Tenant-Id": tenant_id,
             },
         )
-        assert resp.status_code == 200
-        assert secret not in resp.text
+        assert resp.status_code == 404
+
+    async def test_attaching_a_credential_to_a_model_is_not_routed(
+        self, client: httpx.AsyncClient, email_sender: CapturingEmailSender
+    ) -> None:
+        user_id, access_token = await _register_and_login(client, email_sender, "attacher@example.com")
+        tenant_id = await _seed_tenant_with_member(
+            user_id, permissions=["tenant.provider_credentials.manage"]
+        )
+
+        resp = await client.put(
+            f"/v1/tenants/{tenant_id}/model-configurations/{uuid4()}/credential",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "X-Tenant-Id": tenant_id,
+            },
+            json={"provider_credential_id": str(uuid4())},
+        )
+        assert resp.status_code == 404

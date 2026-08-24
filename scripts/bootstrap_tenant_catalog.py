@@ -57,8 +57,12 @@ TENANT_PERMISSIONS = [
      "View other members' conversation metadata"),
     ("tenant.conversations.view_all", "conversations", "view_all", "high",
      "See every team's handoff queue, not only the teams you staff"),
-    ("tenant.provider_credentials.manage", "provider_credentials", "manage", "critical",
-     "Store and rotate provider API keys"),
+    # `tenant.provider_credentials.manage` was removed here: bring-your-own-key
+    # is no longer a tenant capability. The platform owns every provider
+    # credential and every token budget. Deleting the permission row itself
+    # from a live database (and from any custom role that already held it) is
+    # Phase 3's migration, not this script's job -- this list only governs what
+    # a *newly* seeded deployment gets.
     ("tenant.resources.read", "resources", "read", "low", "Read tenant resources"),
 ]
 
@@ -69,9 +73,14 @@ TENANT_ROLES = [
     (
         "tenant_admin",
         "Tenant Administrator",
-        "Manages people and resources, but not provider secrets",
+        "Manages people and resources",
         500,
-        [c for c in ALL_TENANT_CODES if c != "tenant.provider_credentials.manage"],
+        # Now identical to tenant_owner's set. The two roles differed only by
+        # `tenant.provider_credentials.manage`, which no longer exists -- kept
+        # as separate roles because rank (500 vs 1000) still governs who may
+        # assign whom, and because collapsing them would silently promote every
+        # existing tenant_admin.
+        ALL_TENANT_CODES,
     ),
     (
         "member",

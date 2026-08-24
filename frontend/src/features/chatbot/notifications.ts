@@ -183,6 +183,55 @@ export function setQueueBadge(count: number): void {
   }
 }
 
+let blinkTimer: ReturnType<typeof setInterval> | null = null;
+let blinkBaseTitle: string | null = null;
+
+/**
+ * Flashes the tab title while people are waiting.
+ *
+ * **A static `(3)` prefix is only read by someone already scanning their
+ * tabs.** Movement is what the eye catches in peripheral vision, so the title
+ * alternates between the count and a plain alert. This is the signal that
+ * reaches an agent working in another tab of the same browser -- the case a
+ * system notification covers badly, because an agent who dismissed one an hour
+ * ago will not see another.
+ *
+ * Stops on its own when the queue empties, and restores the title it found so
+ * a stopped blink cannot leave "🔴 Someone is waiting" behind for ever.
+ *
+ * The interval is deliberately slow (1.1s): a fast flicker is unreadable, and
+ * the title has to be legible for the count to be useful.
+ */
+export function setQueueBlink(count: number): void {
+  if (typeof document === "undefined") return;
+
+  if (count <= 0) {
+    if (blinkTimer !== null) {
+      clearInterval(blinkTimer);
+      blinkTimer = null;
+      if (blinkBaseTitle !== null) document.title = blinkBaseTitle;
+      blinkBaseTitle = null;
+    }
+    return;
+  }
+
+  // Already blinking: only the count changed, and restarting the interval
+  // would reset the phase and make the flash look erratic. `setQueueBadge`
+  // has already written the new number into the base title.
+  if (blinkTimer !== null) return;
+
+  blinkBaseTitle = document.title;
+  let alternate = false;
+  blinkTimer = setInterval(() => {
+    alternate = !alternate;
+    // Re-read the base each tick rather than caching one: `setQueueBadge`
+    // rewrites the title when the count changes, and a cached copy would
+    // fight it and show a stale number every other second.
+    const base = (blinkBaseTitle ?? document.title).replace(BADGE_TITLE_PREFIX, "");
+    document.title = alternate ? "🔴 Someone is waiting" : `(${count}) ${base}`;
+  }, 1100);
+}
+
 /**
  * A system notification for a handoff, shown by the page itself.
  *

@@ -10,9 +10,14 @@ unshareable or unoverridable:
   must not be able to contradict per-widget. Duplicating these onto widgets
   would let two widgets disagree about whether the tenant permits human
   handoff, which is a policy question with exactly one right answer.
-* **Assistant** (`AssistantBehaviour`) -- how the AI thinks. Role, avoid-rules,
-  personality and response length are the assistant's brief, and a tenant may
-  reasonably run a strict admissions assistant beside a chatty general one.
+
+  **Role, avoid-rules, personality and response length live here too**, and
+  did not always: they were fields on `ai_assistants` until assistant
+  management was withdrawn from tenants. One company, one brief -- the
+  original per-assistant split existed to let a tenant run a strict admissions
+  bot beside a chatty general one, which is precisely the complexity that was
+  removed. `AssistantBehaviour` survives as the shape the *prompt builder*
+  consumes, now assembled from these fields rather than from an assistant row.
 * **Widget** (`WidgetPresentation`) -- how the AI looks on one page. Name,
   title, avatar and quick replies are per-embed, because a nursery may run one
   widget on its parent portal and another on its public site.
@@ -40,6 +45,12 @@ from iam_platform.domain.shared.entity import Entity
 #: to truncate silently.
 MAX_COMPANY_DESCRIPTION_CHARS = 2000
 MAX_INDUSTRY_CHARS = 100
+# No length cap on `role_instructions` / `avoid_instructions`, deliberately:
+# migration e9c47b13f0a2 dropped the CHECKs that used to bound them, because
+# the cap was a guess that was wrong twice (1000 could not hold the platform's
+# own shipped default; 2000 was the same guess with a bigger number). The real
+# bound is the model's context window, which the provider enforces at request
+# time and which a column constraint could only ever disagree with.
 MAX_DIRECT_TEXT_CHARS = 5000
 
 #: Conversation retention, in days. Mirrored by a database CHECK -- the domain
@@ -289,6 +300,15 @@ def response_length_instruction(value: ResponseLength | str | None) -> str:
     ]
 
 
+def coerce_personality(value: object) -> Personality:
+    """Public form of `_coerce` for repositories reading a stored column."""
+    return _coerce(value, Personality, Personality.NEUTRAL)
+
+
+def coerce_response_length(value: object) -> ResponseLength:
+    return _coerce(value, ResponseLength, ResponseLength.BALANCED)
+
+
 def _coerce[E: StrEnum](value: object, enum: type[E], fallback: E) -> E:
     """Unknown stored values degrade to the default instead of propagating.
 
@@ -344,8 +364,39 @@ class TenantChatbotSettings(Entity):
     #: bounds it at ten years.
     conversation_retention_days: int = DEFAULT_RETENTION_DAYS
 
+    #: The chatbot's brief. **These moved here from `ai_assistants`** when
+    #: assistant management was withdrawn from tenants: they are chatbot
+    #: configuration, not a property of a resource the tenant can no longer
+    #: see. Storing them on an assistant row meant a tenant could only set a
+    #: tone by owning an assistant, which is no longer a thing they have.
+    #:
+    #: `None` on the two free-text fields means "the platform's default brief,
+    #: named for this company" -- distinct from `""`, which is a tenant
+    #: deliberately clearing it. `resolved_role()` applies that distinction so
+    #: no caller has to remember it.
+    role_instructions: str | None = None
+    avoid_instructions: str | None = None
+    #: Enums, not free text: the console presents these as a dropdown, and a
+    #: hand-written row outside the enum degrades to the default rather than
+    #: smuggling instruction text through a field the UI says is a choice.
+    personality: Personality = Personality.NEUTRAL
+    response_length: ResponseLength = ResponseLength.BALANCED
+
     created_at: datetime
     updated_at: datetime
+
+    def resolved_role(self, company_name: str) -> str:
+        """The role brief, defaulted to one naming *this* company.
+
+        `DEFAULT_ROLE` carries the shipped placeholder company, so returning it
+        unmodified would introduce the assistant as the wrong organisation to
+        every tenant that has not written their own brief.
+        """
+        written = (self.role_instructions or "").strip()
+        return written or default_role(company_name)
+
+    def resolved_avoid(self) -> str:
+        return (self.avoid_instructions or "").strip() or DEFAULT_AVOID
 
     def resolved_company_name(self, tenant_display_name: str) -> str:
         """What the bot calls this company, in order of how deliberate it is.

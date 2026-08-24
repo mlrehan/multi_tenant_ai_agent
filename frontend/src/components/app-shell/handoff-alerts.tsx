@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { useConversationEvents, useUnassignedInbox } from "@/features/chatbot/hooks";
 import {
   setQueueBadge,
+  setQueueBlink,
   showHandoffNotification,
   vibrateForHandoff,
 } from "@/features/chatbot/notifications";
@@ -94,7 +95,15 @@ export function HandoffAlerts() {
   useEffect(() => {
     // Clearing when access is lost matters as much as setting it: a stale
     // "(3)" must not outlive the session that earned it.
-    setQueueBadge(canWork ? waiting : 0);
+    const count = canWork ? waiting : 0;
+    setQueueBadge(count);
+    // Order matters: the badge writes the count into the title first, and the
+    // blink alternates against what it wrote. Reversed, the first flash would
+    // carry the previous count.
+    setQueueBlink(count);
+    // Stopping on unmount as well as on an empty queue: navigating away from
+    // the console must not leave an interval flashing a title for ever.
+    return () => setQueueBlink(0);
   }, [canWork, waiting]);
 
   return null;

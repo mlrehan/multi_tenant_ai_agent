@@ -181,6 +181,12 @@ async def ask_widget(
             container.vector_search_client,
             container.reranker,
             container.chat_model,
+            # A widget answer resolves no model configuration -- it uses the
+            # platform default -- so `token_usage` has nothing to key on. The
+            # tenant-level counter is the only place this spend can land, and
+            # without it every widget conversation was invisible to both
+            # dashboards.
+            tenant_quota=container.tenant_quota,
         ),
         container.widget_memory,
         # Persists the exchange after it streams, so an ordinary widget chat
@@ -188,6 +194,7 @@ async def ask_widget(
         # window -- previously only escalated chats were ever written.
         container.ai_resource_uow_factory,
         container.clock,
+        tenant_quota=container.tenant_quota,
     )
     # **Both switches are read before the answer path**, so neither a visitor
     # asking for a colleague nor a tenant who has switched the AI off costs an

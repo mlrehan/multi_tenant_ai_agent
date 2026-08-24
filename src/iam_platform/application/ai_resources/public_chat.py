@@ -34,6 +34,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from iam_platform.application.ai_resources.answer_question import (
@@ -74,6 +75,7 @@ from iam_platform.domain.ai_resources.guardrails import (
     GuardrailCategory,
     screen_question,
 )
+from iam_platform.domain.tenancy.entitlements import TenantEntitlements
 
 #: A visitor's memory lives in Redis and is never persisted, so these fields
 #: exist only to satisfy the shared `ConversationMessage` shape. Constants
@@ -204,9 +206,16 @@ class AskWidget:
         memory: WidgetMemoryStore | None = None,
         uow_factory: AiResourceUowFactory | None = None,
         clock: Clock | None = None,
+        tenant_quota: Any | None = None,
     ) -> None:
         self._lookup = lookup
         self._quota = quota
+        # The *tenant-wide* daily message counter, distinct from `quota` above.
+        # `quota` caps one widget's questions; this one counts every AI message
+        # the tenant spends across all of them, which is what the tenant's plan
+        # limits and what both dashboards report. Counting only the per-widget
+        # one left `messages_used_today` permanently at zero.
+        self._tenant_quota = tenant_quota
         self._answer_question = answer_question
         # Optional so every existing construction site keeps working, and so a
         # deployment without Redis answers exactly as it did before -- which is
@@ -218,6 +227,37 @@ class AskWidget:
         # with fakes need no database.
         self._uow_factory = uow_factory
         self._clock = clock
+
+    async def _effective_daily_limit(self, tenant_id: UUID) -> int | None:
+        """The tenant's enforced daily message cap.
+
+        Resolved here rather than read from one place, because it is two
+        numbers: the platform's ceiling on the tenant, and the tenant's own
+        (lower) preference. `TenantEntitlements.effective_daily_message_limit`
+        owns that rule -- duplicating the `min()` here is how the widget and
+        the console would eventually disagree about the same cap.
+
+        Without a unit of work there is nothing to read, so the answer is
+        `None` (uncapped): counting still happens, enforcement does not. That
+        is the honest outcome for a deployment that has not wired a database
+        into this path, and it is what every existing test does.
+        """
+        if self._uow_factory is None:
+            return None
+        async with self._uow_factory(_ANONYMOUS, tenant_id) as uow:
+            entitlements = await uow.entitlements.get_for_tenant(tenant_id)
+            settings = await uow.chatbot_settings.get_for_tenant(tenant_id)
+        if entitlements is None:
+            # No stored row means the documented defaults govern, exactly as
+            # everywhere else -- never "unlimited".
+            entitlements = TenantEntitlements.defaults_for(
+                tenant_id, now=self._clock.now() if self._clock else datetime.now(UTC),
+                entitlement_id=uuid4(),
+            )
+        limit: int | None = entitlements.effective_daily_message_limit(
+            settings.daily_message_limit if settings else None
+        )
+        return limit
 
     async def execute(self, command: AskWidgetCommand) -> AnswerStream:
         widget = await self._reload(command)
@@ -261,6 +301,30 @@ class AskWidget:
             raise WidgetQuotaExceededError(
                 "this chat widget has reached its question limit for today"
             )
+
+        # The tenant's own daily allowance, after the per-widget one. Both are
+        # reserved before generation for the same reason -- the point is not to
+        # spend the money, and checking afterwards would only record that it
+        # was spent.
+        #
+        # `consume_message` increments even when the limit is `None`, so a
+        # tenant with no cap is still counted for the console. It fails
+        # **closed**: an unreadable counter refuses rather than becoming
+        # unlimited spending, which is the one failure that is invisible until
+        # the invoice.
+        if self._tenant_quota is not None:
+            allowed = await self._tenant_quota.consume_message(
+                tenant_id=widget.tenant_id,
+                limit=await self._effective_daily_limit(widget.tenant_id),
+            )
+            if not allowed:
+                # The per-widget reservation above is not released: it was a
+                # legitimate question against that widget, and releasing it
+                # would let a tenant over its own cap keep probing one widget's
+                # allowance for free.
+                raise WidgetQuotaExceededError(
+                    "this organisation has reached its daily message limit"
+                )
 
         # The namespace is derived from the *widget's* knowledge base, freshly
         # loaded -- never from the token's claim alone. A token is a bearer

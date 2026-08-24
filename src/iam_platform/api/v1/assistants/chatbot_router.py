@@ -62,8 +62,8 @@ from iam_platform.application.ai_resources.manage_entitlements import (
     GetTenantEntitlementsQuery,
 )
 from iam_platform.application.ai_resources.manage_presentation import (
-    UpdateAssistantBehaviour,
-    UpdateAssistantBehaviourCommand,
+    UpdateChatbotBehaviour,
+    UpdateChatbotBehaviourCommand,
     UpdateWidgetPresentation,
     UpdateWidgetPresentationCommand,
 )
@@ -114,13 +114,10 @@ async def get_tenant_plan(
         max_chat_widgets=e.max_chat_widgets,
         max_messages_per_day=e.max_messages_per_day,
         max_tokens_per_month=e.max_tokens_per_month,
-        allow_own_provider_credentials=e.allow_own_provider_credentials,
-        allow_create_assistant=e.allow_create_assistant,
         allow_invite_members=e.allow_invite_members,
         allow_create_roles=e.allow_create_roles,
         knowledge_bases_used=view.knowledge_bases_used,
         chat_widgets_used=view.chat_widgets_used,
-        assistants_used=view.assistants_used,
         messages_used_today=view.messages_used_today,
         tokens_used_this_month=view.tokens_used_this_month,
         effective_daily_message_limit=view.effective_daily_message_limit,
@@ -738,6 +735,14 @@ def _settings_response(
         effective_daily_message_limit=effective_daily_limit,
         share_visitor_location=settings.share_visitor_location,  # type: ignore[attr-defined]
         conversation_retention_days=settings.conversation_retention_days,  # type: ignore[attr-defined]
+        # The brief. Returned raw ("" when unset) rather than resolved, so the
+        # console can show an empty box beside the `default_role` placeholder
+        # above -- a resolved value would look like the tenant had written the
+        # platform's default themselves, and saving it would make that true.
+        role_instructions=settings.role_instructions or "",  # type: ignore[attr-defined]
+        avoid_instructions=settings.avoid_instructions or "",  # type: ignore[attr-defined]
+        personality=settings.personality.value,  # type: ignore[attr-defined]
+        response_length=settings.response_length.value,  # type: ignore[attr-defined]
         updated_at=settings.updated_at,  # type: ignore[attr-defined]
     )
 
@@ -763,31 +768,30 @@ async def _membership_id(
     return membership.id
 
 
-# --- assistant behaviour and widget presentation ----------------------------
+# --- chatbot behaviour and widget presentation ------------------------------
 
 
-@router.put("/assistants/{assistant_id}/behaviour")
-async def update_assistant_behaviour(
+@router.put("/chatbot-settings/behaviour")
+async def update_chatbot_behaviour(
     tenant_id: str,
-    assistant_id: UUID,
-    body: schemas.AssistantBehaviourRequest,
+    body: schemas.ChatbotBehaviourRequest,
     claims: AccessTokenClaims = Depends(get_current_claims),
     permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
     container: AppContainer = Depends(get_container),
-) -> schemas.AssistantBehaviourResponse:
+) -> schemas.ChatbotBehaviourResponse:
     """The Behaviour and Tone tabs.
 
-    Authorized like any other assistant edit -- through the visibility policy
-    with `for_modification=True` -- not with a permission of its own. Changing
-    an assistant's brief *is* editing the assistant.
+    Tenant-wide, and no longer addressed by assistant id: the brief moved to
+    `tenant_chatbot_settings` when assistant management left the tenant
+    surface. Authorized with the same permission as every other field on this
+    screen, rather than the assistant visibility policy it used to borrow.
     """
-    assistant = await UpdateAssistantBehaviour(
+    settings = await UpdateChatbotBehaviour(
         container.ai_resource_uow_factory, container.clock
     ).execute(
-        UpdateAssistantBehaviourCommand(
+        UpdateChatbotBehaviourCommand(
             actor_user_id=str(claims.user_id),
             tenant_id=tenant_id,
-            assistant_id=str(assistant_id),
             permissions=permissions,
             role_instructions=body.role_instructions,
             avoid_instructions=body.avoid_instructions,
@@ -795,12 +799,11 @@ async def update_assistant_behaviour(
             response_length=body.response_length,
         )
     )
-    return schemas.AssistantBehaviourResponse(
-        assistant_id=assistant.id,
-        role_instructions=assistant.role_instructions or "",
-        avoid_instructions=assistant.avoid_instructions or "",
-        personality=assistant.personality.value,
-        response_length=assistant.response_length.value,
+    return schemas.ChatbotBehaviourResponse(
+        role_instructions=settings.role_instructions or "",
+        avoid_instructions=settings.avoid_instructions or "",
+        personality=settings.personality.value,
+        response_length=settings.response_length.value,
     )
 
 
@@ -827,7 +830,6 @@ async def update_widget_presentation(
             avatar_key=body.avatar_key,
             greeting=body.greeting,
             show_quick_reply_suggestions=body.show_quick_reply_suggestions,
-            assistant_id=str(body.assistant_id) if body.assistant_id else None,
         )
     )
     return _presentation_response(widget)
@@ -863,7 +865,6 @@ def _presentation_response(widget: object) -> schemas.WidgetPresentationResponse
     # widget actually renders rather than empty fields that look unconfigured.
     return schemas.WidgetPresentationResponse(
         widget_id=widget.id,  # type: ignore[attr-defined]
-        assistant_id=widget.assistant_id,  # type: ignore[attr-defined]
         chatbot_name=widget.chatbot_name or DEFAULT_CHATBOT_NAME,  # type: ignore[attr-defined]
         chatbot_title=widget.chatbot_title or DEFAULT_CHATBOT_TITLE,  # type: ignore[attr-defined]
         avatar_key=widget.avatar_key or DEFAULT_AVATAR_KEY,  # type: ignore[attr-defined]

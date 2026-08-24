@@ -6,8 +6,8 @@ is called from inside the use case's unit of work, after authorization and
 before the write, so a caller cannot reach a create path that skips it.
 
 **Reading is not creating.** Every guard asks a `may_create_*` question and
-none of them is consulted anywhere else. Withdrawing `allow_create_assistant`
-from a tenant with three assistants leaves those three working, because
+none of them is consulted anywhere else. Lowering `max_knowledge_bases` below
+what a tenant already has leaves those knowledge bases working, because
 nothing on the read path asks. That is a requirement, not an accident: a
 platform that silently disables working resources when an operator edits a
 number is one nobody can administer safely.

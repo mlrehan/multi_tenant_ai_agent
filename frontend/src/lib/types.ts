@@ -274,9 +274,6 @@ export interface ModelConfiguration {
    *  be read — deliberately distinct from 0. */
   token_budget_per_month: number | null;
   tokens_used_this_month: number | null;
-  /** This tenant's own provider key for this model (BYOK), if attached.
-   *  null means the platform's key answers and the platform is billed. */
-  provider_credential_id: string | null;
 }
 
 /** The platform-side view: the catalogue, plus who may use each entry. */
@@ -361,15 +358,6 @@ export interface ConversationThread {
   has_more?: boolean;
 }
 
-export interface ProviderCredential {
-  id: string;
-  provider: string;
-  key_hint: string;
-  created_at: string;
-  rotated_at: string | null;
-  revoked_at: string | null;
-}
-
 export interface AnswerCitation {
   label: string;
   document_id: string;
@@ -428,6 +416,13 @@ export interface ChatbotSettings {
    *  admin sees their 5,000 applied as 1,000 rather than meeting it as a 429. */
   effective_daily_message_limit: number | null;
   share_visitor_location: boolean;
+  /** The tenant's own brief, raw ("" when never written) so the form can show
+   *  `default_role`/`default_avoid` as the starting point rather than claiming
+   *  the tenant typed them. Saved through a separate behaviour endpoint. */
+  role_instructions: string;
+  avoid_instructions: string;
+  personality: Personality;
+  response_length: ResponseLength;
   updated_at: string;
 }
 
@@ -439,13 +434,10 @@ export interface TenantPlan {
   max_chat_widgets: number | null;
   max_messages_per_day: number | null;
   max_tokens_per_month: number | null;
-  allow_own_provider_credentials: boolean;
-  allow_create_assistant: boolean;
   allow_invite_members: boolean;
   allow_create_roles: boolean;
   knowledge_bases_used: number;
   chat_widgets_used: number;
-  assistants_used: number;
   messages_used_today: number | null;
   tokens_used_this_month: number | null;
   effective_daily_message_limit: number | null;
@@ -457,8 +449,6 @@ export interface TenantEntitlements {
   max_chat_widgets: number | null;
   max_messages_per_day: number | null;
   max_tokens_per_month: number | null;
-  allow_own_provider_credentials: boolean;
-  allow_create_assistant: boolean;
   allow_invite_members: boolean;
   allow_create_roles: boolean;
   updated_at: string;
@@ -485,8 +475,7 @@ export interface Team {
   member_ids: string[];
 }
 
-export interface AssistantBehaviour {
-  assistant_id: string;
+export interface ChatbotBehaviour {
   role_instructions: string;
   avoid_instructions: string;
   personality: Personality;
@@ -495,7 +484,6 @@ export interface AssistantBehaviour {
 
 export interface WidgetPresentation {
   widget_id: string;
-  assistant_id: string | null;
   chatbot_name: string;
   chatbot_title: string;
   avatar_key: AvatarKey;
@@ -511,4 +499,60 @@ export interface UnassignedConversation {
   handoff_initiated_by: "visitor" | "ai" | "agent" | null;
   title: string | null;
   last_message_at: string | null;
+}
+
+// ---- Platform overview dashboard ----
+//
+// Every usage field is `number | null`: null means the counter could not be
+// read, deliberately distinct from 0, which would claim nothing has been
+// spent. Render `?`, never a reassuring zero.
+//
+// `running_low` and the `remaining_*` values are computed server-side on
+// purpose — the platform screen and the tenant's own screen must not disagree
+// about what "running low" means, and a second copy of the threshold in
+// TypeScript would drift the moment either side is edited.
+
+export interface ProviderSpend {
+  provider: string;
+  model_count: number;
+  /** Sum of per-tenant budgets. null when some model has no budget at all, in
+   *  which case a total would silently exclude the biggest spender. */
+  total_tokens: number | null;
+  used_tokens: number | null;
+  remaining_tokens: number | null;
+  running_low: boolean;
+  has_unbudgeted: boolean;
+}
+
+export interface TenantModelSpend {
+  model_configuration_id: string;
+  model_name: string;
+  provider: string;
+  token_budget_per_month: number | null;
+  used_tokens: number | null;
+}
+
+export interface TenantSpend {
+  tenant_id: string;
+  slug: string;
+  display_name: string;
+  max_tokens_per_month: number | null;
+  used_tokens: number | null;
+  remaining_tokens: number | null;
+  running_low: boolean;
+  max_messages_per_day: number | null;
+  used_messages_today: number | null;
+  remaining_messages_today: number | null;
+  models: TenantModelSpend[];
+}
+
+export interface PlatformOverview {
+  providers: ProviderSpend[];
+  /** Tenants running low come first — the server decides the ordering so every
+   *  client puts what needs attention at the top. */
+  tenants: TenantSpend[];
+  tenants_running_low: number;
+  /** The threshold the flags were computed with, so the UI can explain why a
+   *  row is highlighted instead of restating a number that could drift. */
+  low_remaining_fraction: number;
 }

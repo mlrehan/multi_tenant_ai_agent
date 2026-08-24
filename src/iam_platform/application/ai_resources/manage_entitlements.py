@@ -44,8 +44,6 @@ class SetTenantEntitlementsCommand:
     max_chat_widgets: int | None
     max_messages_per_day: int | None
     max_tokens_per_month: int | None
-    allow_own_provider_credentials: bool
-    allow_create_assistant: bool
     allow_invite_members: bool
     allow_create_roles: bool
 
@@ -77,10 +75,6 @@ class SetTenantEntitlements:
             entitlements.max_chat_widgets = command.max_chat_widgets
             entitlements.max_messages_per_day = command.max_messages_per_day
             entitlements.max_tokens_per_month = command.max_tokens_per_month
-            entitlements.allow_own_provider_credentials = (
-                command.allow_own_provider_credentials
-            )
-            entitlements.allow_create_assistant = command.allow_create_assistant
             entitlements.allow_invite_members = command.allow_invite_members
             entitlements.allow_create_roles = command.allow_create_roles
             entitlements.updated_by_user_id = actor_id
@@ -103,8 +97,6 @@ class SetTenantEntitlements:
                     "max_chat_widgets": command.max_chat_widgets,
                     "max_messages_per_day": command.max_messages_per_day,
                     "max_tokens_per_month": command.max_tokens_per_month,
-                    "allow_own_provider_credentials": command.allow_own_provider_credentials,
-                    "allow_create_assistant": command.allow_create_assistant,
                     "allow_invite_members": command.allow_invite_members,
                     "allow_create_roles": command.allow_create_roles,
                 },
@@ -186,7 +178,6 @@ class TenantPlanView:
     entitlements: TenantEntitlements
     knowledge_bases_used: int
     chat_widgets_used: int
-    assistants_used: int
     messages_used_today: int | None
     tokens_used_this_month: int | None
     effective_daily_message_limit: int | None
@@ -226,10 +217,12 @@ class GetTenantEntitlements:
                 uow, tenant_id=tenant_id, clock=self._clock
             )
             settings = await uow.chatbot_settings.get_for_tenant(tenant_id)
+            # No assistant count: there is no `max_assistants` to compare it
+            # against and no route for a tenant to create one, so reporting it
+            # would be a number nobody can act on.
             counts = (
                 await uow.entitlements.count_knowledge_bases(tenant_id),
                 await uow.entitlements.count_chat_widgets(tenant_id),
-                await uow.entitlements.count_assistants(tenant_id),
             )
 
         messages_used = await self._safe_messages(tenant_id)
@@ -238,7 +231,6 @@ class GetTenantEntitlements:
             entitlements=entitlements,
             knowledge_bases_used=counts[0],
             chat_widgets_used=counts[1],
-            assistants_used=counts[2],
             messages_used_today=messages_used,
             tokens_used_this_month=tokens_used,
             effective_daily_message_limit=entitlements.effective_daily_message_limit(
