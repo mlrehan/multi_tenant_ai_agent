@@ -19,6 +19,7 @@ import { useTenantStore } from "@/stores/tenant-store";
 import { extractTenantIdFromPath } from "@/lib/route-tenant";
 import {
   handoffSoundEnabled,
+  primeHandoffAudio,
   snoozeHandoffAlarm,
   startHandoffAlarm,
   stopHandoffAlarm,
@@ -112,6 +113,12 @@ export function HandoffAlerts() {
   const [alarmActive, setAlarmActive] = useState(false);
   useEffect(() => subscribeToAlarm(setAlarmActive), []);
 
+  // Readies the audio context on the agent's first click or keypress. Without
+  // this, the browser's autoplay policy leaves a context created inside a
+  // network callback permanently suspended -- it schedules the tones and plays
+  // nothing, with no error anywhere.
+  useEffect(() => primeHandoffAudio(), []);
+
   useEffect(() => {
     // Clearing when access is lost matters as much as setting it: a stale
     // "(3)" must not outlive the session that earned it.
@@ -127,15 +134,20 @@ export function HandoffAlerts() {
     // continuing to sound for work already being handled is precisely how
     // people learn to ignore an alarm.
     if (count === 0) stopHandoffAlarm();
+  }, [canWork, waiting]);
 
-    // Stopping on unmount as well as on an empty queue: navigating away from
-    // the console must not leave an interval flashing a title -- or sounding a
-    // chime -- for ever.
+  // **Unmount-only cleanup, and the empty dependency list is the whole point.**
+  // This was previously the cleanup of the effect above, which silenced the
+  // alarm within milliseconds of it starting: the same SSE event that starts
+  // the alarm also invalidates the queue query, `waiting` changes, and an
+  // effect's cleanup runs on every dependency change -- not just on unmount.
+  // The alarm was therefore started and immediately torn down, every time.
+  useEffect(() => {
     return () => {
       setQueueBlink(0);
       stopHandoffAlarm();
     };
-  }, [canWork, waiting]);
+  }, []);
 
   if (!alarmActive || !canWork) return null;
 

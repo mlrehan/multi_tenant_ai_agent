@@ -73,33 +73,79 @@ export function setHandoffSoundEnabled(on: boolean): void {
 }
 
 /**
- * The handoff alert tone via WebAudio.
+ * One shared AudioContext for the whole console, created lazily.
  *
- * No audio file: shipping one for an alert is a network request and an asset
- * to host, and a generated tone cannot 404 or arrive late.
+ * **A per-chime context is what silenced the alarm.** Browsers refuse to start
+ * an `AudioContext` before the page has had a user gesture: a fresh one
+ * created inside a network-event callback is born `suspended`, schedules its
+ * oscillators against a clock that never advances, and plays nothing at all --
+ * with no error, which is exactly why this failed invisibly. A single
+ * long-lived context can instead be *unlocked* once, by any click, and stays
+ * usable for every alert afterwards.
+ */
+let sharedCtx: AudioContext | null = null;
+
+function audioContext(): AudioContext | null {
+  if (sharedCtx) return sharedCtx;
+  const Ctx =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctx) return null;
+  try {
+    sharedCtx = new Ctx();
+    return sharedCtx;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Readies audio on the first user gesture, so an alert that arrives later can
+ * actually be heard.
  *
- * **Deliberately insistent, not a polite ping.** This is the sound that tells
- * a nursery someone is waiting to speak to a human, and the previous
- * two-note chime at 0.12 gain was routinely missed in a room with any
- * background noise. It now repeats three times over ~1.4s at a much higher
- * gain, alternating two tones -- a pattern the ear reads as an alarm rather
- * than as a notification, which is the point.
+ * Registered once from the app shell. The listeners remove themselves after
+ * the first gesture -- the context only needs unlocking once per page, and a
+ * permanent document-level handler on every click is a cost with no purpose.
  *
- * Browsers block audio until the page has been interacted with, so the whole
- * thing is wrapped: a blocked tone must never surface as an error, because the
- * system notification, the toast, the tab title and the vibration all still
- * fired.
+ * `pointerdown` *and* `keydown`: an agent who works by keyboard never fires a
+ * pointer event, and would otherwise have a permanently silent console.
+ */
+export function primeHandoffAudio(): void {
+  if (typeof window === "undefined") return;
+  const unlock = () => {
+    const ctx = audioContext();
+    // `resume()` on an already-running context is a no-op, so this is safe to
+    // call whether or not the browser actually suspended it.
+    void ctx?.resume().catch(() => undefined);
+    window.removeEventListener("pointerdown", unlock);
+    window.removeEventListener("keydown", unlock);
+  };
+  window.addEventListener("pointerdown", unlock);
+  window.addEventListener("keydown", unlock);
+}
+
+/**
+ * The handoff alert tone.
+ *
+ * Three rising two-note pairs, deliberately insistent rather than a polite
+ * ping: this is the sound that tells a nursery someone is waiting to speak to
+ * a human, and a soft chime is routinely missed in a room with any background
+ * noise. A square wave carries further through that noise than a sine at the
+ * same gain.
+ *
+ * Never throws. A blocked or unavailable tone must not surface as an error --
+ * the banner, the system notification, the tab title and the vibration all
+ * still fired, and the agent can act on those.
  */
 export function chimeForHandoff(): void {
   try {
-    const Ctx =
-      window.AudioContext ??
-      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!Ctx) return;
-    const ctx = new Ctx();
+    const ctx = audioContext();
+    if (!ctx) return;
+    // Resumed on every chime, not only at unlock: a context can be suspended
+    // again by the browser when a tab is backgrounded, which is precisely when
+    // an agent most needs to hear this.
+    void ctx.resume().catch(() => undefined);
 
-    // Three rising two-note pairs. `repeat` and the per-note offsets are what
-    // make it read as urgent; a single pair is what it used to be.
     const REPEATS = 3;
     const PAIR_SECONDS = 0.46;
     for (let repeat = 0; repeat < REPEATS; repeat += 1) {
@@ -108,8 +154,6 @@ export function chimeForHandoff(): void {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.frequency.value = freq;
-        // A square wave carries further through room noise than a sine at the
-        // same gain, which is the whole reason for the change.
         osc.type = "square";
         gain.gain.setValueAtTime(0.0001, at);
         gain.gain.exponentialRampToValueAtTime(0.45, at + 0.02);
@@ -119,8 +163,9 @@ export function chimeForHandoff(): void {
         osc.stop(at + 0.24);
       });
     }
-    // Closed after the last note has finished, or the tail is cut off.
-    setTimeout(() => void ctx.close(), REPEATS * PAIR_SECONDS * 1000 + 600);
+    // The context is deliberately **not** closed here. It is shared and
+    // reused; closing it would mean the next chime has to create and unlock a
+    // new one, which is the bug this whole arrangement exists to avoid.
   } catch {
     /* Autoplay policy or no WebAudio -- the other channels still fired. */
   }
