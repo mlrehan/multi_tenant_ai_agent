@@ -35,7 +35,9 @@ Six pieces run together, and **both development and production run all six in Do
 | **`redis`** | Cache, login-attempt/rate-limit counters, and the job queue the worker consumes |
 | **`qdrant`** | Vector search over uploaded documents, for the knowledge-base / chat features |
 
-**Development and production differ only in where things are reachable from and what secrets look like.** In development, Postgres/Redis/Qdrant/the API are each published to `localhost` on an easy-to-remember port so you can poke at them directly; secrets are throwaway values in a git-ignored `.env`. In production, nothing but the API is reachable at all (and only from the server itself — Nginx is what the internet actually talks to), and secrets are real.
+**A seventh piece, the admin console, runs outside this Docker Compose setup in both environments** — a Next.js process, started with plain `npm run dev` in development (Part A Step 6) and kept alive with PM2 in production (Part B Step 7a). It's the one piece not in the table above because it isn't one of the six containers `docker compose` starts; it talks to the API the same way in both places — a server-side call to the API's own origin, never routed through the browser.
+
+**Development and production differ only in where things are reachable from and what secrets look like.** In development, Postgres/Redis/Qdrant/the API/the console are each reachable on `localhost` on an easy-to-remember port so you can poke at them directly; secrets are throwaway values in a git-ignored `.env`. In production, nothing but Nginx is reachable from the internet at all — the API and the console both bind to the loopback address and are reached only through it — and secrets are real.
 
 > **Prefer to run the API and worker natively with `python`/`celery` instead of in Docker** — for a debugger attached, or faster edit-reload? That is still fully supported; see **"Running natively instead of Docker"** at the end of Part A. The Docker path below is the one actually exercised end-to-end and is what this guide recommends by default.
 
@@ -177,9 +179,9 @@ There's a second, unrelated gap in the way too: registration normally requires c
 First, register the account you want to make an admin:
 
 ```bash
-curl -X POST https://localhost:18000/v1/auth/register \
-  -H "content-type: application/json" \
-  -d '{"email": "admin@lait.co.uk", "password": "Correct-Horse-9!"}'
+curl -X POST http://localhost:18000/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@lait.co.uk","password":"Correct-Horse-9!"}'
 ```
 
 Then bootstrap it, running the script inside a one-off container that reuses the `migrate` service's database credentials — no local Python setup needed for this step:
@@ -334,7 +336,7 @@ Useful for attaching a debugger, or for a faster edit-run loop than rebuilding a
 docker compose -f docker-compose.dev.yml up -d postgres redis qdrant
 ```
 
-**Set up Python** (same as Step 7a above if you haven't already):
+**Set up Python** (same as Part A Step 7a above if you haven't already):
 
 ```bash
 python3 -m venv .venv
@@ -701,11 +703,61 @@ docker compose -f docker-compose.prod.yml run --rm migrate python scripts/bootst
 
 This step is easy to miss and the failure mode isn't obvious: `bootstrap_platform_admin.py` only seeds the *platform*-scope catalog (fully separate tables, by design). Nothing seeds the *tenant*-scope one — `tenant_permissions` and the built-in Tenant Owner / Tenant Administrator / Member roles — until this runs. Skip it, and creating a tenant still "succeeds": the tenant exists, the owner has a membership, but there's no "Tenant Owner" role to grant them, so they land with zero tenant permissions and a nearly-empty console. `CreateTenant` now refuses outright (503) if you try to create a tenant before this step has run, rather than succeeding silently. Also idempotent — safe to re-run.
 
-> **The admin console (`frontend/`) isn't part of this production compose setup.** This guide's `docker-compose.prod.yml` only builds and runs the backend API — there's no frontend service, Dockerfile, or reverse-proxy entry for it here yet. To run it against this server, build it separately (`cd frontend && npm run build && npm run start`, or deploy it to any Node/Next.js host) with `BACKEND_API_URL` pointed at this server's API origin, and put it behind its own domain or path in Nginx. Until then, `https://yourdomain.com/docs` (Step 6/8) and direct API calls are how you administer this deployment.
+### Step 7a — Run the admin console (frontend)
+
+**The admin console (`frontend/`) isn't part of `docker-compose.prod.yml`** — that file only builds and runs the backend API. The console is a separate Next.js process, run with Node directly and kept alive with **PM2** (a process manager that restarts it if it crashes and starts it again on reboot). Without this step you can still drive the API directly (`https://yourdomain.com/docs`), but there is no console to administer tenants, roles or AI resources from.
+
+**Install Node.js and PM2, if you haven't already:**
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo npm install -g pm2
+```
+
+**Build it:**
+
+```bash
+cd ~/ai_agent_by_Claude/frontend
+npm ci
+```
+
+Create `frontend/.env.local` with one line — this is the only setting the console needs, and it's server-only (the browser never sees it):
+
+```bash
+echo "BACKEND_API_URL=http://127.0.0.1:8100" > .env.local
+```
+
+Use whatever port your backend actually answers on here — `8100` is this guide's default (`API_HOST_PORT` in Step 4), change it if you set that differently. This call happens **inside the server**, process to process — it never goes through Nginx or the internet, so it must use the loopback address and the backend's *internal* port, not your public domain.
+
+```bash
+npm run build
+```
+
+**Run it under PM2, bound to loopback only:**
+
+```bash
+pm2 start node_modules/.bin/next --name iam-console -- start -p 3100 -H 127.0.0.1
+pm2 save
+pm2 startup   # prints one command starting with `sudo env PATH=...` -- run exactly that, once
+```
+
+**Point PM2 at the `next` binary directly, never at `npm start`.** `pm2 start npm -- start` makes PM2 supervise `npm`, which then spawns `next start` as its *own* child process — PM2 only tracks the `npm` parent. On a restart, PM2 kills the parent, but the child `next-server` process can be left orphaned, still holding port 3100. The next start then fails with `EADDRINUSE`, and if you retry enough times you can end up with two competing processes intermittently trading the port, each serving its own build — which looks exactly like random 500s on some static files and not others, because whichever process wins a given request serves whatever it has. Pointing PM2 at the `next` binary itself means PM2 supervises the actual server process, and a restart is really a restart.
+
+The `-H 127.0.0.1` matters as much as the API's own `127.0.0.1:` port binding in Step 8e below: without it, Next.js listens on every network interface, and the console — the one surface in this whole system that handles session cookies — would be reachable directly from the internet on port 3100, bypassing Nginx, TLS, and every security header the proxy adds.
+
+**Confirm it's running:**
+
+```bash
+curl -sI http://127.0.0.1:3100/
+pm2 status
+```
+
+You should get an HTTP response and see `iam-console` listed as `online`.
 
 ### Step 8 — Put a real domain and HTTPS in front of it
 
-Right now the API is only reachable on port 8100 (or whatever `API_HOST_PORT` you set), without encryption. For a real deployment you want a domain name with HTTPS, using **Nginx** as a reverse proxy and **Let's Encrypt** (via Certbot) for a free TLS certificate.
+Right now the API and the console are only reachable on their own ports (8100 and 3100), without encryption, and only from the server itself. For a real deployment you want a domain name with HTTPS, using **Nginx** as a reverse proxy and **Let's Encrypt** (via Certbot) for a free TLS certificate — Nginx becomes the *only* thing the internet can reach, and it forwards to whichever of the two a request is actually for.
 
 **8a. Install Nginx and Certbot:**
 
@@ -728,12 +780,40 @@ server {
     listen 80;
     server_name yourdomain.com;
 
+    # The admin console. Everything a signed-in person uses -- login, tenants,
+    # roles, AI resources -- goes through the console's own same-origin proxy
+    # (`/api/backend/*` under this same location), never straight to the API.
+    # This is why `/api/` must NOT get its own nginx block pointing at the
+    # backend: that route belongs to the console's own internal proxy, and a
+    # separate nginx rule for it would intercept those requests before the
+    # console ever sees them -- breaking login and every authenticated action.
     location / {
-        proxy_pass http://127.0.0.1:8100;
+        proxy_pass http://127.0.0.1:3100;
+        proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    # The one part of the backend the public reaches directly: the embeddable
+    # chat widget, on the third-party sites a tenant pastes it into. This is
+    # deliberately its own narrow prefix rather than a general `/api/` proxy --
+    # see the note on `location /` above for why a broader rule breaks login.
+    location ^~ /v1/public/ {
+        proxy_pass http://127.0.0.1:8100;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        # The widget's answer endpoint streams (SSE). Without this, nginx
+        # buffers the whole response and delivers it in one burst instead of
+        # token-by-token.
+        proxy_buffering off;
     }
 
     # Don't expose metrics to the public internet -- see the security
@@ -760,20 +840,27 @@ sudo certbot --nginx -d yourdomain.com
 
 Certbot will ask for an email address (for renewal notices) and automatically edit your Nginx config to redirect HTTP to HTTPS. Certificates auto-renew; you don't need to do anything further.
 
-**8e. Confirm the API's port is not exposed to the internet.** `docker-compose.prod.yml` already binds it to the loopback address only:
+**8e. Confirm neither the API nor the console is exposed to the internet directly.** Both must be reachable *only* from the server itself, so that Nginx — with its TLS certificate and security headers — is genuinely the only way in.
+
+The API: `docker-compose.prod.yml` already binds it to the loopback address only:
 
 ```yaml
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8100}:8000"
 ```
 
-Nginx reaches the API over the loopback; nothing outside the server can. Verify from your own machine (**not** over SSH on the server) — this should time out or be refused:
+The console: Step 7a's `pm2 start` command already included `-H 127.0.0.1` for the same reason.
+
+Verify both from your own machine (**not** over SSH on the server) — these should time out or be refused:
 
 ```bash
 curl --max-time 5 http://YOUR_SERVER_IP:8100/livez
+curl --max-time 5 http://YOUR_SERVER_IP:3100/
 ```
 
-> **Do not drop the `127.0.0.1:` prefix from this line, and do not rely on the firewall to cover it if you do.** Docker publishes ports by writing its own iptables rules in the `DOCKER` chain, and those are evaluated **before** ufw's. A `ufw deny 8100` does not block a Docker-published port. If the API were bound to `0.0.0.0` (no `127.0.0.1:` prefix), it would be reachable from the internet over plain HTTP on whatever `API_HOST_PORT` is set to — bypassing Nginx, your TLS certificate, and the security headers and rate limiting the proxy adds — and `ufw status` would still look correct.
+> **Do not drop the `127.0.0.1:` prefix from the API's port line, and do not rely on the firewall to cover it if you do.** Docker publishes ports by writing its own iptables rules in the `DOCKER` chain, and those are evaluated **before** ufw's. A `ufw deny 8100` does not block a Docker-published port. If the API were bound to `0.0.0.0` (no `127.0.0.1:` prefix), it would be reachable from the internet over plain HTTP on whatever `API_HOST_PORT` is set to — bypassing Nginx, your TLS certificate, and the security headers and rate limiting the proxy adds — and `ufw status` would still look correct.
+>
+> **The console doesn't have this loophole** — PM2 runs it as a plain process, not a Docker container, so ufw's rules genuinely do apply to it. `-H 127.0.0.1` is still the safer default (correct by construction, not by remembering to also configure the firewall), but `sudo ufw deny 3100` is real defense-in-depth here in a way it isn't for the Docker-published API port.
 
 ### Step 9 — Lock down the firewall
 
@@ -826,7 +913,7 @@ curl http://localhost:8100/metrics
 
 ### Deploying an update — the safe way, every time
 
-**Use these same five steps for every update, no matter how small or large the change is** — a one-line text fix and a database schema change both go through the identical procedure. You never have to guess which kind you're dealing with.
+**Use these same six steps for every update, no matter how small or large the change is, and no matter which half of the app it touches** — a copy-text fix in the console, a new dashboard, and a database schema change all go through the identical procedure. You never have to guess which kind you're dealing with, or whether this change "needs" the frontend steps — always do all of them; the ones that have nothing to do finish in a second.
 
 Why this is safe by design, before you even get to the backup: this project's database changes ("migrations") are written to only ever *add* — a new column, a new table — never to silently destroy something the running app still needs. A migration that adds a table can't lose data that already exists, because it never touches existing rows. That said, "the design is careful" is not the same guarantee as "nothing can ever go wrong" — a mistake is still possible, which is exactly what Step 1 protects you from. Treat it as non-negotiable, not optional.
 
@@ -842,13 +929,13 @@ ls -lh backups/
 
 This takes a few seconds even with real data in the database, and it doesn't interrupt the running app at all — visitors and staff using the system right now won't notice. The `ls` at the end confirms the file actually landed and has a real size (not 0 bytes).
 
-**Step 2 — Get the new code.**
+**Step 2 — Get the new code.** One pull grabs both halves — the backend and the console live in the same repository.
 
 ```bash
 git pull
 ```
 
-**Step 3 — Deploy.**
+**Step 3 — Deploy the backend.**
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
@@ -856,37 +943,56 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 This one command rebuilds the image, applies any new database changes (skipping ones already applied — it never re-runs an old one), and restarts the API and worker. The old containers keep answering traffic until the new ones are confirmed healthy, so there's no window where the site is down.
 
-**Step 4 — Confirm it actually worked.**
+> **If `migrate` fails right after this command with a connection timeout, it's very likely a startup race, not a real failure.** Recreating containers restarts Postgres too, and `migrate` can begin connecting before Postgres has finished coming back up. Just run the migration again on its own — it will succeed once Postgres is ready, and nothing about the failed attempt needs cleaning up:
+> ```bash
+> docker compose -f docker-compose.prod.yml run --rm migrate
+> ```
+
+**Step 4 — Deploy the console.** Skip this only if you're certain this update touched nothing under `frontend/` — when in doubt, run it anyway; an unnecessary rebuild costs a minute, a missed one leaves the console silently out of date.
+
+```bash
+cd frontend
+npm ci
+npm run build
+pm2 restart iam-console
+cd ..
+```
+
+**Step 5 — Confirm it actually worked.**
 
 ```bash
 curl https://yourdomain.com/readyz
+curl -sI http://127.0.0.1:3100/
 docker compose -f docker-compose.prod.yml logs --tail=50 migrate
 docker compose -f docker-compose.prod.yml logs --tail=50 api
+pm2 status
 ```
 
-You're looking for `"status":"ready"` from the first command, and no `ERROR` lines in the `migrate` log. If both look clean, you're done — carry on with the rest of your day.
+You're looking for `"status":"ready"` from the first command, a real HTTP response from the second, no `ERROR` lines in the `migrate` log, and `iam-console` listed as `online`. If all of that looks clean, you're done — carry on with the rest of your day.
 
-**After an upgrade that adds permissions, re-run the bootstrap script.** New platform permissions don't attach themselves to existing roles, so an administrator who upgraded before `platform.users.read`/`platform.users.manage` existed won't see the Users screen until:
+**After an upgrade that changes what permissions exist — adds them, removes them, or both — re-run the bootstrap scripts.** Neither the platform-scope catalog nor the tenant-scope one updates existing roles on its own: a permission added after someone's role was granted doesn't retroactively appear on their screen, and both scripts are what a role's actual grants get reconciled against. Run both — each is scoped to a different catalog (see Step 7's note on why there are two), and each is a no-op when there's nothing new to do:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm migrate python scripts/bootstrap_platform_admin.py you@yourdomain.com
+docker compose -f docker-compose.prod.yml run --rm migrate python scripts/bootstrap_tenant_catalog.py
 ```
 
-It's idempotent — safe on every deploy, and a no-op when there's nothing new to grant.
+Both are idempotent — safe on every deploy, whether or not this particular update touched permissions at all.
 
-**Step 5 — If something looks wrong**, there are two different problems, fixed two different ways. Work out which one you have first:
+**Step 6 — If something looks wrong**, there are two different problems, fixed two different ways. Work out which one you have first:
 
-- **The app is up but behaving badly (a bug in the new code)** — your data is untouched. Just go back to the previous version:
+- **The app is up but behaving badly (a bug in the new code)** — your data is untouched. Just go back to the previous version, backend and console together:
 
   ```bash
   git log --oneline -5    # find the commit hash from before your update
   git checkout <that-commit-hash>
   docker compose -f docker-compose.prod.yml up -d --build
+  cd frontend && npm ci && npm run build && pm2 restart iam-console && cd ..
   ```
 
-  This is always safe to do. The containers hold no data themselves — everything that matters lives in the database and the two storage volumes, none of which this touches.
+  This is always safe to do. Neither the containers nor the console process hold data themselves — everything that matters lives in the database and the two storage volumes, none of which this touches.
 
-- **The `migrate` step itself failed, or the data now looks wrong** — this is what Step 1's backup exists for. See **"Restoring from a backup"** directly below. Stop here and don't experiment further on the live database first — restore, then try the update again once you understand what went wrong.
+- **The `migrate` step itself failed for a reason other than the startup race above, or the data now looks wrong** — this is what Step 1's backup exists for. See **"Restoring from a backup"** directly below. Stop here and don't experiment further on the live database first — restore, then try the update again once you understand what went wrong.
 
 **One command to never run on a production server you care about:** `docker compose -f docker-compose.prod.yml down -v`. The `-v` deletes the database, the search index, and every uploaded document — permanently, all three at once. Nothing in the normal update flow above ever needs it.
 
@@ -989,6 +1095,7 @@ Go through this list once before pointing real users at the server:
 - [ ] `.env` is not committed to git (`git status` should not show it — it's already in `.gitignore`)
 - [ ] `CORS_ALLOWED_ORIGINS` in `.env` lists only your real frontend domain(s), not `*` or `localhost`
 - [ ] The API's port (`API_HOST_PORT`, 8100 by default) is bound to `127.0.0.1` only (Step 8e) and is not in `ufw status`'s allowed list
+- [ ] The console's port (3100) was started with `-H 127.0.0.1` (Step 7a) and is not in `ufw status`'s allowed list either
 - [ ] `/metrics` is blocked at the Nginx layer (Step 8c) — it has no authentication of its own
 - [ ] HTTPS is working (`https://yourdomain.com`, not just `http://`) and HTTP redirects to it
 - [ ] You generated **fresh** production secrets rather than reusing development ones
@@ -1040,9 +1147,44 @@ docker compose -f docker-compose.prod.yml exec postgres\
 
 **A button in the admin console does nothing / an action returns a 500** — if you're on an older checkout, several separate defects caused exactly this and are now fixed: menu items used the wrong Base UI prop and were inert, the console's BFF proxy crashed on every `204 No Content` reply (which is what most successful actions return), permission-denied tenant actions raised an unmapped exception, and creating a *second* tenant for the same owner violated a unique index. Pull the latest code and rebuild: `docker compose -f docker-compose.dev.yml up -d --build` (migrations run automatically as part of that), then restart `npm run dev`. Running natively instead? `python -m alembic upgrade head`, restart the API and the worker, then restart `npm run dev`.
 
+**`docker compose ... up -d --build` reports `migrate` failed right after a rebuild** — almost always a startup race, not a real failure: recreating containers restarts Postgres too, and `migrate` can start connecting before Postgres has finished coming back up (check with `docker compose logs postgres` — a `database system is ready to accept connections` line after the failure timestamp confirms it). Just run the migration again on its own; it succeeds once Postgres is ready:
+```bash
+docker compose -f docker-compose.dev.yml run --rm migrate
+```
+
+**`docker compose ... --build` takes hours and seems to redownload everything, every time, even though nothing in `pyproject.toml` changed** — check `docker system df` / `docker buildx du` before assuming the Dockerfile is at fault; the heavy dependency layer (torch, docling, and friends) is deliberately cached separately from application code and shouldn't normally be rebuilt for a code-only change. If the cache genuinely isn't surviving between sessions, the usual cause on a memory-constrained Docker host is the build getting killed partway through — an interrupted layer caches nothing at all (Docker layers are all-or-nothing), so the next attempt redoes the entire download from zero. Give the Docker daemon more memory if you can, and avoid a full Docker restart between builds if possible, since that's what most reliably evicts the cache.
+
+**The console is stuck on "Loading your workspace…", and the browser's Network tab shows some `_next/static/chunks/*.js` files returning 500 while others load fine** — this is not a database or API problem, even though the symptom looks like one; it means the Next.js server process is serving a build that doesn't match what's actually on disk. Check for **two PM2 processes competing for port 3100** first, since it's the single most likely cause and produces exactly this pattern (whichever process wins a given request serves its own, possibly different, build):
+
+```bash
+pm2 list
+sudo ss -ltnp | grep 3100
+```
+
+If you see more than one PM2 process, or the port's PID doesn't match the one PM2 reports, delete every frontend PM2 process by name, confirm the port is actually free, and start clean:
+
+```bash
+pm2 delete iam-console        # repeat for any other frontend process name you find
+sudo ss -ltnp | grep 3100     # must print nothing before continuing
+cd frontend && rm -rf .next && npm run build
+pm2 start node_modules/.bin/next --name iam-console -- start -p 3100 -H 127.0.0.1
+pm2 save
+```
+
+If `pm2 delete` doesn't free the port (PM2 was started with `npm start` rather than the `next` binary directly, so the underlying `next-server` process was orphaned rather than killed — see Step 7a's note on why), kill it by PID directly before restarting: `sudo kill -9 <pid from ss above>`.
+
+**`npm run build` fails with `Can't resolve '<package>/<something>.css'` (or any other module) that plainly exists in `node_modules`** — before suspecting a broken install, suspect a **stale Turbopack cache**. Turbopack persists module-resolution results in `.next/cache` across builds for speed, including *failures* — so a build that failed once (a dependency genuinely missing, an interrupted `npm ci`, anything) can keep reporting the exact same "can't resolve" error on every subsequent attempt even after the real problem is fixed, because it's replaying the cached failure rather than re-resolving. This is exactly what a full clean rebuild (delete `.next`, then hit an unrelated snag, fix it, rebuild *without* deleting `.next` again) walks straight into. The fix is always the same — wipe the cache again and only then retry:
+
+```bash
+rm -rf .next
+npm run build
+```
+
+If it still fails after that, the problem is real, not cached — check the package actually installed completely (`ls -la node_modules/<package>/<the missing file>`) before going further.
+
 **The console is empty and the sidebar only shows "My identity"** — that's a database with no data plus an account with no permissions. Two common causes: you never ran `scripts/bootstrap_platform_admin.py` (Part A Step 5 / Part B Step 7), or you ran the backend test suite against the wrong database, whose teardown truncates every table — including your admin account and its role grants (this shouldn't happen if you followed Part A Step 7's separate-test-database setup). Re-run the bootstrap script, then `scripts/seed_demo_data.py` if you want demo content back.
 
-**I created a tenant and its owner's sidebar only shows Dashboard, Assistants, Knowledge bases, and Conversations — no Members, no Roles & permissions, no Provider credentials** — the owner's membership has no role assigned, because `scripts/bootstrap_tenant_catalog.py` (Part A Step 5 / Part B Step 7) was never run and there was no "Tenant Owner" role for `CreateTenant` to grant. Run it now, then assign the role to the affected membership by hand (there's no "repair an existing tenant" button, since this shouldn't happen again — `CreateTenant` now refuses with a 503 instead of creating a tenant this way going forward):
+**I created a tenant and its owner's sidebar only shows Dashboard, AI Chatbot, Knowledge bases, and Conversations — no Members, no Roles & permissions, no Inbox** — the owner's membership has no role assigned, because `scripts/bootstrap_tenant_catalog.py` (Part A Step 5 / Part B Step 7) was never run and there was no "Tenant Owner" role for `CreateTenant` to grant. Run it now, then assign the role to the affected membership by hand (there's no "repair an existing tenant" button, since this shouldn't happen again — `CreateTenant` now refuses with a 503 instead of creating a tenant this way going forward):
 
 ```sql
 INSERT INTO tenant_membership_roles (id, tenant_id, membership_id, role_id, granted_by_user_id)

@@ -76,8 +76,8 @@ class _FakeQuota:
 class _FakePipeline:
     answer_text: str = "We are open 9 to 5."
 
-    async def answer_from_namespace(self, question: str, *, namespace: str, memory: object = None):  # type: ignore[no-untyped-def]
-        del question, namespace, memory
+    async def answer_from_namespace(self, question: str, *, namespace: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        del question, namespace, kwargs
 
         async def _tokens():  # type: ignore[no-untyped-def]
             yield self.answer_text

@@ -1,8 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import Link from "next/link";
 import { toast } from "sonner";
+import { BellRing } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useConversationEvents, useUnassignedInbox } from "@/features/chatbot/hooks";
 import {
   setQueueBadge,
@@ -14,9 +17,16 @@ import { useMyMemberships } from "@/features/tenancy/hooks";
 import { useHasTenantPermission } from "@/features/rbac/hooks";
 import { useTenantStore } from "@/stores/tenant-store";
 import { extractTenantIdFromPath } from "@/lib/route-tenant";
-import { chimeForHandoff, handoffSoundEnabled } from "@/features/chatbot/handoff-sound";
+import {
+  handoffSoundEnabled,
+  snoozeHandoffAlarm,
+  startHandoffAlarm,
+  stopHandoffAlarm,
+  subscribeToAlarm,
+} from "@/features/chatbot/handoff-sound";
 
 const AGENT_PERMISSION = "tenant.conversations.view";
+const SNOOZE_MINUTES = 2;
 
 /**
  * Handoff alerting for the whole console, not just the Inbox screen.
@@ -33,8 +43,9 @@ const AGENT_PERMISSION = "tenant.conversations.view";
  * separately — two subscriptions would mean two connections and two chimes for
  * one arrival.
  *
- * Rendered as `null`: this is behaviour, not UI. The visible parts are the
- * toast, the tab badge, and the system notification.
+ * The visible parts are the toast, the tab badge and blink, the system
+ * notification, and — while the alarm is sounding — the banner below, which is
+ * the only way to stop it.
  */
 export function HandoffAlerts() {
   const pathname = usePathname();
@@ -67,7 +78,10 @@ export function HandoffAlerts() {
     if (announced.current.has(event.conversation_id)) return;
     announced.current.add(event.conversation_id);
 
-    if (handoffSoundEnabled()) chimeForHandoff();
+    // The repeating alarm, not a single chime: one burst is missed by anyone
+    // who stepped away for thirty seconds. It sounds until acknowledged --
+    // see `handoff-sound.ts` for what stops it.
+    startHandoffAlarm();
     // Both no-op on a visible page, by their own checks: someone watching the
     // screen has the toast, and does not need their phone buzzing or an OS
     // panel over the work they are doing.
@@ -92,6 +106,12 @@ export function HandoffAlerts() {
   const inbox = useUnassignedInbox(tenantId, Boolean(canWork));
   const waiting = inbox.data?.conversations.length ?? 0;
 
+  // Read from the module rather than mirrored into state on every render: the
+  // alarm is not React state, and a second copy of "is it sounding" is how the
+  // banner ends up disagreeing with the sound.
+  const [alarmActive, setAlarmActive] = useState(false);
+  useEffect(() => subscribeToAlarm(setAlarmActive), []);
+
   useEffect(() => {
     // Clearing when access is lost matters as much as setting it: a stale
     // "(3)" must not outlive the session that earned it.
@@ -101,10 +121,74 @@ export function HandoffAlerts() {
     // blink alternates against what it wrote. Reversed, the first flash would
     // carry the previous count.
     setQueueBlink(count);
+
+    // An empty queue stops the alarm on its own. A colleague claiming the
+    // conversation is the commonest way an alert stops being relevant, and
+    // continuing to sound for work already being handled is precisely how
+    // people learn to ignore an alarm.
+    if (count === 0) stopHandoffAlarm();
+
     // Stopping on unmount as well as on an empty queue: navigating away from
-    // the console must not leave an interval flashing a title for ever.
-    return () => setQueueBlink(0);
+    // the console must not leave an interval flashing a title -- or sounding a
+    // chime -- for ever.
+    return () => {
+      setQueueBlink(0);
+      stopHandoffAlarm();
+    };
   }, [canWork, waiting]);
 
-  return null;
+  if (!alarmActive || !canWork) return null;
+
+  return (
+    <div
+      // `alert` rather than `status`: this is an interruption that needs
+      // acknowledging, and screen readers should treat it as one.
+      role="alert"
+      className="fixed inset-x-0 bottom-0 z-50 flex flex-wrap items-center justify-center gap-3 border-t border-destructive/40 bg-destructive/10 px-4 py-3 backdrop-blur"
+    >
+      <span className="flex items-center gap-2 text-sm font-medium text-destructive">
+        <BellRing className="size-4 animate-pulse" />
+        {waiting === 1
+          ? "A visitor is waiting to speak to someone"
+          : `${waiting} visitors are waiting to speak to someone`}
+      </span>
+      <div className="flex items-center gap-2">
+        {tenantId && (
+          <Button
+            size="sm"
+            // Opening the Inbox is the actual response, so it silences the
+            // alarm too -- an agent who has gone to deal with it should not
+            // then have to also find a button to stop the noise.
+            onClick={() => stopHandoffAlarm()}
+            render={<Link href={`/tenant/${tenantId}/inbox`} />}
+          >
+            Open Inbox
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            snoozeHandoffAlarm(
+              SNOOZE_MINUTES,
+              // Re-checked when the snooze expires rather than captured now:
+              // by then a colleague may have claimed it, and re-sounding for
+              // an empty queue is the alarm crying wolf.
+              () => (inbox.data?.conversations.length ?? 0) > 0,
+            )
+          }
+        >
+          Snooze {SNOOZE_MINUTES}m
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => stopHandoffAlarm()}>
+          Dismiss
+        </Button>
+      </div>
+      {!handoffSoundEnabled() && (
+        <span className="text-xs text-muted-foreground">
+          Sound is off — enable it on the Inbox screen.
+        </span>
+      )}
+    </div>
+  );
 }

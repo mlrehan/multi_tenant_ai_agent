@@ -125,3 +125,104 @@ export function chimeForHandoff(): void {
     /* Autoplay policy or no WebAudio -- the other channels still fired. */
   }
 }
+
+/**
+ * The repeating alarm: the chime, over and over, until a person stops it.
+ *
+ * **Why a loop and not a single chime.** One burst is missed by anyone who
+ * stepped away from the desk for thirty seconds -- and a visitor waiting to
+ * speak to a nursery is exactly the case where "nobody happened to be looking"
+ * is the failure being designed against. It keeps going until someone
+ * acknowledges it, which is what makes it an alarm rather than a notification.
+ *
+ * **Three things stop it**, and all three matter:
+ *  - the agent dismisses or snoozes it (the point of the controls);
+ *  - the queue empties, because a colleague claimed the conversation -- an
+ *    alarm for work that is already being handled is how people learn to
+ *    ignore alarms;
+ *  - `MAX_ALARM_MS` elapses. This last one is a runaway guard, not a feature:
+ *    a console left open overnight must not still be sounding at 3am for a
+ *    visitor who gave up hours ago. Raise it if that is genuinely wanted, but
+ *    do not remove it -- an alarm with no upper bound is one someone
+ *    eventually silences by muting the whole machine, permanently.
+ */
+
+const REPEAT_INTERVAL_MS = 3000;
+const MAX_ALARM_MS = 10 * 60 * 1000;
+
+let alarmTimer: ReturnType<typeof setInterval> | null = null;
+let alarmStopAt = 0;
+/** Notified whenever the alarm starts or stops, so the UI showing the
+ *  Dismiss/Snooze controls can appear and disappear with it rather than
+ *  keeping its own duplicate idea of whether the alarm is running. */
+const alarmListeners = new Set<(active: boolean) => void>();
+
+function announce(active: boolean): void {
+  alarmListeners.forEach((notify) => notify(active));
+}
+
+export function subscribeToAlarm(onChange: (active: boolean) => void): () => void {
+  alarmListeners.add(onChange);
+  return () => {
+    alarmListeners.delete(onChange);
+  };
+}
+
+export function alarmIsSounding(): boolean {
+  return alarmTimer !== null;
+}
+
+/**
+ * Starts the repeating alarm, if it is not already sounding.
+ *
+ * Idempotent on purpose: a second visitor arriving while the alarm is already
+ * going must not start a second overlapping loop, which would double the
+ * volume and desynchronise into noise. The queue count in the UI is what
+ * communicates "more than one".
+ */
+export function startHandoffAlarm(): void {
+  if (!handoffSoundEnabled()) return;
+  if (alarmTimer !== null) return;
+
+  alarmStopAt = Date.now() + MAX_ALARM_MS;
+  chimeForHandoff();
+  alarmTimer = setInterval(() => {
+    if (Date.now() >= alarmStopAt) {
+      stopHandoffAlarm();
+      return;
+    }
+    // Re-checked every tick rather than only at start: an agent who silences
+    // the chime from the Inbox toggle while it is sounding expects that to
+    // take effect now, not after they acknowledge the alert.
+    if (!handoffSoundEnabled()) {
+      stopHandoffAlarm();
+      return;
+    }
+    chimeForHandoff();
+  }, REPEAT_INTERVAL_MS);
+  announce(true);
+}
+
+export function stopHandoffAlarm(): void {
+  if (alarmTimer === null) return;
+  clearInterval(alarmTimer);
+  alarmTimer = null;
+  announce(false);
+}
+
+/**
+ * Silences the alarm now and lets it return if the visitor is *still* waiting.
+ *
+ * Distinct from dismissing, and the distinction is the whole point: dismiss
+ * says "I am dealing with this", snooze says "not right now" -- and someone
+ * who is not dealing with it must be asked again rather than quietly dropped.
+ */
+export function snoozeHandoffAlarm(minutes: number, stillWaiting: () => boolean): void {
+  stopHandoffAlarm();
+  setTimeout(
+    () => {
+      if (stillWaiting()) startHandoffAlarm();
+    },
+    minutes * 60 * 1000,
+  );
+}

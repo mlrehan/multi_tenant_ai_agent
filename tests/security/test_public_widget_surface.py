@@ -120,8 +120,14 @@ class _FakePipeline:
 
     namespaces: list[str] = field(default_factory=list)
 
-    async def answer_from_namespace(self, question: str, *, namespace: str) -> str:
-        del question
+    # `**kwargs` rather than a fixed list: this fake stands in for a real
+    # signature that has grown parameters twice now (memory, then token
+    # attribution), and each time a narrower fake failed every caller with a
+    # TypeError that had nothing to do with what the test was checking.
+    async def answer_from_namespace(
+        self, question: str, *, namespace: str, **kwargs: object
+    ) -> str:
+        del question, kwargs
         self.namespaces.append(namespace)
         return "answered"
 

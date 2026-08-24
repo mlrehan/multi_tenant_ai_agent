@@ -335,7 +335,16 @@ class AskWidget:
         # today and diverge the moment the parameter grows a default.
         if self._memory is None:
             stream = await self._answer_question.answer_from_namespace(
-                verdict.text, namespace=_namespace_for(widget)
+                verdict.text,
+                namespace=_namespace_for(widget),
+                # **Required for the answer to be metered at all.** Without a
+                # tenant to attribute the cost to, the pipeline skips usage
+                # accounting entirely -- it never even asks the provider for a
+                # token count -- and every widget conversation is invisible to
+                # both dashboards. No `model_configuration_id`: a widget answer
+                # uses the platform default and resolves none, so the spend
+                # lands on the tenant-wide counter only.
+                tenant_id=widget.tenant_id,
             )
         else:
             recent = await self._memory.recent(command.session_id)
@@ -343,6 +352,7 @@ class AskWidget:
                 verdict.text,
                 namespace=_namespace_for(widget),
                 memory=_as_memory(recent),
+                tenant_id=widget.tenant_id,
             )
 
         if self._memory is None and self._uow_factory is None:
