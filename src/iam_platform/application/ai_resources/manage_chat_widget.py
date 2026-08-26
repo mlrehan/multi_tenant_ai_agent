@@ -25,7 +25,7 @@ from iam_platform.application.ai_resources.exceptions import (
 from iam_platform.application.ai_resources.ports import AiResourceUowFactory
 from iam_platform.application.ai_resources.requester import build_requester_context
 from iam_platform.core.clock import Clock
-from iam_platform.domain.ai_resources.entities import ChatWidget
+from iam_platform.domain.ai_resources.entities import ChatWidget, normalise_origin
 
 #: Publishing to the internet is the same authority as changing what the
 #: knowledge base contains -- not a lesser one.
@@ -59,13 +59,30 @@ class CreateChatWidget:
         knowledge_base_id = UUID(command.knowledge_base_id)
         now = self._clock.now()
 
-        origins = [o.strip().rstrip("/") for o in command.allowed_origins if o.strip()]
+        # Reduced to bare origins on the way in, using the same helper the
+        # match uses. Someone asked where their widget lives pastes the page
+        # URL -- and a stored `https://site.example/a/page.html` can never
+        # match the `https://site.example` a browser sends, so the widget is
+        # dead on arrival with no error to explain it. Normalising here means
+        # the stored value is the thing that will actually be compared.
+        # `dict.fromkeys` dedupes while keeping the tenant's ordering: two
+        # pages on one site collapse to one origin rather than a duplicate.
+        origins = list(
+            dict.fromkeys(
+                normalised
+                for o in command.allowed_origins
+                if (normalised := normalise_origin(o))
+            )
+        )
         if not origins:
             # Refused rather than stored empty. An empty allowlist yields a
             # widget that can never mint a session -- silently useless, and the
-            # tenant would have no indication why.
+            # tenant would have no indication why. This also catches an entry
+            # with no scheme (`site.example`), which `normalise_origin`
+            # deliberately refuses to guess at.
             raise WidgetOriginNotAllowedError(
-                "a chat widget needs at least one allowed origin, e.g. https://example.com"
+                "a chat widget needs at least one allowed website address "
+                "including https://, e.g. https://example.com"
             )
 
         async with self._uow_factory(actor_id, tenant_id) as uow:

@@ -390,3 +390,58 @@ class TestQuota:
         )
 
         assert quota.calls == [widget.id]
+
+
+class TestOriginsAreComparedAsOrigins:
+    """A browser's `Origin` is `scheme://host[:port]` and never carries a path.
+
+    An allowlist entry stored as a full page URL -- which is what someone
+    pastes when asked where their widget lives -- therefore matched nothing a
+    browser could ever send, and the widget failed with "not permitted on this
+    site" on the very page it was configured for. Found in production.
+
+    These tests pin both halves: the page URL now matches, and the things that
+    must *not* match still don't.
+    """
+
+    def test_a_page_url_in_the_allowlist_matches_the_browsers_origin(self) -> None:
+        widget = _widget(allowed_origins=["https://lsite.co.uk/nursery1/test.html"])
+        assert widget.permits_origin("https://lsite.co.uk")
+
+    def test_a_bare_origin_still_matches_itself(self) -> None:
+        widget = _widget(allowed_origins=["https://lsite.co.uk"])
+        assert widget.permits_origin("https://lsite.co.uk")
+
+    def test_case_and_trailing_slash_are_irrelevant(self) -> None:
+        widget = _widget(allowed_origins=["https://LSite.CO.UK/"])
+        assert widget.permits_origin("https://lsite.co.uk")
+
+    def test_a_different_scheme_is_still_refused(self) -> None:
+        """Downgrading https to http must not be permitted by normalisation."""
+        widget = _widget(allowed_origins=["https://lsite.co.uk/page.html"])
+        assert not widget.permits_origin("http://lsite.co.uk")
+
+    def test_a_different_subdomain_is_still_refused(self) -> None:
+        widget = _widget(allowed_origins=["https://lsite.co.uk/page.html"])
+        assert not widget.permits_origin("https://www.lsite.co.uk")
+
+    def test_a_lookalike_domain_is_still_refused(self) -> None:
+        """The suffix-matching trap: `evil-lsite.co.uk` is not `lsite.co.uk`."""
+        widget = _widget(allowed_origins=["https://lsite.co.uk/page.html"])
+        assert not widget.permits_origin("https://evil-lsite.co.uk")
+
+    def test_a_different_port_is_still_refused(self) -> None:
+        """Distinct origins to a browser, so distinct here."""
+        widget = _widget(allowed_origins=["https://site.example/page.html"])
+        assert not widget.permits_origin("https://site.example:8443")
+
+    def test_an_entry_without_a_scheme_permits_nothing(self) -> None:
+        """Refusing to guess: a bare host could be either scheme, and inventing
+        one would silently permit a site the tenant never listed."""
+        widget = _widget(allowed_origins=["lsite.co.uk"])
+        assert not widget.permits_origin("https://lsite.co.uk")
+        assert not widget.permits_origin("http://lsite.co.uk")
+
+    def test_an_empty_allowlist_still_permits_nothing(self) -> None:
+        widget = _widget(allowed_origins=[])
+        assert not widget.permits_origin("https://lsite.co.uk")

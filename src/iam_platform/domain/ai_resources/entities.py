@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from iam_platform.domain.ai_resources.chatbot import (
@@ -335,6 +336,33 @@ class WidgetStatus(StrEnum):
     DISABLED = "disabled"
 
 
+def normalise_origin(value: str | None) -> str:
+    """Reduces a URL to the bare origin a browser would actually send.
+
+    `https://Site.Example/a/page.html?q=1` -> `https://site.example`.
+
+    Lives here, beside the only rule that consumes it, so the value stored by
+    the write path and the value compared by `permits_origin` cannot drift --
+    the same reason the vector-namespace parser sits beside its builder.
+
+    Returns `""` for anything without both a scheme and a host, which
+    `permits_origin` treats as "matches nothing". Refusing to guess is the
+    point: a bare `site.example` could be a host or a path, and inventing a
+    scheme for it would mean an `http://` entry silently permitting `https://`
+    or the reverse.
+
+    The port is deliberately **kept**. `https://site.example:8443` and
+    `https://site.example` are different origins to a browser, and collapsing
+    them would permit a site the tenant never listed.
+    """
+    if not value:
+        return ""
+    parsed = urlsplit(value.strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
 @dataclass(kw_only=True)
 class ChatWidget(Entity):
     """A public question-answering surface for one knowledge base.
@@ -375,7 +403,7 @@ class ChatWidget(Entity):
         return self.status is WidgetStatus.ACTIVE
 
     def permits_origin(self, origin: str | None) -> bool:
-        """Exact, case-insensitive match against the allowlist.
+        """Exact, case-insensitive match against the allowlist, origin to origin.
 
         **No wildcards and no suffix matching**, deliberately. `*.example.com`
         looks convenient and is how origin checks get broken: a naive
@@ -388,6 +416,17 @@ class ChatWidget(Entity):
         opposite default would make a half-configured widget a public endpoint
         for anyone who read its key.
 
+        **Both sides are reduced to a bare origin before comparing**, and that
+        is a correctness fix rather than a relaxation. A browser's `Origin`
+        header is `scheme://host[:port]` and never carries a path (RFC 6454),
+        so an allowlist entry stored as a full page URL --
+        `https://site.example/a/page.html`, which is exactly what someone
+        pastes when asked where their widget lives -- could never match
+        anything a browser would send. The widget simply never worked. It is
+        not possible to permit one *page* and refuse another on the same site,
+        because the browser does not tell us which page is asking; treating the
+        entry as the origin it belongs to is the only coherent reading of it.
+
         **What this is worth:** browsers set `Origin` and page JavaScript
         cannot forge it, so this genuinely stops another *website* embedding
         the widget. It does not stop a non-browser client sending any origin it
@@ -396,11 +435,10 @@ class ChatWidget(Entity):
         """
         if origin is None or not self.allowed_origins:
             return False
-        candidate = origin.strip().rstrip("/").lower()
-        return any(
-            allowed.strip().rstrip("/").lower() == candidate
-            for allowed in self.allowed_origins
-        )
+        candidate = normalise_origin(origin)
+        if not candidate:
+            return False
+        return any(normalise_origin(allowed) == candidate for allowed in self.allowed_origins)
 
     def disable(self) -> None:
         self.status = WidgetStatus.DISABLED
