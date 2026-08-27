@@ -23,6 +23,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -63,6 +64,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
 import { IdentityChip } from "@/components/shared/identity-chip";
 import { FieldError } from "@/components/shared/field-error";
+import { useTenantPlan } from "@/features/chatbot/hooks";
 import {
   useCreateKnowledgeBase,
   useKnowledgeBaseDocuments,
@@ -73,7 +75,9 @@ import {
   useDataSources,
   useChatWidgets,
   useCreateChatWidget,
+  useDeleteChatWidget,
   useSetChatWidgetStatus,
+  useUpdateChatWidget,
   useRetryDocument,
   useDeleteDocument,
   useDocumentDetail,
@@ -183,9 +187,27 @@ export default function KnowledgeBasesPage({
 }) {
   const { tenantId } = usePromise(params);
   const { data, isLoading, error } = useKnowledgeBases(tenantId);
+  const plan = useTenantPlan(tenantId);
   const [open, setOpen] = useState(false);
 
   const knowledgeBases = data?.knowledge_bases;
+
+  // The plan's ceiling, against the count we already have loaded. The list is
+  // used rather than `plan.knowledge_bases_used` because it refreshes the
+  // instant one is created, so the button disables without waiting for a
+  // second query to catch up.
+  //
+  // **`null` means uncapped and is deliberately not `0`.** Collapsing them
+  // would make an unset limit read as "none allowed" and lock every tenant out.
+  const kbLimit = plan.data?.max_knowledge_bases ?? null;
+  //
+  // **Fails toward enabled.** This button is a hint; the server is the gate
+  // (`guard_knowledge_base_quota` answers 409 and cannot be bypassed by an API
+  // call). So a plan query that is loading or has failed leaves the button
+  // usable rather than locking a tenant out of their own console over an
+  // unavailable read -- they get a clear refusal instead of a dead control.
+  const atKbLimit =
+    kbLimit !== null && knowledgeBases !== undefined && knowledgeBases.length >= kbLimit;
 
   return (
     <div>
@@ -193,13 +215,21 @@ export default function KnowledgeBasesPage({
         title="Knowledge bases"
         description="Document collections that assistants can search. Each one gets its own isolated vector namespace."
         actions={
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger render={<Button size="sm" />}>
-              <Plus />
-              New knowledge base
-            </DialogTrigger>
-            <CreateKnowledgeBaseDialog tenantId={tenantId} onDone={() => setOpen(false)} />
-          </Dialog>
+          <div className="flex items-center gap-3">
+            {atKbLimit && (
+              <span className="text-xs text-muted-foreground">
+                Plan limit reached ({knowledgeBases?.length}/{kbLimit}). Ask your
+                platform administrator to raise it.
+              </span>
+            )}
+            <Dialog open={open} onOpenChange={setOpen}>
+              <DialogTrigger render={<Button size="sm" disabled={atKbLimit} />}>
+                <Plus />
+                New knowledge base
+              </DialogTrigger>
+              <CreateKnowledgeBaseDialog tenantId={tenantId} onDone={() => setOpen(false)} />
+            </Dialog>
+          </div>
         }
       />
 
@@ -212,7 +242,7 @@ export default function KnowledgeBasesPage({
           title="No knowledge bases yet"
           description="Create one to give your assistants source material to draw on."
           action={
-            <Button size="sm" onClick={() => setOpen(true)}>
+            <Button size="sm" disabled={atKbLimit} onClick={() => setOpen(true)}>
               <Plus />
               New knowledge base
             </Button>
@@ -1449,6 +1479,7 @@ function EmbedDialog({
             {mine.map((widget) => (
               <WidgetCard
                 key={widget.id}
+                tenantId={tenantId}
                 widget={widget}
                 onToggle={(enabled) =>
                   setStatus
@@ -1517,14 +1548,57 @@ function EmbedDialog({
 }
 
 function WidgetCard({
+  tenantId,
   widget,
   onToggle,
   busy,
 }: {
+  tenantId: string;
   widget: ChatWidget;
   onToggle: (enabled: boolean) => void;
   busy: boolean;
 }) {
+  const update = useUpdateChatWidget(tenantId);
+  const remove = useDeleteChatWidget(tenantId);
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(widget.name);
+  const [origins, setOrigins] = useState(widget.allowed_origins.join("\n"));
+  const [limit, setLimit] = useState(widget.daily_question_limit);
+
+  async function save() {
+    const parsed = origins
+      .split(/[\n,]/)
+      .map((o) => o.trim())
+      .filter(Boolean);
+    if (parsed.length === 0) {
+      toast.error("Add at least one website address where this may be embedded.");
+      return;
+    }
+    try {
+      await update.mutateAsync({
+        widgetId: widget.id,
+        name,
+        allowed_origins: parsed,
+        daily_question_limit: limit,
+      });
+      setEditing(false);
+      toast.success("Widget updated.");
+    } catch (error) {
+      toast.error(isApiError(error) ? error.message : "Could not update the widget.");
+    }
+  }
+
+  async function destroy() {
+    try {
+      await remove.mutateAsync(widget.id);
+      toast.success("Widget deleted.");
+    } catch (error) {
+      // A 409 here is the server refusing to delete a widget that has
+      // conversations, and its message names the count and says to disable
+      // instead -- so it is shown as-is rather than replaced with a generic one.
+      toast.error(isApiError(error) ? error.message : "Could not delete the widget.");
+    }
+  }
   // Straight from the API. The console cannot build this itself: it has no
   // public backend origin by design (every call goes through a same-origin
   // server-side proxy), so anything assembled here would point at that proxy
@@ -1553,8 +1627,66 @@ function WidgetCard({
             >
               {widget.status === "active" ? "Turn off" : "Turn on"}
             </Button>
+            <Button size="xs" variant="outline" onClick={() => setEditing((v) => !v)}>
+              {editing ? "Cancel" : "Edit"}
+            </Button>
+            <Button
+              size="xs"
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => void destroy()}
+            >
+              Delete
+            </Button>
           </div>
         </div>
+
+        {editing && (
+          <div className="space-y-3 rounded-lg border p-3">
+            <div className="space-y-1.5">
+              <Label htmlFor={`w-name-${widget.id}`} className="text-xs">
+                Name
+              </Label>
+              <Input
+                id={`w-name-${widget.id}`}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`w-origins-${widget.id}`} className="text-xs">
+                Allowed websites
+              </Label>
+              <Textarea
+                id={`w-origins-${widget.id}`}
+                rows={3}
+                value={origins}
+                onChange={(e) => setOrigins(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                One per line, including <code>https://</code>. Enter the site address
+                only &mdash; a browser never tells us which page is asking, so
+                <code> https://example.com/page.html</code> is stored as
+                <code> https://example.com</code>.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`w-limit-${widget.id}`} className="text-xs">
+                Questions per day
+              </Label>
+              <Input
+                id={`w-limit-${widget.id}`}
+                type="number"
+                min={1}
+                value={limit}
+                onChange={(e) => setLimit(Number(e.target.value))}
+              />
+            </div>
+            <Button size="sm" disabled={update.isPending} onClick={() => void save()}>
+              {update.isPending ? "Saving…" : "Save changes"}
+            </Button>
+          </div>
+        )}
         <div className="space-y-1.5">
           <Label className="text-xs">Paste this into your site&rsquo;s HTML</Label>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs">

@@ -33,17 +33,29 @@ already has their answer and the provider has already charged for it, so
 raising then would show an error for work that succeeded without un-spending
 the money.
 
-**Windows are UTC.** This platform stores no tenant timezone (there is no
-`tenant_settings` table), so inventing one here would mean picking a timezone
-per tenant with nothing to read it from. UTC is stated rather than assumed, and
-the key carries the date so the boundary is the key's, not an expiry race.
+**The daily window is the tenant's, the monthly window is UTC**, and the
+asymmetry is deliberate rather than an oversight.
+
+A *day* boundary an hour out is plainly wrong to the person reading it: a
+nursery in British Summer Time saw its allowance reset at 01:00 and a message
+sent at 00:30 counted against yesterday. So `tenant_chatbot_settings.
+quota_timezone` decides that boundary, and every caller passes the resolved
+zone in -- see `_day_key` for why it is passed rather than looked up here.
+
+A *month* boundary an hour out moves a handful of tokens between two windows
+that are thirty days long, and making it tenant-relative would mean the
+platform's own view of a month differed per tenant for a difference nobody can
+perceive. It stays UTC.
+
+The key carries its date either way, so the boundary is the key's rather than
+an expiry race.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from uuid import UUID
 
 from redis.asyncio import Redis
@@ -91,8 +103,20 @@ class TokenUsage:
         return self.total_tokens or (self.input_tokens + self.output_tokens)
 
 
-def _day_key(tenant_id: UUID) -> str:
-    return f"tenant-messages:{tenant_id}:{datetime.now(UTC):%Y-%m-%d}"
+def _day_key(tenant_id: UUID, zone: tzinfo | None = None) -> str:
+    """The counter key for *this tenant's* today.
+
+    **The zone must be identical on every call for one tenant**, because the
+    key is the window: `consume_message` writes it and `messages_used_today`
+    reads it, and a zone supplied to one but not the other would enforce one
+    number while the dashboard displayed a different one. That is why callers
+    pass it explicitly rather than this function looking it up -- a lookup here
+    would be a second place the value could come from.
+
+    Defaults to UTC when no zone is given, which is what every counter written
+    before tenant timezones existed used.
+    """
+    return f"tenant-messages:{tenant_id}:{datetime.now(zone or UTC):%Y-%m-%d}"
 
 
 def _month_key(tenant_id: UUID, suffix: str = "total") -> str:
@@ -105,7 +129,9 @@ class RedisTenantQuotaStore:
 
     # -- daily messages ------------------------------------------------------
 
-    async def consume_message(self, *, tenant_id: UUID, limit: int | None) -> bool:
+    async def consume_message(
+        self, *, tenant_id: UUID, limit: int | None, zone: tzinfo | None = None
+    ) -> bool:
         """Reserves one AI message against today's allowance.
 
         `limit is None` means uncapped -- the counter is still incremented, so
@@ -117,7 +143,7 @@ class RedisTenantQuotaStore:
         charging them against an AI allowance would let a busy support team
         exhaust the chatbot's quota by answering tickets.
         """
-        key = _day_key(tenant_id)
+        key = _day_key(tenant_id, zone)
         try:
             pipe = self._redis.pipeline()
             pipe.incr(key)
@@ -134,7 +160,9 @@ class RedisTenantQuotaStore:
             return False
         return limit is None or int(count) <= limit
 
-    async def release_message(self, *, tenant_id: UUID) -> None:
+    async def release_message(
+        self, *, tenant_id: UUID, zone: tzinfo | None = None
+    ) -> None:
         """Gives back a reservation for work that never happened.
 
         Needed because `consume_message` reserves *before* the answer is
@@ -144,15 +172,20 @@ class RedisTenantQuotaStore:
         which is the safe direction.
         """
         try:
-            await self._redis.decr(_day_key(tenant_id))
+            # The *same* zone the reservation was taken with. Releasing against
+            # a different key would decrement a day the message was never
+            # counted against -- and leave the real one permanently high.
+            await self._redis.decr(_day_key(tenant_id, zone))
         except Exception:
             logger.warning(
                 "could not release a message reservation for tenant %s", tenant_id
             )
 
-    async def messages_used_today(self, *, tenant_id: UUID) -> int:
+    async def messages_used_today(
+        self, *, tenant_id: UUID, zone: tzinfo | None = None
+    ) -> int:
         try:
-            raw = await self._redis.get(_day_key(tenant_id))
+            raw = await self._redis.get(_day_key(tenant_id, zone))
         except Exception as exc:
             raise QuotaUnavailableError(str(exc)) from exc
         return int(raw) if raw is not None else 0

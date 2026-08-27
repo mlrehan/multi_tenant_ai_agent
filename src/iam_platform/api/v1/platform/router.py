@@ -580,6 +580,7 @@ async def get_platform_overview(
             for t in overview.tenants
         ],
         tenants_running_low=overview.tenants_running_low,
+        unattributed_tokens=overview.unattributed_tokens,
         low_remaining_fraction=LOW_REMAINING_FRACTION,
     )
 

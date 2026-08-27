@@ -221,6 +221,18 @@ function ProviderSpendSection({
           .
         </p>
       )}
+      {overview.data && overview.data.unattributed_tokens !== null &&
+        overview.data.unattributed_tokens > 0 && (
+          <p className="mb-3 text-xs text-muted-foreground">
+            Plus{" "}
+            <span className="font-medium tabular-nums">
+              {overview.data.unattributed_tokens.toLocaleString()}
+            </span>{" "}
+            tokens on the platform default model, which belongs to no
+            configuration above &mdash; that is where public chat widget traffic
+            lands. Providers + this = what tenants actually spent.
+          </p>
+        )}
       {overview.data && overview.data.providers.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {overview.data.providers.map((p) => (

@@ -239,6 +239,34 @@ export function useCreateChatWidget(tenantId: string) {
   });
 }
 
+export function useUpdateChatWidget(tenantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: {
+      widgetId: string;
+      name: string;
+      allowed_origins: string[];
+      daily_question_limit: number;
+    }) =>
+      api.updateChatWidget(tenantId, vars.widgetId, {
+        name: vars.name,
+        allowed_origins: vars.allowed_origins,
+        daily_question_limit: vars.daily_question_limit,
+      }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["chat-widgets", tenantId] }),
+  });
+}
+
+export function useDeleteChatWidget(tenantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (widgetId: string) => api.deleteChatWidget(tenantId, widgetId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["chat-widgets", tenantId] }),
+  });
+}
+
 export function useSetChatWidgetStatus(tenantId: string) {
   const queryClient = useQueryClient();
   return useMutation({

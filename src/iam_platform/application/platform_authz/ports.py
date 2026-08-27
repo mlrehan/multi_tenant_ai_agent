@@ -13,6 +13,7 @@ from typing import Protocol
 from uuid import UUID
 
 from iam_platform.application.ai_resources.ports import (
+    TenantChatbotSettingsRepository,
     TenantEntitlementRepository,
 )
 from iam_platform.application.identity.ports import (
@@ -158,6 +159,11 @@ class PlatformUnitOfWork(Protocol):
     tenant_model_access: TenantModelAccessRepository
     #: Platform-written; tenants hold SELECT only on the table itself.
     tenant_entitlements: TenantEntitlementRepository
+    #: Read-only here, and only for the operator dashboard's daily counts: the
+    #: day a tenant's message allowance resets on lives on this row, and the
+    #: platform view must resolve it exactly as the tenant's own screen does or
+    #: the two show different numbers for the same day.
+    chatbot_settings: TenantChatbotSettingsRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 

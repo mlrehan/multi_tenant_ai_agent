@@ -308,6 +308,12 @@ class PlatformOverviewResponse(BaseModel):
     #: decision, so every client puts what needs attention at the top.
     tenants: list[TenantSpendResponse]
     tenants_running_low: int
+    #: Tokens spent on the platform default model, which belongs to no
+    #: configuration and therefore to no provider row. Providers +
+    #: unattributed = what tenants actually spent; without it the two panels
+    #: on this page disagree with no explanation. `None` when a counter could
+    #: not be read.
+    unattributed_tokens: int | None = None
     #: The threshold the flags above were computed with, so the console can
     #: explain *why* something is highlighted rather than restating a number
     #: that could drift from the server's.

@@ -61,7 +61,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, tzinfo
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -76,9 +76,15 @@ from iam_platform.application.ai_resources.conversation_memory import (
     fold_summary,
     needs_compaction,
 )
+from iam_platform.application.ai_resources.entitlements import (
+    resolve_daily_message_limit,
+    resolve_entitlements,
+    resolve_quota_zone,
+)
 from iam_platform.application.ai_resources.exceptions import (
     AssistantNotFoundError,
     ConversationNotFoundError,
+    DailyMessageLimitExceededError,
     KnowledgeBaseNotFoundError,
     ModelConfigurationNotFoundError,
     PermissionDeniedError,
@@ -117,6 +123,11 @@ from iam_platform.domain.ai_resources.guardrails import (
 from iam_platform.domain.ai_resources.policies import RequesterContext
 
 logger = logging.getLogger("iam_platform.application.ai_resources.answer")
+
+#: Actor for the entitlement read on the public path, where there is no
+#: user. The read is tenant-scoped by the unit of work either way; this
+#: only fills the audit actor slot, and a real id would be a fiction.
+_ANONYMOUS_ACTOR = UUID(int=0)
 
 ANSWER_QUESTION_PERMISSION = "tenant.knowledge_bases.query"
 
@@ -525,22 +536,107 @@ class AnswerQuestion:
         if resolved is not None:
             await self._assert_within_budget(tenant_id=tenant_id, resolved=resolved)
 
-        return await self.answer_from_namespace(
-            verdict.text,
-            namespace=namespace,
-            memory=memory,
-            turn=(
-                _PendingTurn(actor_id=actor_id, tenant_id=tenant_id, conversation_id=conversation_id)
-                if conversation_id is not None
-                else None
-            ),
-            model_name=resolved.model_name if resolved else None,
-            model_parameters=resolved.parameters if resolved else None,
-            system_prompt=resolved.system_prompt if resolved else SYSTEM_PROMPT,
-            tenant_id=tenant_id,
-            model_configuration_id=resolved.model_configuration_id if resolved else None,
-            credential_ciphertext=resolved.credential_ciphertext if resolved else None,
+        # **The Ask panel spends from the same daily allowance as the widget.**
+        # It did not, and the omission was invisible in the worst way: a tenant
+        # working entirely through the console saw "0 messages today" while
+        # spending real tokens, and their daily cap governed only the visitors
+        # they could already see in the Inbox.
+        #
+        # Reserved before generation, released if it fails -- the same shape as
+        # the widget path, for the same reason: the point is not to spend the
+        # money, and a question that then errors must not permanently consume
+        # an allowance the person never got an answer from.
+        reserved_zone = await self._consume_daily_message(tenant_id)
+        try:
+            return await self.answer_from_namespace(
+                verdict.text,
+                namespace=namespace,
+                memory=memory,
+                turn=(
+                    _PendingTurn(
+                        actor_id=actor_id,
+                        tenant_id=tenant_id,
+                        conversation_id=conversation_id,
+                    )
+                    if conversation_id is not None
+                    else None
+                ),
+                model_name=resolved.model_name if resolved else None,
+                model_parameters=resolved.parameters if resolved else None,
+                system_prompt=resolved.system_prompt if resolved else SYSTEM_PROMPT,
+                tenant_id=tenant_id,
+                model_configuration_id=(
+                    resolved.model_configuration_id if resolved else None
+                ),
+                credential_ciphertext=(
+                    resolved.credential_ciphertext if resolved else None
+                ),
+            )
+        except Exception:
+            if reserved_zone is not None:
+                await self._release_daily_message(tenant_id, reserved_zone)
+            raise
+
+    async def _consume_daily_message(self, tenant_id: UUID | None) -> tzinfo | None:
+        """Reserves one AI message. Returns the zone it was reserved under.
+
+        **The zone is returned rather than stored on `self`**, so the matching
+        release can use the identical key. Instance state would be a per-request
+        value on an object the caller may reuse, and resolving the zone a second
+        time would be a second chance to get a different answer -- a release
+        against a different day leaves the real counter permanently high.
+
+        `False` when there is no tenant to charge or no quota store wired --
+        the same rule metering uses, so a call that is not counted is also not
+        capped and the two cannot disagree about which answers are governed.
+
+        Fails **closed**: `consume_message` returns False on an unreadable
+        counter, and an allowance that cannot be confirmed must not become an
+        unlimited one.
+        """
+        if tenant_id is None or self._tenant_quota is None:
+            return None
+
+        # Limit and zone read in one unit of work, and the zone is remembered
+        # so the matching release uses the identical key. Resolving it twice
+        # would be a second chance to get a different answer -- and a release
+        # against a different day leaves the real counter permanently high.
+        async with self._uow_factory(_ANONYMOUS_ACTOR, tenant_id) as uow:
+            limit = await resolve_daily_message_limit(
+                uow, tenant_id=tenant_id, clock=self._clock
+            )
+            zone = await resolve_quota_zone(uow, tenant_id=tenant_id)
+        allowed = await self._tenant_quota.consume_message(
+            tenant_id=tenant_id, limit=limit, zone=zone
         )
+        if not allowed:
+            raise DailyMessageLimitExceededError(
+                f"this organisation has reached its daily limit of "
+                f"{limit} AI messages. It resets tomorrow, or an administrator "
+                f"can raise it."
+                if limit is not None
+                else "this organisation's daily message allowance could not be "
+                "confirmed; please try again shortly"
+            )
+        return zone
+
+    async def _release_daily_message(
+        self, tenant_id: UUID | None, zone: tzinfo | None
+    ) -> None:
+        """Returns a reservation for an answer that never happened.
+
+        Fails open and deliberately so: an unreturned reservation over-counts
+        by one, which is the safe direction, and raising here would replace the
+        real error with a bookkeeping one.
+        """
+        if tenant_id is None or self._tenant_quota is None:
+            return
+        try:
+            await self._tenant_quota.release_message(tenant_id=tenant_id, zone=zone)
+        except Exception:
+            logger.warning(
+                "could not release a message reservation for tenant %s", tenant_id
+            )
 
     async def _load_thread(
         self,
@@ -573,6 +669,72 @@ class AnswerQuestion:
             conversation_id=conversation_id, after_seq=conversation.summary_through_seq
         )
         return conversation, tail
+
+    def _meter_for(
+        self, tenant_id: UUID | None, model_configuration_id: UUID | None
+    ) -> TokenUsage | None:
+        """A meter when a tenant is known and some store will use the figure.
+
+        Asking for a usage figure is what makes an adapter request one, so an
+        unmetered answer sends exactly the requests it always sent.
+
+        Note this does **not** require a `model_configuration_id`: every
+        platform-default answer lacks one, and requiring it meant the widget
+        never even asked the provider for a token count -- so no counter
+        anywhere could move.
+        """
+        if tenant_id is None:
+            return None
+        if self._tenant_quota is not None:
+            return TokenUsage()
+        if self._token_usage is not None and model_configuration_id is not None:
+            return TokenUsage()
+        return None
+
+    async def _assert_within_tenant_budget(self, tenant_id: UUID | None) -> None:
+        """Refuses when the tenant has spent its whole monthly token allowance.
+
+        `None` tenant means nothing to attribute the cost to and therefore
+        nothing to enforce -- the same rule metering uses, so a call that is
+        not counted is also not capped, and the two cannot disagree.
+
+        **Reads fail closed.** An allowance that cannot be confirmed refuses
+        the answer rather than becoming an unlimited one: that failure is
+        invisible until the invoice, which is the entire reason the counter
+        exists. The tenant sees "try again later", which is true either way.
+
+        `max_tokens_per_month is None` means uncapped, matching every other
+        optional limit in this system -- and is *not* the same as `0`, which is
+        a real limit meaning "none at all".
+        """
+        if tenant_id is None or self._tenant_quota is None:
+            return
+
+        async with self._uow_factory(_ANONYMOUS_ACTOR, tenant_id) as uow:
+            entitlements = await resolve_entitlements(
+                uow, tenant_id=tenant_id, clock=self._clock
+            )
+        limit = entitlements.max_tokens_per_month
+        if limit is None:
+            return
+
+        try:
+            used = await self._tenant_quota.tokens_used_this_month(tenant_id=tenant_id)
+        except Exception as exc:
+            logger.warning(
+                "tenant token allowance could not be read for %s -- refusing", tenant_id
+            )
+            raise TokenBudgetExceededError(
+                "this organisation's token allowance could not be confirmed; "
+                "please try again shortly"
+            ) from exc
+
+        if used >= limit:
+            raise TokenBudgetExceededError(
+                f"this organisation's monthly allowance of {limit:,} tokens is "
+                f"spent ({used:,} used). It resets at the start of next month, "
+                f"or an administrator can raise it."
+            )
 
     async def _assert_within_budget(
         self, *, tenant_id: UUID, resolved: _ResolvedModel
@@ -754,8 +916,36 @@ class AnswerQuestion:
         of the platform's. Passed through still encrypted -- this layer never
         holds the key in plaintext.
         """
+        # **The tenant's own monthly allowance, checked before anything is
+        # spent.** This sits here rather than in `execute` because both front
+        # doors meet at this method -- the authenticated Ask panel and the
+        # public widget -- and the widget reaches it directly. Enforcing in
+        # `execute` alone left every widget answer unlimited, which is the one
+        # path with an anonymous stranger on the other end of it.
+        #
+        # Distinct from `_assert_within_budget` above, which bounds one *model
+        # configuration*. That check is skipped whenever an answer resolves no
+        # configuration -- the platform default, i.e. every widget answer -- so
+        # it could never be the tenant-wide limit. This one has no such gap.
+        #
+        # Before retrieval, not after: an embedding call and a rerank are both
+        # billable work, and checking afterwards would only record that the
+        # money was spent.
+        await self._assert_within_tenant_budget(tenant_id)
+
+        # **Created here, before retrieval, rather than inside the streaming
+        # generator.** One answer spends tokens twice: once embedding the
+        # question, once generating the reply. Metering only the second
+        # understated every usage figure on both dashboards by the whole
+        # embedding cost, silently. One meter spans both so the recorded number
+        # is what the provider actually bills.
+        meter = self._meter_for(tenant_id, model_configuration_id)
+
         candidates = await self._vector_search.search_chunks(
-            namespace=namespace, query_text=question, top_k=self._retrieve_candidates
+            namespace=namespace,
+            query_text=question,
+            top_k=self._retrieve_candidates,
+            usage=meter,
         )
         reranked = await self._reranker.rerank(
             query=question, chunks=candidates, top_n=self._context_passages
@@ -790,7 +980,7 @@ class AnswerQuestion:
             model_name=model_name, model_parameters=model_parameters, system_prompt=system_prompt,
             tenant_id=tenant_id, model_configuration_id=model_configuration_id,
             credential_ciphertext=credential_ciphertext,
-            memory=memory, turn=turn,
+            memory=memory, turn=turn, meter=meter,
         )
         return stream
 
@@ -808,22 +998,11 @@ class AnswerQuestion:
         credential_ciphertext: bytes | None = None,
         memory: ConversationMemory | None = None,
         turn: _PendingTurn | None = None,
+        meter: TokenUsage | None = None,
     ) -> AsyncIterator[str]:
-        # Asking for a usage figure is what makes the adapter request one, so
-        # an unmetered answer sends the request it always sent.
-        # Metered when a tenant is known and *some* store will use the figure.
-        # Previously this also required a `model_configuration_id`, which every
-        # platform-default answer lacks -- so the widget never even asked the
-        # provider for a usage count, and no counter anywhere could have moved.
-        meter = (
-            TokenUsage()
-            if tenant_id is not None
-            and (
-                self._tenant_quota is not None
-                or (self._token_usage is not None and model_configuration_id is not None)
-            )
-            else None
-        )
+        # The meter arrives already carrying the embedding's cost -- see
+        # `answer_from_namespace`. It is not created here any more, because a
+        # meter created after retrieval can only ever see half the bill.
         offered = {item.label for item in context}
         buffer = ""
         try:

@@ -23,7 +23,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from iam_platform.application.ai_resources.ports import RetrievedChunk, VectorChunk
+from iam_platform.application.ai_resources.ports import (
+    RetrievedChunk,
+    TokenUsage,
+    VectorChunk,
+)
 from iam_platform.infrastructure.vector.namespaces import (
     collection_name_for_tenant,
     parse_namespace,
@@ -185,7 +189,12 @@ class QdrantVectorSearchClient:
         return self._to_document_hits(response.points, top_k)
 
     async def search_chunks(
-        self, *, namespace: str, query_text: str, top_k: int
+        self,
+        *,
+        namespace: str,
+        query_text: str,
+        top_k: int,
+        usage: TokenUsage | None = None,
     ) -> list[RetrievedChunk]:
         """Chunk-level search. No document collapse -- see the port's docstring.
 
@@ -203,7 +212,9 @@ class QdrantVectorSearchClient:
         if not await self._client.collection_exists(collection):
             return []
 
-        query_vector = await self._embedding_client.embed(query_text)
+        # The query embedding is a real, billable call -- passing the meter
+        # through is what stops it being invisible in every usage figure.
+        query_vector = await self._embedding_client.embed(query_text, usage=usage)
 
         response = await self._client.query_points(
             collection_name=collection,

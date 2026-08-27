@@ -41,10 +41,14 @@ from iam_platform.application.ai_resources.manage_assistant import (
 from iam_platform.application.ai_resources.manage_chat_widget import (
     CreateChatWidget,
     CreateChatWidgetCommand,
+    DeleteChatWidget,
+    DeleteChatWidgetCommand,
     ListChatWidgets,
     ListChatWidgetsQuery,
     SetChatWidgetStatus,
     SetChatWidgetStatusCommand,
+    UpdateChatWidget,
+    UpdateChatWidgetCommand,
 )
 from iam_platform.application.ai_resources.manage_conversation import (
     ConversationActionCommand,
@@ -704,6 +708,61 @@ async def list_chat_widgets(
     base_url = _public_base_url(request, container)
     return schemas.ChatWidgetListResponse(
         chat_widgets=[_chat_widget_response(w, base_url) for w in widgets]
+    )
+
+
+@router.patch("/chat-widgets/{widget_id}", response_model=schemas.ChatWidgetResponse)
+async def update_chat_widget(
+    tenant_id: str,
+    widget_id: str,
+    body: schemas.UpdateChatWidgetRequest,
+    request: Request,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> schemas.ChatWidgetResponse:
+    """Edits a widget's name, allowed websites and daily cap.
+
+    PATCH rather than PUT: the public key and the knowledge base are not
+    editable here, so this is deliberately a partial update of the row.
+    """
+    use_case = UpdateChatWidget(container.ai_resource_uow_factory, container.clock)
+    widget = await use_case.execute(
+        UpdateChatWidgetCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            widget_id=widget_id,
+            permissions=permissions,
+            name=body.name,
+            allowed_origins=[str(o) for o in body.allowed_origins],
+            daily_question_limit=body.daily_question_limit,
+        )
+    )
+    return _chat_widget_response(widget, _public_base_url(request, container))
+
+
+@router.delete(
+    "/chat-widgets/{widget_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_chat_widget(
+    tenant_id: str,
+    widget_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> None:
+    """Removes a widget that has never taken a conversation.
+
+    Answers 409 when it has -- deleting would take the transcripts with it.
+    Disabling is the way to stop a used widget, and the error says so.
+    """
+    await DeleteChatWidget(container.ai_resource_uow_factory).execute(
+        DeleteChatWidgetCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            widget_id=widget_id,
+            permissions=permissions,
+        )
     )
 
 

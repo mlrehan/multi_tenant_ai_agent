@@ -430,3 +430,50 @@ class TestAssistantSelectsTheModel:
             )
 
         assert chat.calls == []
+
+
+class _CountingMessageQuota:
+    """The tenant-wide quota, as `execute` sees it."""
+
+    def __init__(self, *, allow: bool = True) -> None:
+        self._allow = allow
+        self.consumed = 0
+        self.released = 0
+
+    async def tokens_used_this_month(self, *, tenant_id: UUID) -> int:
+        del tenant_id
+        return 0
+
+    async def consume_message(
+        self, *, tenant_id: UUID, limit: int | None, **kwargs: object
+    ) -> bool:
+        del tenant_id, limit
+        self.consumed += 1
+        return self._allow
+
+    async def release_message(self, *, tenant_id: UUID, **kwargs: object) -> None:
+        del tenant_id
+        self.released += 1
+
+    async def record_tokens(self, *, tenant_id: UUID, usage: object) -> None:
+        del tenant_id, usage
+
+
+class TestTheAskPanelIsWiredToTheDailyAllowance:
+    """Driven through `execute`, deliberately.
+
+    Testing `_consume_daily_message` directly proves the helper works and says
+    nothing about whether anything calls it -- which is the failure mode this
+    codebase keeps meeting. A mutation that removes the call from `execute`
+    must fail a test, and only a test that goes through `execute` can do that.
+    """
+
+    async def test_a_question_consumes_one_message(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id, user_id, kb = _seed(uow)
+        quota = _CountingMessageQuota()
+        use_case = _build(uow, _FakeVectorSearch(chunks=[_chunk("Refunds within 30 days.")]), _FakeChatModel())
+        use_case._tenant_quota = quota  # type: ignore[attr-defined]
+
+        await use_case.execute(_query(tenant_id, user_id, kb, "Refunds?"))
+        assert quota.consumed == 1, "the Ask panel did not spend from the allowance"

@@ -177,6 +177,7 @@ async def update_chatbot_settings(
             daily_message_limit=body.daily_message_limit,
             share_visitor_location=body.share_visitor_location,
             conversation_retention_days=body.conversation_retention_days,
+            quota_timezone=body.quota_timezone,
         )
     )
     plan = await GetTenantEntitlements(
@@ -201,7 +202,7 @@ async def list_teams(
     container: AppContainer = Depends(get_container),
 ) -> schemas.TeamListResponse:
     del permissions
-    items = await ListTeams(container.ai_resource_uow_factory).execute(
+    items = await ListTeams(container.ai_resource_uow_factory, container.clock).execute(
         ListTeamsQuery(
             actor_user_id=str(claims.user_id),
             tenant_id=tenant_id,
@@ -743,6 +744,7 @@ def _settings_response(
         avoid_instructions=settings.avoid_instructions or "",  # type: ignore[attr-defined]
         personality=settings.personality.value,  # type: ignore[attr-defined]
         response_length=settings.response_length.value,  # type: ignore[attr-defined]
+        quota_timezone=settings.quota_timezone,  # type: ignore[attr-defined]
         updated_at=settings.updated_at,  # type: ignore[attr-defined]
     )
 

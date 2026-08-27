@@ -200,6 +200,7 @@ class SqlTenantChatbotSettingsRepository:
             # the default rather than reaching the prompt builder as free text.
             personality=coerce_personality(row.personality),
             response_length=coerce_response_length(row.response_length),
+            quota_timezone=row.quota_timezone or "UTC",
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
@@ -222,6 +223,7 @@ class SqlTenantChatbotSettingsRepository:
             "avoid_instructions": settings.avoid_instructions,
             "personality": settings.personality.value,
             "response_length": settings.response_length.value,
+            "quota_timezone": settings.quota_timezone,
             "updated_at": settings.updated_at,
         }
         stmt = (

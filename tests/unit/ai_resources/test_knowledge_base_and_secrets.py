@@ -456,3 +456,74 @@ class TestProviderCredentialSecretBoundary:
                 )
             )
         assert uow.provider_credentials.by_id == {}
+
+
+class TestThePlanLimitIsEnforcedByTheUseCase:
+    """The domain rule (`may_create_knowledge_base`) is tested elsewhere; this
+    tests that the *use case actually asks it*.
+
+    That gap is the one worth covering: a correct rule nothing invokes is the
+    "decorative field" failure this codebase has hit repeatedly, and it is
+    invisible to a test of the rule alone. The console disables its button at
+    the limit, but a disabled button is a hint -- an API call must be refused
+    too, and this is what proves it is.
+    """
+
+    async def test_a_tenant_at_its_limit_is_refused(self) -> None:
+        from iam_platform.application.ai_resources.exceptions import (
+            EntitlementExceededError,
+        )
+        from iam_platform.domain.tenancy.entitlements import TenantEntitlements
+
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, _ = _seed_member(uow, tenant_id)
+
+        uow.entitlements.stored[tenant_id] = TenantEntitlements(  # type: ignore[attr-defined]
+            id=uuid4(),
+            tenant_id=tenant_id,
+            max_knowledge_bases=1,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        uow.entitlements.knowledge_bases = 1  # type: ignore[attr-defined]
+
+        use_case = CreateKnowledgeBase(uow, FakeVectorNamespaceFactory(), FixedClock(NOW))
+        with pytest.raises(EntitlementExceededError):
+            await use_case.execute(
+                CreateKnowledgeBaseCommand(
+                    actor_user_id=str(user_id),
+                    tenant_id=str(tenant_id),
+                    permissions=frozenset({CREATE_KB}),
+                    name="One too many",
+                )
+            )
+
+    async def test_below_the_limit_still_succeeds(self) -> None:
+        """Guards against the enforcement being so eager it refuses everything
+        -- the failure that would read as "I can't create anything at all"."""
+        from iam_platform.domain.tenancy.entitlements import TenantEntitlements
+
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        user_id, _ = _seed_member(uow, tenant_id)
+
+        uow.entitlements.stored[tenant_id] = TenantEntitlements(  # type: ignore[attr-defined]
+            id=uuid4(),
+            tenant_id=tenant_id,
+            max_knowledge_bases=2,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        uow.entitlements.knowledge_bases = 1  # type: ignore[attr-defined]
+
+        use_case = CreateKnowledgeBase(uow, FakeVectorNamespaceFactory(), FixedClock(NOW))
+        kb_id = await use_case.execute(
+            CreateKnowledgeBaseCommand(
+                actor_user_id=str(user_id),
+                tenant_id=str(tenant_id),
+                permissions=frozenset({CREATE_KB}),
+                name="Second",
+            )
+        )
+        assert kb_id

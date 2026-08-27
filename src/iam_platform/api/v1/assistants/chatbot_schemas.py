@@ -65,6 +65,8 @@ class ChatbotSettingsResponse(BaseModel):
     avoid_instructions: str = ""
     personality: str = "neutral"
     response_length: str = "balanced"
+    #: IANA name the daily message allowance resets on, e.g. `Europe/London`.
+    quota_timezone: str = "UTC"
     updated_at: datetime
 
 
@@ -79,6 +81,11 @@ class UpdateChatbotSettingsRequest(BaseModel):
     daily_message_limit: int | None = Field(default=None, ge=0)
     share_visitor_location: bool = True
     conversation_retention_days: int = 30
+    #: Bounded to match the column. Not validated against a zone list here --
+    #: the IANA database changes, and the application checks against the
+    #: zoneinfo actually installed, degrading an unknown name to UTC rather
+    #: than refusing to answer.
+    quota_timezone: str = Field(default="UTC", max_length=64)
 
 
 class TenantPlanResponse(BaseModel):

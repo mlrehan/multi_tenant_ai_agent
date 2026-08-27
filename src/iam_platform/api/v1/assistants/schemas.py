@@ -277,6 +277,20 @@ class ChatWidgetResponse(BaseModel):
     embed_snippet: str
 
 
+class UpdateChatWidgetRequest(BaseModel):
+    """The operational half of a widget: who may embed it, and how much it may
+    spend. Presentation (avatar, greeting) is edited elsewhere.
+
+    No `public_key` and no `knowledge_base_id`: the key is embedded in script
+    tags on sites this console does not control, so changing it would silently
+    break every page already carrying it.
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+    allowed_origins: list[HttpUrl] = Field(min_length=1, max_length=20)
+    daily_question_limit: int = Field(default=500, ge=1, le=100_000)
+
+
 class SetChatWidgetStatusRequest(BaseModel):
     enabled: bool
 

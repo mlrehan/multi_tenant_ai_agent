@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, tzinfo
 from enum import StrEnum
 from types import TracebackType
 from typing import Any, Protocol
@@ -160,6 +160,20 @@ class ChatWidgetRepository(Protocol):
         ...
 
     async def update(self, widget: ChatWidget) -> None: ...
+
+    async def count_conversations(self, *, tenant_id: UUID, widget_id: UUID) -> int:
+        """How many conversations this widget has produced.
+
+        Asked before a delete. The foreign key would refuse the delete
+        anyway, but a count lets the refusal name a number and point at
+        the alternative instead of surfacing as an IntegrityError.
+        """
+        ...
+
+    async def delete(self, *, tenant_id: UUID, widget_id: UUID) -> None:
+        """Hard delete. Only ever called for a widget with no
+        conversations -- see `DeleteChatWidget` for why."""
+        ...
 
 
 class PublicWidgetLookup(Protocol):
@@ -552,7 +566,18 @@ class EmbeddingClient(Protocol):
     @property
     def dimensions(self) -> int: ...
 
-    async def embed(self, text: str) -> list[float]: ...
+    async def embed(
+        self, text: str, *, usage: TokenUsage | None = None
+    ) -> list[float]:
+        """Embeds one string, accumulating its token cost into `usage`.
+
+        `usage` is optional and additive rather than returned, matching
+        `ChatModel.stream_answer`: one answer spends tokens on an embedding
+        *and* a completion, and the caller wants their sum, not two numbers to
+        add up itself. Omitted, the call is exactly what it was before -- an
+        unmetered path must not start behaving differently.
+        """
+        ...
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Returns one vector per input, **in input order**. Callers zip the
@@ -629,7 +654,12 @@ class VectorSearchClient(Protocol):
         ...
 
     async def search_chunks(
-        self, *, namespace: str, query_text: str, top_k: int
+        self,
+        *,
+        namespace: str,
+        query_text: str,
+        top_k: int,
+        usage: TokenUsage | None = None,
     ) -> list[RetrievedChunk]:
         """Chunk-level results, for retrieval-augmented generation.
 
@@ -1110,7 +1140,9 @@ class TenantQuotaStore(Protocol):
     (cost unknown until the provider answers).
     """
 
-    async def consume_message(self, *, tenant_id: UUID, limit: int | None) -> bool:
+    async def consume_message(
+        self, *, tenant_id: UUID, limit: int | None, zone: tzinfo | None = None
+    ) -> bool:
         """Atomically reserves one AI message; False means over the limit.
 
         Atomic because the alternative -- read the count, then write it --
@@ -1119,11 +1151,18 @@ class TenantQuotaStore(Protocol):
         """
         ...
 
-    async def release_message(self, *, tenant_id: UUID) -> None:
+    async def release_message(
+        self, *, tenant_id: UUID, zone: tzinfo | None = None
+    ) -> None:
         """Returns a reservation for AI work that never happened."""
         ...
 
-    async def messages_used_today(self, *, tenant_id: UUID) -> int: ...
+    async def messages_used_today(
+        self, *, tenant_id: UUID, zone: tzinfo | None = None
+    ) -> int:
+        """**Must be given the same zone the writes used**, or the number
+        shown and the number enforced are different days."""
+        ...
 
     async def tokens_used_this_month(self, *, tenant_id: UUID) -> int:
         """Fails closed: raises rather than returning 0 when unreadable."""

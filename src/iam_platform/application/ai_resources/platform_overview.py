@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import tzinfo
 from typing import Any
 from uuid import UUID, uuid4
 
+from iam_platform.application.ai_resources.entitlements import resolve_quota_zone
 from iam_platform.application.ai_resources.exceptions import (
     ModelConfigurationManagementDeniedError,
 )
@@ -150,6 +152,20 @@ class TenantModelSpend:
 class PlatformOverview:
     providers: list[ProviderSpend]
     tenants: list[TenantSpend]
+    #: Spend that belongs to no model configuration, and therefore to no
+    #: provider row above.
+    #:
+    #: **Without this the page contradicted itself.** Provider usage is summed
+    #: from the per-(tenant, configuration) counter, but every answer using the
+    #: platform default -- which is all widget traffic -- resolves no
+    #: configuration and lands only on the tenant-wide counter. So the provider
+    #: panel showed a smaller total than the tenant table beneath it, with
+    #: nothing explaining the gap. Surfacing the difference makes the two
+    #: reconcile: providers + unattributed = what tenants actually spent.
+    #:
+    #: `None` when any counter involved could not be read -- a difference
+    #: computed from a partial sum would be a fiction presented as a figure.
+    unattributed_tokens: int | None = None
 
     @property
     def tenants_running_low(self) -> int:
@@ -201,6 +217,14 @@ class GetPlatformOverview:
             }
             tenants = await uow.tenants.list_all()
             stored = {e.tenant_id: e for e in await uow.tenant_entitlements.list_all()}
+            # Each tenant's own day boundary. Read here, inside the single unit
+            # of work, so the operator's view of "messages today" is the same
+            # day the tenant's own screen shows and the answer path enforces --
+            # resolving it differently would put two numbers on two dashboards
+            # for one tenant, with nothing explaining the gap.
+            zones = {
+                t.id: await resolve_quota_zone(uow, tenant_id=t.id) for t in tenants
+            }
 
         by_id = {c.id: c for c in configurations}
 
@@ -247,12 +271,27 @@ class GetPlatformOverview:
                     # configuration and therefore appears in no per-model row.
                     used_tokens=await self._safe_tenant_tokens(tenant.id),
                     max_messages_per_day=entitlements.max_messages_per_day,
-                    used_messages_today=await self._safe_messages(tenant.id),
+                    used_messages_today=await self._safe_messages(
+                        tenant.id, zones.get(tenant.id)
+                    ),
                     models=sorted(models, key=lambda m: m.model_name),
                 )
             )
 
+        # Providers + unattributed = total tenant spend. Computed from the two
+        # sums rather than tracked separately, because the tenant counter is
+        # the source of truth for what a tenant spent and the per-model counter
+        # is the source of truth for what a budget has consumed; the gap
+        # between them is exactly the platform-default traffic.
+        attributed = sum(v for v in pair_usage.values() if v is not None)
+        readable = all(v is not None for v in pair_usage.values()) and all(
+            t.used_tokens is not None for t in tenant_rows
+        )
+        tenant_total = sum(t.used_tokens or 0 for t in tenant_rows)
+        unattributed = max(0, tenant_total - attributed) if readable else None
+
         return PlatformOverview(
+            unattributed_tokens=unattributed,
             providers=providers,
             # Tenants running low first: the dashboard's job is to put what
             # needs attention where it is seen without scrolling.
@@ -337,9 +376,15 @@ class GetPlatformOverview:
             logger.warning("monthly token usage unavailable for tenant %s", tenant_id)
             return None
 
-    async def _safe_messages(self, tenant_id: UUID) -> int | None:
+    async def _safe_messages(
+        self, tenant_id: UUID, zone: tzinfo | None = None
+    ) -> int | None:
         try:
-            return int(await self._tenant_quota.messages_used_today(tenant_id=tenant_id))
+            return int(
+                await self._tenant_quota.messages_used_today(
+                    tenant_id=tenant_id, zone=zone
+                )
+            )
         except Exception:
             logger.warning("daily message usage unavailable for tenant %s", tenant_id)
             return None

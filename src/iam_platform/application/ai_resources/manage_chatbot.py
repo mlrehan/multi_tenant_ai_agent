@@ -15,6 +15,7 @@ cannot raise the cap.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
@@ -35,6 +36,8 @@ from iam_platform.domain.ai_resources.chatbot import (
     TenantChatbotSettings,
 )
 from iam_platform.domain.tenancy.teams import TenantTeam
+
+logger = logging.getLogger("iam_platform.application.ai_resources.chatbot")
 
 #: Configuring the chatbot changes what an assistant says to the public, which
 #: is the same authority as changing what it knows. Reused rather than minted
@@ -87,6 +90,7 @@ class UpdateChatbotSettingsCommand:
     daily_message_limit: int | None
     share_visitor_location: bool
     conversation_retention_days: int = DEFAULT_RETENTION_DAYS
+    quota_timezone: str = "UTC"
 
 
 class UpdateChatbotSettings:
@@ -158,6 +162,11 @@ class UpdateChatbotSettings:
             settings.daily_message_limit = requested
             settings.share_visitor_location = command.share_visitor_location
             settings.conversation_retention_days = retention
+            # Stored as given; `quota_day_zone()` degrades an unknown name to
+            # UTC at read time rather than refusing the save. Refusing here
+            # would mean a tenant whose zone was renamed upstream could not
+            # save any other setting either.
+            settings.quota_timezone = command.quota_timezone.strip() or "UTC"
             settings.updated_at = now
 
             await uow.chatbot_settings.upsert(settings)
@@ -197,9 +206,34 @@ class ListTeamsQuery:
     active_only: bool = False
 
 
+#: The team a tenant gets if they have never made one. Named for what it is
+#: rather than for this nursery, because a tenant who renames it should not be
+#: left wondering why "Falgoon Support" reappeared -- the name is a starting
+#: point, not an identity.
+DEFAULT_TEAM_NAME = "Support"
+
+
 class ListTeams:
-    def __init__(self, uow_factory: AiResourceUowFactory) -> None:
+    """Lists teams, creating the default one for a tenant that has none.
+
+    **Why creation happens on a read.** A tenant with no team cannot receive a
+    handoff at all: `prompt_layers` only offers a transfer when
+    `allow_human_handoff` *and* at least one team exists, so a fresh tenant's
+    chatbot silently tells visitors it cannot fetch a colleague -- with nothing
+    on any screen explaining why. Requiring someone to first discover the Teams
+    form makes the product's headline feature opt-in by accident.
+
+    This is the honest hook point rather than "on login": login is an identity
+    event and a user may belong to several tenants, whereas this runs exactly
+    when a tenant's teams are first needed -- the Inbox and the chatbot's
+    Handoff tab both read through here.
+    """
+
+    def __init__(self, uow_factory: AiResourceUowFactory, clock: Clock | None = None) -> None:
         self._uow_factory = uow_factory
+        # Optional so the existing construction sites keep working unchanged;
+        # without one, listing behaves exactly as it did and creates nothing.
+        self._clock = clock
 
     async def execute(
         self, query: ListTeamsQuery
@@ -209,6 +243,11 @@ class ListTeams:
             teams = await uow.teams.list_for_tenant(
                 tenant_id, active_only=query.active_only
             )
+            if not teams and self._clock is not None:
+                await self._ensure_default_team(uow, tenant_id)
+                teams = await uow.teams.list_for_tenant(
+                    tenant_id, active_only=query.active_only
+                )
             return [
                 (
                     team,
@@ -216,6 +255,50 @@ class ListTeams:
                 )
                 for team in teams
             ]
+
+    async def _ensure_default_team(
+        self, uow: object, tenant_id: UUID
+    ) -> None:
+        """Creates the default team, tolerating a concurrent creator.
+
+        **The race is settled by the database, not by checking first.** Two
+        tabs opening the Inbox at once both read zero teams and both decide to
+        create one; no amount of re-reading closes that window, because the
+        read is stale the moment it returns. `tenant_teams` already carries
+        `UNIQUE (tenant_id, name)`, so Postgres serialises the two inserts --
+        exactly one succeeds and the loser is told so.
+
+        **`active_only` deliberately does not narrow this check.** A tenant who
+        deactivated their only team has made a decision; recreating it because
+        an inactive team is invisible to one caller would silently undo it, and
+        the unique constraint would refuse the duplicate name anyway.
+        """
+        assert self._clock is not None  # guarded by the caller
+        existing = await uow.teams.list_for_tenant(tenant_id, active_only=False)  # type: ignore[attr-defined]
+        if existing:
+            return
+
+        now = self._clock.now()
+        try:
+            await uow.teams.add(  # type: ignore[attr-defined]
+                TenantTeam(
+                    id=uuid4(),
+                    tenant_id=tenant_id,
+                    name=DEFAULT_TEAM_NAME,
+                    description="Handles visitor requests to speak with a person.",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        except Exception:
+            # A colleague's request won the race, or the tenant already has a
+            # team by this name. Either way the tenant now has what this method
+            # exists to guarantee, and the caller re-reads to find it. Logged
+            # rather than raised: failing to create a *default* must never take
+            # down the Inbox that asked for the list.
+            logger.info(
+                "default team not created for tenant %s -- it already exists", tenant_id
+            )
 
 
 @dataclass(frozen=True, slots=True)

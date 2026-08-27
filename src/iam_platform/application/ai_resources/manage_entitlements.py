@@ -225,7 +225,11 @@ class GetTenantEntitlements:
                 await uow.entitlements.count_chat_widgets(tenant_id),
             )
 
-        messages_used = await self._safe_messages(tenant_id)
+        # **The same zone the writes used.** This is the number the tenant
+        # reads on their dashboard; resolving the day differently from the
+        # answer path would show one figure while enforcing another, and
+        # nothing would look broken until they counted their own messages.
+        messages_used = await self._safe_messages(tenant_id, settings)
         tokens_used = await self._safe_tokens(tenant_id)
         return TenantPlanView(
             entitlements=entitlements,
@@ -242,11 +246,20 @@ class GetTenantEntitlements:
     # render a plan page because Redis blinked protects nothing and takes the
     # console down with the cache. Enforcement, on the answer path, still fails
     # closed -- the asymmetry is the point.
-    async def _safe_messages(self, tenant_id: UUID) -> int | None:
+    async def _safe_messages(
+        self, tenant_id: UUID, settings: object | None
+    ) -> int | None:
         if self._quota_store is None:
             return None
+        # Taken from the settings row already loaded above rather than read
+        # again -- one fewer round trip, and one fewer chance of resolving a
+        # different zone than the enforcement path did.
+        zone = settings.quota_day_zone() if settings is not None else None  # type: ignore[attr-defined]
         try:
-            return await self._quota_store.messages_used_today(tenant_id=tenant_id)  # type: ignore[attr-defined]
+            used: int = await self._quota_store.messages_used_today(  # type: ignore[attr-defined]
+                tenant_id=tenant_id, zone=zone
+            )
+            return used
         except Exception:
             return None
 

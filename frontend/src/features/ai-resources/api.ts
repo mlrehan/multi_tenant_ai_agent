@@ -165,6 +165,33 @@ export function createChatWidget(
   });
 }
 
+/** Edits a widget's operational settings: which sites may embed it, its name,
+ *  and its daily cap. Presentation (avatar, greeting) is a separate call.
+ *
+ *  The public key is deliberately not editable -- it lives in script tags on
+ *  sites this console does not control. */
+export function updateChatWidget(
+  tenantId: string,
+  widgetId: string,
+  body: { name: string; allowed_origins: string[]; daily_question_limit: number },
+) {
+  return apiFetch<ChatWidget>(`v1/tenants/${tenantId}/chat-widgets/${widgetId}`, {
+    method: "PATCH",
+    tenantId,
+    body,
+  });
+}
+
+/** Removes a widget. Answers 409 when conversations reference it -- deleting
+ *  would take the transcripts with them, so disabling is the way to stop a
+ *  used widget. */
+export function deleteChatWidget(tenantId: string, widgetId: string) {
+  return apiFetch<void>(`v1/tenants/${tenantId}/chat-widgets/${widgetId}`, {
+    method: "DELETE",
+    tenantId,
+  });
+}
+
 /** The off switch. The origin allowlist only binds browsers and the daily cap
  *  only limits spend after the fact, so this is what an operator reaches for
  *  when a widget is being abused. */

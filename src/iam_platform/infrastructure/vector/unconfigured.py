@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from iam_platform.application.ai_resources.ports import RetrievedChunk, VectorChunk
+from iam_platform.application.ai_resources.ports import RetrievedChunk, TokenUsage, VectorChunk
 
 _MESSAGE = (
     "knowledge-base search is not configured: set OPENAI__API_KEY (and QDRANT__URL "
@@ -47,7 +47,12 @@ class UnconfiguredVectorSearchClient:
         raise RuntimeError(_MESSAGE)
 
     async def search_chunks(
-        self, *, namespace: str, query_text: str, top_k: int
+        self,
+        *,
+        namespace: str,
+        query_text: str,
+        top_k: int,
+        usage: TokenUsage | None = None,
     ) -> list[RetrievedChunk]:
         # Raising, never returning []. An empty passage list would make the
         # generator answer "I don't have information about that" -- a fluent,

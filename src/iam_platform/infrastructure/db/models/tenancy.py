@@ -385,3 +385,9 @@ class TenantChatbotSettingsModel(TimestampMixin, Base):
     response_length: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'balanced'")
     )
+    #: IANA name the *daily* allowance resets on. NOT NULL with a default, so
+    #: no reader has to invent a fallback -- two readers inventing different
+    #: ones is how the enforced count and the displayed count diverge.
+    quota_timezone: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'UTC'")
+    )

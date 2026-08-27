@@ -552,6 +552,10 @@ export interface PlatformOverview {
    *  client puts what needs attention at the top. */
   tenants: TenantSpend[];
   tenants_running_low: number;
+  /** Tokens spent on the platform default model, which belongs to no
+   *  configuration and so appears in no provider row. Providers +
+   *  unattributed = total tenant spend. null when a counter was unreadable. */
+  unattributed_tokens: number | null;
   /** The threshold the flags were computed with, so the UI can explain why a
    *  row is highlighted instead of restating a number that could drift. */
   low_remaining_fraction: number;

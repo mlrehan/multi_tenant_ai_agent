@@ -41,6 +41,20 @@ class ModelConfigurationInUseError(AiResourceError):
     """Revoking would strand assistants that still use this configuration."""
 
 
+class DailyMessageLimitExceededError(AiResourceError):
+    """The tenant has used its whole daily AI-message allowance.
+
+    A 429, like the token budget it sits beside: the caller's permissions are
+    fine and the same request succeeds tomorrow. A 403 would send them looking
+    for a permission problem that does not exist.
+
+    Distinct from `WidgetQuotaExceededError`, which is the *public* surface's
+    deliberately opaque refusal -- this one answers an authenticated tenant
+    admin who is entitled to know exactly which limit they hit and when it
+    resets.
+    """
+
+
 class TokenBudgetExceededError(AiResourceError):
     """This month's token budget for the chosen model is spent.
 
@@ -203,6 +217,26 @@ class ChatWidgetNotFoundError(AiResourceError):
     tenant admin who already holds the manage permission, so a 404 tells them
     only about their own tenant and is no oracle. The anonymous surface keeps
     its single opaque error.
+    """
+
+
+class ChatWidgetInvalidError(AiResourceError):
+    """The submitted widget settings cannot be stored as given.
+
+    A 400: the caller may do this, they have simply sent something unusable --
+    an empty name, or an origin list with nothing resolvable in it. Named
+    rather than reusing a bare `ValueError`, which no handler maps and which
+    this codebase has seen surface as a 500 three separate times.
+    """
+
+
+class ChatWidgetInUseError(AiResourceError):
+    """The widget has conversations and cannot be deleted without losing them.
+
+    A 409: nothing about the request is malformed and the caller's permissions
+    are fine -- the resource is simply in a state that refuses this operation.
+    The message names the alternative (disable), because a refusal that does
+    not say what to do instead is a dead end.
     """
 
 

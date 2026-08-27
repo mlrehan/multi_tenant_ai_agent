@@ -74,9 +74,14 @@ class _FakeVectorSearch:
     chunks: list[RetrievedChunk] = field(default_factory=list)
     namespaces: list[str] = field(default_factory=list)
 
+    # `**kwargs` rather than a fixed list: this fake stands in for a signature
+    # that has now grown a parameter twice (token metering most recently), and
+    # each time a narrower fake failed every caller with a TypeError that had
+    # nothing to do with what the test was checking.
     async def search_chunks(
-        self, *, namespace: str, query_text: str, top_k: int
+        self, *, namespace: str, query_text: str, top_k: int, **kwargs: object
     ) -> list[RetrievedChunk]:
+        del query_text, kwargs
         self.namespaces.append(namespace)
         return self.chunks[:top_k]
 

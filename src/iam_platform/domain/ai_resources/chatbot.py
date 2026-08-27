@@ -33,9 +33,10 @@ injection surface for a benefit (arbitrary tone wording) nobody asked for.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, tzinfo
 from enum import StrEnum
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from iam_platform.domain.shared.entity import Entity
 
@@ -364,6 +365,19 @@ class TenantChatbotSettings(Entity):
     #: bounds it at ten years.
     conversation_retention_days: int = DEFAULT_RETENTION_DAYS
 
+    #: The timezone this tenant's *daily* allowance resets on.
+    #:
+    #: An IANA name, never an offset: an offset cannot express daylight saving,
+    #: which is the whole reason this exists. A UK nursery in BST had its day
+    #: roll over at 01:00 local, and a message at 00:30 counted as yesterday's.
+    #:
+    #: Applies to the daily message counter only. The *monthly* token window
+    #: stays UTC deliberately -- a month boundary shifted by an hour moves a
+    #: handful of tokens between two months that are already thirty days long,
+    #: and making it tenant-relative would mean the platform's own view of a
+    #: month differed per tenant for no benefit anyone can perceive.
+    quota_timezone: str = "UTC"
+
     #: The chatbot's brief. **These moved here from `ai_assistants`** when
     #: assistant management was withdrawn from tenants: they are chatbot
     #: configuration, not a property of a resource the tenant can no longer
@@ -384,6 +398,21 @@ class TenantChatbotSettings(Entity):
 
     created_at: datetime
     updated_at: datetime
+
+    def quota_day_zone(self) -> tzinfo:
+        """The timezone object to compute "today" in, never raising.
+
+        **Degrades to UTC on an unknown or malformed name rather than
+        raising.** This is called on the answer path: a bad value here must not
+        take a tenant's chatbot down, and UTC is the value the column defaults
+        to anyway. A tenant whose timezone was mistyped gets a day boundary an
+        hour or two off -- the same failure they had before this existed --
+        rather than no service at all.
+        """
+        try:
+            return ZoneInfo(self.quota_timezone)
+        except Exception:
+            return UTC
 
     def resolved_role(self, company_name: str) -> str:
         """The role brief, defaulted to one naming *this* company.

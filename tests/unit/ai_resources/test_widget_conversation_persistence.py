@@ -307,3 +307,91 @@ class TestOrdinaryQuestionsArePersisted:
         )
 
         assert await _drain(stream) == "Still fine."
+
+
+class _FailingPipeline:
+    """Answers by raising -- the tenant is out of tokens, or the provider is
+    down. Whatever the reason, the visitor got nothing."""
+
+    async def answer_from_namespace(self, question: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        del question, kwargs
+        raise RuntimeError("the model is unreachable")
+
+
+class _CountingTenantQuota:
+    """Records reservations and releases so a test can assert they balance."""
+
+    def __init__(self) -> None:
+        self.consumed = 0
+        self.released = 0
+
+    async def consume_message(
+        self, *, tenant_id: UUID, limit: int | None, **kwargs: object
+    ) -> bool:
+        del tenant_id, limit
+        self.consumed += 1
+        return True
+
+    async def release_message(self, *, tenant_id: UUID, **kwargs: object) -> None:
+        del tenant_id
+        self.released += 1
+
+
+class TestAFailedAnswerDoesNotConsumeTheDailyAllowance:
+    """The reservation is taken *before* the answer is attempted, so anything
+    that then fails would permanently spend a message the visitor never
+    received. `release_message` existed for exactly this and was called by
+    nothing -- and the tenant-wide token check made the gap routine: a tenant
+    at their token limit burned a message on every rejected attempt.
+    """
+
+    async def test_a_failed_answer_releases_the_reservation(self) -> None:
+        widget = _widget()
+        quota = _CountingTenantQuota()
+        use_case = AskWidget(
+            _FakeLookup([widget]),  # type: ignore[arg-type]
+            _FakeQuota(),  # type: ignore[arg-type]
+            _FailingPipeline(),  # type: ignore[arg-type]
+            memory=None,
+            tenant_quota=quota,
+        )
+
+        with pytest.raises(RuntimeError):
+            await use_case.execute(
+                AskWidgetCommand(
+                    widget_id=widget.id,
+                    knowledge_base_id=widget.knowledge_base_id,
+                    question="What are your opening hours?",
+                    session_origin=ORIGIN,
+                    session_id=uuid4(),
+                )
+            )
+
+        assert quota.consumed == 1
+        assert quota.released == 1, "the message was consumed but never returned"
+
+    async def test_a_successful_answer_keeps_the_reservation(self) -> None:
+        """Guards against the release being unconditional, which would make the
+        daily counter permanently zero."""
+        widget = _widget()
+        quota = _CountingTenantQuota()
+        use_case = AskWidget(
+            _FakeLookup([widget]),  # type: ignore[arg-type]
+            _FakeQuota(),  # type: ignore[arg-type]
+            _FakePipeline(answer_text="We are open 9 to 5."),  # type: ignore[arg-type]
+            memory=None,
+            tenant_quota=quota,
+        )
+
+        await use_case.execute(
+            AskWidgetCommand(
+                widget_id=widget.id,
+                knowledge_base_id=widget.knowledge_base_id,
+                question="What are your opening hours?",
+                session_origin=ORIGIN,
+                session_id=uuid4(),
+            )
+        )
+
+        assert quota.consumed == 1
+        assert quota.released == 0

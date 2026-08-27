@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -42,6 +42,10 @@ from iam_platform.application.ai_resources.answer_question import (
     AnswerStream,
 )
 from iam_platform.application.ai_resources.conversation_memory import ConversationMemory
+from iam_platform.application.ai_resources.entitlements import (
+    resolve_daily_message_limit,
+    resolve_quota_zone,
+)
 from iam_platform.application.ai_resources.exceptions import (
     QuestionBlockedError,
     QuestionTooLongError,
@@ -60,7 +64,7 @@ from iam_platform.application.ai_resources.visitor_conversation import (
     ensure_visitor_conversation,
     title_from,
 )
-from iam_platform.core.clock import Clock
+from iam_platform.core.clock import Clock, SystemClock
 from iam_platform.domain.ai_resources.chatbot import (
     DEFAULT_QUICK_REPLIES,
     HANDOFF_QUICK_REPLY,
@@ -73,9 +77,9 @@ from iam_platform.domain.ai_resources.entities import (
 from iam_platform.domain.ai_resources.guardrails import (
     MAX_QUESTION_CHARS,
     GuardrailCategory,
+    GuardrailVerdict,
     screen_question,
 )
-from iam_platform.domain.tenancy.entitlements import TenantEntitlements
 
 #: A visitor's memory lives in Redis and is never persisted, so these fields
 #: exist only to satisfy the shared `ConversationMessage` shape. Constants
@@ -228,36 +232,32 @@ class AskWidget:
         self._uow_factory = uow_factory
         self._clock = clock
 
-    async def _effective_daily_limit(self, tenant_id: UUID) -> int | None:
-        """The tenant's enforced daily message cap.
+    async def _daily_limit_and_zone(
+        self, tenant_id: UUID
+    ) -> tuple[int | None, tzinfo | None]:
+        """This tenant's daily cap and the timezone it resets on.
 
-        Resolved here rather than read from one place, because it is two
-        numbers: the platform's ceiling on the tenant, and the tenant's own
-        (lower) preference. `TenantEntitlements.effective_daily_message_limit`
-        owns that rule -- duplicating the `min()` here is how the widget and
-        the console would eventually disagree about the same cap.
+        Returned together from one read, because they are used together and a
+        caller that fetched them separately could reserve against one day and
+        enforce a limit resolved for another.
+
+        Both delegate to the shared resolvers in `entitlements`, which the
+        authenticated Ask panel also uses: two entry points spending from one
+        allowance must not each carry their own copy of the rule.
 
         Without a unit of work there is nothing to read, so the answer is
-        `None` (uncapped): counting still happens, enforcement does not. That
-        is the honest outcome for a deployment that has not wired a database
-        into this path, and it is what every existing test does.
+        uncapped and UTC: counting still happens, enforcement does not. That is
+        the honest outcome for a deployment that has not wired a database into
+        this path, and it is what every existing test does.
         """
         if self._uow_factory is None:
-            return None
+            return None, None
         async with self._uow_factory(_ANONYMOUS, tenant_id) as uow:
-            entitlements = await uow.entitlements.get_for_tenant(tenant_id)
-            settings = await uow.chatbot_settings.get_for_tenant(tenant_id)
-        if entitlements is None:
-            # No stored row means the documented defaults govern, exactly as
-            # everywhere else -- never "unlimited".
-            entitlements = TenantEntitlements.defaults_for(
-                tenant_id, now=self._clock.now() if self._clock else datetime.now(UTC),
-                entitlement_id=uuid4(),
+            limit = await resolve_daily_message_limit(
+                uow, tenant_id=tenant_id, clock=self._clock or SystemClock()
             )
-        limit: int | None = entitlements.effective_daily_message_limit(
-            settings.daily_message_limit if settings else None
-        )
-        return limit
+            zone = await resolve_quota_zone(uow, tenant_id=tenant_id)
+        return limit, zone
 
     async def execute(self, command: AskWidgetCommand) -> AnswerStream:
         widget = await self._reload(command)
@@ -312,10 +312,14 @@ class AskWidget:
         # **closed**: an unreadable counter refuses rather than becoming
         # unlimited spending, which is the one failure that is invisible until
         # the invoice.
+        reserved_zone: tzinfo | None = None
         if self._tenant_quota is not None:
+            # Limit and zone resolved together, and the zone kept, so the
+            # release below decrements the very key this reserved. Resolving it
+            # again would be a second chance to get a different day.
+            limit, reserved_zone = await self._daily_limit_and_zone(widget.tenant_id)
             allowed = await self._tenant_quota.consume_message(
-                tenant_id=widget.tenant_id,
-                limit=await self._effective_daily_limit(widget.tenant_id),
+                tenant_id=widget.tenant_id, limit=limit, zone=reserved_zone
             )
             if not allowed:
                 # The per-widget reservation above is not released: it was a
@@ -333,6 +337,37 @@ class AskWidget:
         # No store means the call is made exactly as it was before memory
         # existed -- not "with an empty memory", which would look the same
         # today and diverge the moment the parameter grows a default.
+        # **Every exit from here releases the message reservation.** It was
+        # taken before the answer was attempted, so a question that then fails
+        # -- the tenant is out of tokens, the provider is unreachable, the
+        # model errors -- would otherwise permanently consume a message the
+        # visitor never received. `release_message` existed for exactly this
+        # and was called by nothing; the tenant-wide token check added just
+        # above made the gap routine rather than rare, since a tenant at their
+        # token limit would burn a message on every rejected attempt.
+        try:
+            return await self._answer(command, widget, verdict)
+        except Exception:
+            if self._tenant_quota is not None:
+                # Fails open, and deliberately so: an unreturned reservation
+                # over-counts by one, which is the safe direction. Raising here
+                # would replace the real error with a bookkeeping one.
+                await self._tenant_quota.release_message(
+                    tenant_id=widget.tenant_id, zone=reserved_zone
+                )
+            raise
+
+    async def _answer(
+        self, command: AskWidgetCommand, widget: ChatWidget, verdict: GuardrailVerdict
+    ) -> AnswerStream:
+        """Retrieval and generation, once both quotas have been reserved.
+
+        `verdict` is passed in rather than recomputed: the guardrail already
+        ran before the quotas were taken, and screening the same question twice
+        would be wasted work that could also disagree with itself.
+        """
+        # The namespace is derived from the *widget's* knowledge base, freshly
+        # loaded -- never from the token's claim alone.
         if self._memory is None:
             stream = await self._answer_question.answer_from_namespace(
                 verdict.text,

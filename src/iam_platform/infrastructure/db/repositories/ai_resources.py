@@ -1014,6 +1014,30 @@ class SqlChatWidgetRepository:
         )
         await self._session.execute(stmt)
 
+    async def count_conversations(self, *, tenant_id: UUID, widget_id: UUID) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count())
+                .select_from(ConversationModel)
+                .where(
+                    ConversationModel.tenant_id == tenant_id,
+                    ConversationModel.widget_id == widget_id,
+                )
+            )
+            or 0
+        )
+
+    async def delete(self, *, tenant_id: UUID, widget_id: UUID) -> None:
+        # Tenant-scoped in the statement as well as by RLS: the belt-and-braces
+        # every write here uses, so a bug in one layer is not the only thing
+        # standing between a caller and another tenant's row.
+        await self._session.execute(
+            delete(ChatWidgetModel).where(
+                ChatWidgetModel.tenant_id == tenant_id,
+                ChatWidgetModel.id == widget_id,
+            )
+        )
+
 
 class SqlPublicWidgetLookup:
     """The one read in this platform that crosses the tenant boundary.

@@ -383,6 +383,7 @@ class SqlPlatformUnitOfWork:
     model_configurations: PlatformModelConfigurationRepository
     tenant_model_access: TenantModelAccessRepository
     tenant_entitlements: TenantEntitlementRepository
+    chatbot_settings: TenantChatbotSettingsRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 
@@ -408,6 +409,7 @@ class SqlPlatformUnitOfWork:
         self.model_configurations = SqlPlatformModelConfigurationRepository(session)
         self.tenant_model_access = SqlTenantModelAccessRepository(session)
         self.tenant_entitlements = SqlTenantEntitlementRepository(session)
+        self.chatbot_settings = SqlTenantChatbotSettingsRepository(session)
         self.users = SqlUserRepository(session)
         self.identities = SqlAuthIdentityRepository(session)
         self.credentials = SqlCredentialRepository(session)
