@@ -74,7 +74,9 @@ from iam_platform.application.ai_resources.conversation_memory import (
     assemble,
     compaction_window,
     fold_summary,
+    for_model,
     needs_compaction,
+    speaker,
 )
 from iam_platform.application.ai_resources.entitlements import (
     resolve_daily_message_limit,
@@ -1148,8 +1150,15 @@ class AnswerQuestion:
         each turn keep it cheap, deterministic and faithful. The seam for a
         model-written summary is here if one is ever wanted.
         """
-        tail = await uow.conversation_messages.list_after(
-            conversation_id=conversation.id, after_seq=conversation.summary_through_seq
+        # Filtered before anything is summarised. The summary is *stored* and
+        # re-sent on every later turn, so a staff-only note folded into it
+        # would outlive the message itself and be extractable for the rest of
+        # the thread.
+        tail = for_model(
+            await uow.conversation_messages.list_after(
+                conversation_id=conversation.id,
+                after_seq=conversation.summary_through_seq,
+            )
         )
         if not needs_compaction(tail):
             return
@@ -1157,8 +1166,7 @@ class AnswerQuestion:
         if not older:
             return
         precis = " ".join(
-            f"{'Q' if m.role is MessageRole.USER else 'A'}: {m.content.splitlines()[0][:200]}"
-            for m in older
+            f"{speaker(m.role)}: {m.content.splitlines()[0][:200]}" for m in older
         )
         conversation.compact(
             summary=fold_summary(conversation.summary, precis), through_seq=through, now=now

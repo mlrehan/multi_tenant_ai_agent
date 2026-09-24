@@ -68,12 +68,44 @@ class ConversationMemory:
         if self.summary:
             parts.append(f"Summary of earlier conversation:\n{self.summary}")
         if self.recent:
-            turns = "\n".join(
-                f"{'User' if m.role is MessageRole.USER else 'Assistant'}: {m.content}"
-                for m in self.recent
-            )
+            turns = "\n".join(f"{speaker(m.role)}: {m.content}" for m in self.recent)
             parts.append(f"Recent turns:\n{turns}")
         return "\n\n".join(parts)
+
+
+def for_model(messages: list[ConversationMessage]) -> list[ConversationMessage]:
+    """The turns the model may be shown -- the same ones the person may see.
+
+    **Anything the model can see, the person asking it can extract.** "Repeat
+    everything above" is not an exotic attack; it is the first thing anyone
+    tries. So the model's history must obey exactly the predicate that decides
+    what is shown to the person on the other end of the thread, and it uses the
+    same one -- `MessageRole.visible_to_visitor` -- rather than a second list
+    that could drift from it.
+
+    Without this, a staff-only internal comment in a thread reached the prompt
+    labelled as the assistant's own earlier words, and survived compaction into
+    the stored summary that rides along on every later turn. The visitor's
+    transcript had always filtered it; the model's copy of the same thread
+    never did.
+    """
+    return [m for m in messages if m.role.visible_to_visitor]
+
+
+def speaker(role: MessageRole) -> str:
+    """Who said a turn, as the model is told it.
+
+    A colleague's reply is not labelled as the assistant's: telling the model
+    it said something it did not is how it ends up defending a promise a person
+    made, or contradicting one it never knew about.
+    """
+    if role is MessageRole.USER:
+        return "User"
+    if role is MessageRole.AGENT:
+        return "Staff member"
+    if role is MessageRole.SYSTEM_EVENT:
+        return "Notice"
+    return "Assistant"
 
 
 def assemble(
@@ -88,7 +120,9 @@ def assemble(
     """
     if conversation is None:
         return ConversationMemory(summary=None, recent=())
-    tail = tuple(messages[-RECENT_TURNS:])
+    # Filtered *before* the window is taken, so six recent turns means six
+    # turns the person could see -- not six rows of which some are withheld.
+    tail = tuple(for_model(messages)[-RECENT_TURNS:])
     return ConversationMemory(summary=conversation.summary, recent=tail)
 
 
