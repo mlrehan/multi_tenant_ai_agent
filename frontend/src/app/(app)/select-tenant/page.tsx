@@ -10,6 +10,7 @@ import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/state
 import { StatusBadge } from "@/components/shared/status-badge";
 import { IdentityChip } from "@/components/shared/identity-chip";
 import { useMyMemberships } from "@/features/tenancy/hooks";
+import { tenantLabel } from "@/features/tenancy/api";
 import { useHasPlatformPermission } from "@/features/rbac/hooks";
 import { useTenantStore } from "@/stores/tenant-store";
 
@@ -48,7 +49,7 @@ export default function SelectTenantPage() {
           }
           action={
             canCreateTenants ? (
-              <Button size="sm" render={<Link href="/platform/tenants" />}>
+              <Button size="sm" nativeButton={false} render={<Link href="/platform/tenants" />}>
                 <Plus />
                 Create a tenant
               </Button>
@@ -65,11 +66,19 @@ export default function SelectTenantPage() {
               <Card key={membership.membership_id}>
                 <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
                   <div className="flex min-w-0 flex-col gap-1.5">
-                    <div className="flex items-center gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
                       <Building2 className="size-4 shrink-0 text-muted-foreground" />
-                      <IdentityChip value={membership.tenant_id} label="tenant" truncate={false} />
+                      <span className="truncate font-medium">{tenantLabel(membership)}</span>
+                      {membership.tenant_slug && (
+                        <span className="truncate font-mono text-xs text-muted-foreground">
+                          {membership.tenant_slug}
+                        </span>
+                      )}
                     </div>
-                    <div className="flex items-center gap-2 pl-6">
+                    <div className="flex flex-wrap items-center gap-2 pl-6">
+                      {/* The id stays available -- support and API users need
+                          it -- but as the secondary detail, not the name. */}
+                      <IdentityChip value={membership.tenant_id} label="tenant" />
                       <StatusBadge status={membership.status} />
                       {membership.is_default && (
                         <span className="text-xs text-muted-foreground">Default</span>

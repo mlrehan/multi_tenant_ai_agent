@@ -176,11 +176,14 @@ class PromptLayers:
             personality=personality or (settings.personality if settings else Personality.NEUTRAL),
             response_length=response_length
             or (settings.response_length if settings else ResponseLength.BALANCED),
-            # Both halves required. A tenant that permits handoff but has
-            # configured no teams cannot actually transfer anyone, and telling
-            # the model otherwise produces an offer that dead-ends.
+            # Both halves required. A tenant that permits handoff but has no
+            # staffed team cannot actually transfer anyone, and telling the
+            # model otherwise produces an offer that dead-ends. No settings row
+            # means the default -- handoff allowed -- exactly as the widget's
+            # own handoff policy reads it; the model and the widget must not
+            # disagree about whether a transfer exists.
             handoff_available=bool(
-                settings and settings.allow_human_handoff and teams_configured
+                (settings is None or settings.allow_human_handoff) and teams_configured
             ),
             legacy_system_prompt=legacy_system_prompt,
         )

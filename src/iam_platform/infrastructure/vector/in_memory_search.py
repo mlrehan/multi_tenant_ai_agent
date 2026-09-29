@@ -22,7 +22,7 @@ import math
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from iam_platform.application.ai_resources.ports import RetrievedChunk, VectorChunk
+from iam_platform.application.ai_resources.ports import RetrievedChunk, TokenUsage, VectorChunk
 from iam_platform.infrastructure.vector.namespaces import (
     collection_name_for_tenant,
     parse_namespace,
@@ -88,7 +88,12 @@ class InMemoryVectorSearchClient:
             del stored[chunk_id]
 
     async def query(
-        self, *, namespace: str, query_text: str, top_k: int
+        self,
+        *,
+        namespace: str,
+        query_text: str,
+        top_k: int,
+        usage: TokenUsage | None = None,
     ) -> list[tuple[UUID, float]]:
         self.queried_namespaces.append(namespace)
         parsed = parse_namespace(namespace)
@@ -102,7 +107,7 @@ class InMemoryVectorSearchClient:
                 "InMemoryVectorSearchClient needs an embedding client to answer queries; "
                 "construct it with one, or assert on upsert()/delete_document() instead"
             )
-        query_vector = await self._embedding_client.embed(query_text)
+        query_vector = await self._embedding_client.embed(query_text, usage=usage)
 
         scored = sorted(
             (
@@ -123,7 +128,12 @@ class InMemoryVectorSearchClient:
         return list(best.items())
 
     async def search_chunks(
-        self, *, namespace: str, query_text: str, top_k: int
+        self,
+        *,
+        namespace: str,
+        query_text: str,
+        top_k: int,
+        usage: TokenUsage | None = None,
     ) -> list[RetrievedChunk]:
         """Chunk-level search over the in-memory store.
 
@@ -144,7 +154,7 @@ class InMemoryVectorSearchClient:
                 "InMemoryVectorSearchClient needs an embedding client to answer queries; "
                 "construct it with one, or assert on upsert()/delete_document() instead"
             )
-        query_vector = await self._embedding_client.embed(query_text)
+        query_vector = await self._embedding_client.embed(query_text, usage=usage)
 
         scored = sorted(
             (

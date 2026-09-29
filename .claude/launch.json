@@ -4,14 +4,35 @@
     {
       "name": "frontend-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "frontend"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "frontend"
+      ],
       "port": 3000
     },
     {
       "name": "backend-api",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "iam_platform.asgi"],
+      "runtimeArgs": [
+        "-m",
+        "iam_platform.asgi"
+      ],
       "port": 8000,
+      "autoPort": false
+    },
+    {
+      "name": "test-website-3010",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "3010",
+        "--directory",
+        "tests"
+      ],
+      "port": 3010,
       "autoPort": false
     }
   ]

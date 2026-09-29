@@ -20,7 +20,12 @@ before creating the first tenant. `seed_demo_data.py` also calls
 `seed_tenant_catalog()` directly rather than duplicating this list, so there
 is exactly one definition of what a fresh tenant's roles/permissions are.
 
-Idempotent: safe to re-run (every insert is `ON CONFLICT DO NOTHING`).
+Idempotent: safe to re-run. Roles are `ON CONFLICT DO NOTHING`; a permission
+that already exists gets its **description** refreshed and nothing else. The
+description is catalogue copy the console shows administrators, so a
+corrected one must reach deployments that were seeded before it changed --
+while risk level and customisability are left alone, as an operator may have
+had reason to adjust them.
 Usage:
     python scripts/bootstrap_tenant_catalog.py
 """
@@ -43,18 +48,21 @@ TENANT_PERMISSIONS = [
     ("tenant.users.manage", "users", "manage", "medium", "Suspend, reactivate, and revoke memberships"),
     ("tenant.users.invite", "users", "invite", "medium", "Invite new members to the tenant"),
     ("tenant.roles.manage", "roles", "manage", "high", "Create roles and assign them to members"),
-    ("tenant.assistants.create", "assistants", "create", "low", "Create new AI assistants"),
-    ("tenant.assistants.publish", "assistants", "publish", "medium", "Publish an assistant for use"),
-    ("tenant.assistants.manage", "assistants", "manage", "medium", "Modify any assistant in the tenant"),
-    ("tenant.assistants.view_all", "assistants", "view_all", "low",
-     "See every assistant regardless of visibility"),
+    # The four `tenant.assistants.*` permissions are gone, for the same reason
+    # as `tenant.provider_credentials.manage` below: assistant management was
+    # withdrawn from tenants (migration f1c94a70b2d8 deleted all five rows).
+    # They were missed here, so re-running this script -- which the upgrade
+    # docs recommend -- quietly put them back, and every tenant dashboard
+    # listed "Create new AI assistants" for a feature with no route behind it.
     ("tenant.knowledge_bases.create", "knowledge_bases", "create", "low", "Create knowledge bases"),
     ("tenant.knowledge_bases.query", "knowledge_bases", "query", "low", "Run retrieval queries"),
     ("tenant.knowledge_bases.manage", "knowledge_bases", "manage", "medium", "Modify any knowledge base"),
     ("tenant.documents.upload", "documents", "upload", "low", "Register documents in a knowledge base"),
-    ("tenant.conversations.create", "conversations", "create", "low", "Start conversations with assistants"),
+    ("tenant.conversations.create", "conversations", "create", "low",
+     "Ask the chatbot questions from the console"),
     ("tenant.conversations.view", "conversations", "view", "high",
-     "View other members' conversation metadata"),
+     "Read every conversation in full, including website visitors' messages "
+     "and answer ratings"),
     ("tenant.conversations.view_all", "conversations", "view_all", "high",
      "See every team's handoff queue, not only the teams you staff"),
     # `tenant.provider_credentials.manage` was removed here: bring-your-own-key
@@ -103,7 +111,7 @@ async def seed_tenant_catalog(conn: AsyncConnection) -> None:
                 "INSERT INTO tenant_permissions "
                 "(id, code, resource, action, risk_level, is_system, tenant_customizable, description) "
                 "VALUES (:id, :code, :resource, :action, :risk, true, true, :description) "
-                "ON CONFLICT (code) DO NOTHING"
+                "ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description"
             ),
             {"id": str(uuid.uuid4()), "code": code, "resource": resource,
              "action": action, "risk": risk, "description": description},

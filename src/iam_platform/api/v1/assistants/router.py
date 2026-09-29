@@ -24,9 +24,19 @@ from iam_platform.api.deps.authn import get_container, get_current_claims
 from iam_platform.api.deps.container import AppContainer
 from iam_platform.api.deps.permission_resolver import get_effective_tenant_permissions
 from iam_platform.api.v1.assistants import schemas
+from iam_platform.application.ai_resources.answer_feedback import (
+    ListAnswerFeedback,
+    ListAnswerFeedbackQuery,
+    RecordAnswerFeedback,
+    RecordAnswerFeedbackCommand,
+)
 from iam_platform.application.ai_resources.answer_question import (
     AnswerQuestion,
     AnswerQuestionQuery,
+)
+from iam_platform.application.ai_resources.delete_knowledge_base import (
+    DeleteKnowledgeBase,
+    DeleteKnowledgeBaseCommand,
 )
 from iam_platform.application.ai_resources.exceptions import (
     AiResourceError,
@@ -179,6 +189,7 @@ def _conversation_response(c: Conversation) -> schemas.ConversationResponse:
         status=c.status.value,
         created_at=c.created_at,
         last_message_at=c.last_message_at,
+        state=c.state.value,
     )
 
 
@@ -213,6 +224,10 @@ def _chat_widget_response(
         status=widget.status.value,
         daily_question_limit=widget.daily_question_limit,
         created_at=widget.created_at,
+        last_seen_at=widget.last_seen_at,
+        last_seen_origin=widget.last_seen_origin,
+        last_refused_at=widget.last_refused_at,
+        last_refused_origin=widget.last_refused_origin,
         embed_snippet=_embed_snippet(widget, base_url),
     )
 
@@ -243,6 +258,9 @@ def _document_response(summary: DocumentSummary) -> schemas.DocumentResponse:
         failure_reason=document.failure_reason,
         chunk_count=summary.chunk_count,
         created_at=document.created_at,
+        stage=summary.progress.stage.value if summary.progress else None,
+        progress_percent=summary.progress.percent if summary.progress else None,
+        stage_detail=summary.progress.detail if summary.progress else None,
     )
 
 
@@ -422,7 +440,7 @@ async def list_documents(
     permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
     container: AppContainer = Depends(get_container),
 ) -> schemas.DocumentListResponse:
-    use_case = ListDocuments(container.ai_resource_uow_factory)
+    use_case = ListDocuments(container.ai_resource_uow_factory, container.ingestion_progress)
     documents = await use_case.execute(
         ListDocumentsQuery(
             actor_user_id=str(claims.user_id),
@@ -519,6 +537,38 @@ async def retry_document(
         )
     )
     return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.delete(
+    "/knowledge-bases/{knowledge_base_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_knowledge_base(
+    tenant_id: str,
+    knowledge_base_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    """Deletes a knowledge base and everything searchable in it.
+
+    409 while a chatbot uses it or anything in it is still being ingested.
+    """
+    use_case = DeleteKnowledgeBase(
+        container.ai_resource_uow_factory,
+        container.object_storage_client,
+        container.vector_search_client,
+        container.clock,
+    )
+    await use_case.execute(
+        DeleteKnowledgeBaseCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            permissions=permissions,
+        )
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(
@@ -797,6 +847,82 @@ async def set_chat_widget_status(
     return _chat_widget_response(widget, _public_base_url(request, container))
 
 
+@router.get("/answer-feedback", response_model=schemas.AnswerFeedbackListResponse)
+async def list_answer_feedback(
+    tenant_id: str,
+    rating: str | None = None,
+    channel: str | None = None,
+    limit: int = 25,
+    offset: int = 0,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> schemas.AnswerFeedbackListResponse:
+    """This tenant's answer ratings, newest first. Needs the same permission as
+    reading every conversation: feedback carries what visitors asked."""
+    page = await ListAnswerFeedback(container.ai_resource_uow_factory).execute(
+        ListAnswerFeedbackQuery(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            permissions=permissions,
+            rating=rating,
+            channel=channel,
+            limit=limit,
+            offset=offset,
+        )
+    )
+    return schemas.AnswerFeedbackListResponse(
+        items=[
+            schemas.AnswerFeedbackItem(
+                id=r.id,
+                rating=r.rating,  # type: ignore[arg-type]
+                question=r.question,
+                answer=r.answer,
+                comment=r.comment,
+                channel=r.channel,  # type: ignore[arg-type]
+                knowledge_base_name=r.knowledge_base_name,
+                created_at=r.created_at,
+            )
+            for r in page.items
+        ],
+        total=page.total,
+        helpful=page.helpful,
+        not_helpful=page.not_helpful,
+    )
+
+
+@router.post(
+    "/knowledge-bases/{knowledge_base_id}/answer-feedback",
+    response_model=schemas.AnswerFeedbackResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_answer_feedback(
+    tenant_id: str,
+    knowledge_base_id: str,
+    body: schemas.AnswerFeedbackRequest,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> schemas.AnswerFeedbackResponse:
+    """Rates one answer from the Ask panel. Authorized exactly as asking is:
+    whoever could have asked the question may rate the answer."""
+    feedback_id = await RecordAnswerFeedback(
+        container.ai_resource_uow_factory, container.clock
+    ).execute(
+        RecordAnswerFeedbackCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            permissions=permissions,
+            rating=body.rating,
+            question=body.question,
+            answer=body.answer,
+            comment=body.comment,
+        )
+    )
+    return schemas.AnswerFeedbackResponse(id=feedback_id)
+
+
 @router.post("/knowledge-bases/{knowledge_base_id}/answer")
 async def answer_question(
     tenant_id: str,
@@ -825,6 +951,7 @@ async def answer_question(
         container.chat_model,
         token_usage=container.token_usage,
         tenant_quota=container.tenant_quota,
+        usage_ledger=container.usage_ledger,
     )
     result = await use_case.execute(
         AnswerQuestionQuery(
@@ -850,6 +977,10 @@ async def answer_question(
                         "document_id": str(c.document_id),
                         "source_location": c.source_location,
                         "relevance": c.relevance,
+                        # Additive: an older console ignores both. The console
+                        # groups passages by `document_id` into one card each.
+                        "title": c.title,
+                        "source_url": c.source_url,
                     }
                     for c in result.citations
                 ]
@@ -916,7 +1047,10 @@ async def query_knowledge_base(
     container: AppContainer = Depends(get_container),
 ) -> schemas.QueryKnowledgeBaseResponse:
     use_case = QueryKnowledgeBase(
-        container.ai_resource_uow_factory, container.vector_search_client
+        container.ai_resource_uow_factory,
+        container.vector_search_client,
+        usage_ledger=container.usage_ledger,
+        clock=container.clock,
     )
     hits = await use_case.execute(
         QueryKnowledgeBaseQuery(
@@ -989,6 +1123,7 @@ async def list_my_conversations(
                 status=c.status.value,
                 created_at=c.created_at,
                 last_message_at=c.last_message_at,
+                state=c.state.value,
             )
             for c in conversations
         ]
@@ -1081,6 +1216,7 @@ async def get_conversation(
         status=c.status.value,
         created_at=c.created_at,
         last_message_at=c.last_message_at,
+        state=c.state.value,
     )
 
 

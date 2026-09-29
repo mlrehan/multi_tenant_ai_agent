@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 from iam_platform.application.ai_resources.authorize import load_visible_knowledge_base
 from iam_platform.application.ai_resources.entitlements import (
     guard_chat_widget_quota,
+    guard_widget_daily_limit,
 )
 from iam_platform.application.ai_resources.exceptions import (
     ChatWidgetInUseError,
@@ -95,6 +96,12 @@ class CreateChatWidget:
             # must be told that, not that they are at a limit -- the two send
             # them to different people for a fix.
             await guard_chat_widget_quota(uow, tenant_id=tenant_id, clock=self._clock)
+            await guard_widget_daily_limit(
+                uow,
+                tenant_id=tenant_id,
+                requested=command.daily_question_limit,
+                clock=self._clock,
+            )
 
             requester = await build_requester_context(
                 uow, tenant_id=tenant_id, user_id=actor_id, permissions=command.permissions
@@ -273,6 +280,14 @@ class UpdateChatWidget:
                 # 404, never 403: a widget in another tenant must not be
                 # provable to exist by the shape of the refusal.
                 raise ChatWidgetNotFoundError(command.widget_id)
+
+            await guard_widget_daily_limit(
+                uow,
+                tenant_id=tenant_id,
+                requested=command.daily_question_limit,
+                clock=self._clock,
+                current=widget.daily_question_limit,
+            )
 
             previous_origins = list(widget.allowed_origins)
             widget.name = name

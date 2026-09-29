@@ -49,6 +49,22 @@ perceive. It stays UTC.
 
 The key carries its date either way, so the boundary is the key's rather than
 an expiry race.
+
+**A missing key is rebuilt from the Postgres ledger before it is used.** Redis
+is a cache (docs/06), and it lost everything on every restart while these
+counters were the only record: the dashboards read zero and, worse, every
+tenant's monthly and daily allowance was silently handed back in full. With a
+`UsageLedger` wired, the first read *or write* of a window whose key is absent
+seeds it from the ledger with `SET NX` -- so concurrent seeders agree, and an
+increment always lands on top of the history rather than starting a fresh
+count from one. Writes must seed too: an `INCR` on a missing key would create
+it holding only this answer, and every later read would trust that.
+
+Seeding failures follow the caller's rule. A read or a reservation that cannot
+seed fails closed, like any unreadable counter. A *recording* that cannot seed
+skips its increment and leaves the key absent -- the next read then seeds from
+the ledger, which by then holds this answer's row -- rather than creating a
+key that hides the month's history.
 """
 
 from __future__ import annotations
@@ -59,6 +75,8 @@ from datetime import UTC, datetime, tzinfo
 from uuid import UUID
 
 from redis.asyncio import Redis
+
+from iam_platform.application.ai_resources.ports import UsageLedger
 
 logger = logging.getLogger("iam_platform.infrastructure.cache.tenant_quota")
 
@@ -116,16 +134,74 @@ def _day_key(tenant_id: UUID, zone: tzinfo | None = None) -> str:
     Defaults to UTC when no zone is given, which is what every counter written
     before tenant timezones existed used.
     """
-    return f"tenant-messages:{tenant_id}:{datetime.now(zone or UTC):%Y-%m-%d}"
+    return _day_key_at(tenant_id, datetime.now(zone or UTC))
+
+
+def _day_key_at(tenant_id: UUID, now: datetime) -> str:
+    return f"tenant-messages:{tenant_id}:{now:%Y-%m-%d}"
 
 
 def _month_key(tenant_id: UUID, suffix: str = "total") -> str:
-    return f"tenant-tokens:{tenant_id}:{datetime.now(UTC):%Y-%m}:{suffix}"
+    return _month_key_at(tenant_id, datetime.now(UTC), suffix)
+
+
+def _month_key_at(tenant_id: UUID, now: datetime, suffix: str = "total") -> str:
+    return f"tenant-tokens:{tenant_id}:{now:%Y-%m}:{suffix}"
+
+
+def _month_start(now: datetime) -> datetime:
+    return datetime(now.year, now.month, 1, tzinfo=UTC)
 
 
 class RedisTenantQuotaStore:
-    def __init__(self, redis: Redis) -> None:
+    def __init__(self, redis: Redis, *, ledger: UsageLedger | None = None) -> None:
         self._redis = redis
+        # None keeps the pre-ledger behaviour exactly: a missing key reads 0.
+        self._ledger = ledger
+
+    async def _day(self, tenant_id: UUID, zone: tzinfo | None) -> str:
+        """Today's key, seeded from the ledger if Redis has lost it.
+
+        One `now` for both the key and the window start, so the two cannot
+        straddle midnight and describe different days.
+        """
+        now = datetime.now(zone or UTC)
+        key = _day_key_at(tenant_id, now)
+        if self._ledger is not None and not await self._redis.exists(key):
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            count = await self._ledger.answers_since(
+                tenant_id=tenant_id, since=start.astimezone(UTC)
+            )
+            await self._redis.set(key, count, nx=True, ex=_DAY_TTL_SECONDS)
+        return key
+
+    async def _month(self, tenant_id: UUID) -> datetime:
+        """Seeds this month's three token keys if Redis has lost them.
+
+        Returns the instant the keys were built from, for the same reason as
+        `_day`. Presence is judged on `total`, the key every write touches.
+        """
+        now = datetime.now(UTC)
+        if self._ledger is not None and not await self._redis.exists(
+            _month_key_at(tenant_id, now)
+        ):
+            usage = await self._ledger.tokens_since(
+                tenant_id=tenant_id, since=_month_start(now)
+            )
+            pipe = self._redis.pipeline()
+            for suffix, amount in (
+                ("input", usage.input_tokens),
+                ("output", usage.output_tokens),
+                ("total", usage.billable),
+            ):
+                pipe.set(
+                    _month_key_at(tenant_id, now, suffix),
+                    amount,
+                    nx=True,
+                    ex=_MONTH_TTL_SECONDS,
+                )
+            await pipe.execute()
+        return now
 
     # -- daily messages ------------------------------------------------------
 
@@ -143,8 +219,8 @@ class RedisTenantQuotaStore:
         charging them against an AI allowance would let a busy support team
         exhaust the chatbot's quota by answering tickets.
         """
-        key = _day_key(tenant_id, zone)
         try:
+            key = await self._day(tenant_id, zone)
             pipe = self._redis.pipeline()
             pipe.incr(key)
             # `nx=True` so the TTL is set once, by the day's first message.
@@ -158,7 +234,25 @@ class RedisTenantQuotaStore:
                 tenant_id,
             )
             return False
-        return limit is None or int(count) <= limit
+        if limit is None or int(count) <= limit:
+            return True
+        # **A refusal hands its increment back.** The counter is "messages
+        # used today", and a refused question used nothing. Kept, every
+        # refused attempt inflated it: 10 answered and 40 refused read as
+        # "50 of 10", the ledger (which only records answers) could no longer
+        # rebuild it, and an administrator raising the limit mid-day found the
+        # tenant still blocked by attempts that were never answered. The INCR
+        # above stays the atomic gate; this only undoes an over-limit one.
+        await self._give_back(key, tenant_id)
+        return False
+
+    async def _give_back(self, key: str, tenant_id: UUID) -> None:
+        try:
+            await self._redis.decr(key)
+        except Exception:
+            # Fails open: an unreturned refusal over-counts by one, the safe
+            # direction, and the caller is already being refused.
+            logger.warning("could not return a refused reservation for tenant %s", tenant_id)
 
     async def release_message(
         self, *, tenant_id: UUID, zone: tzinfo | None = None
@@ -175,7 +269,13 @@ class RedisTenantQuotaStore:
             # The *same* zone the reservation was taken with. Releasing against
             # a different key would decrement a day the message was never
             # counted against -- and leave the real one permanently high.
-            await self._redis.decr(_day_key(tenant_id, zone))
+            key = _day_key(tenant_id, zone)
+            # An absent key means the reservation was lost with it (Redis
+            # restarted mid-answer). Decrementing would create the key at -1
+            # and hide the day's history from the ledger seed; there is
+            # nothing left to give back.
+            if await self._redis.exists(key):
+                await self._redis.decr(key)
         except Exception:
             logger.warning(
                 "could not release a message reservation for tenant %s", tenant_id
@@ -185,7 +285,7 @@ class RedisTenantQuotaStore:
         self, *, tenant_id: UUID, zone: tzinfo | None = None
     ) -> int:
         try:
-            raw = await self._redis.get(_day_key(tenant_id, zone))
+            raw = await self._redis.get(await self._day(tenant_id, zone))
         except Exception as exc:
             raise QuotaUnavailableError(str(exc)) from exc
         return int(raw) if raw is not None else 0
@@ -195,7 +295,8 @@ class RedisTenantQuotaStore:
     async def tokens_used_this_month(self, *, tenant_id: UUID) -> int:
         """Fails closed: see the module docstring."""
         try:
-            raw = await self._redis.get(_month_key(tenant_id))
+            now = await self._month(tenant_id)
+            raw = await self._redis.get(_month_key_at(tenant_id, now))
         except Exception as exc:
             logger.exception("token quota could not be read for tenant %s", tenant_id)
             raise QuotaUnavailableError(str(exc)) from exc
@@ -204,10 +305,11 @@ class RedisTenantQuotaStore:
     async def token_breakdown(self, *, tenant_id: UUID) -> TokenUsage:
         """Input/output/total for the console. Fails closed, like the read above."""
         try:
+            now = await self._month(tenant_id)
             values = await self._redis.mget(
-                _month_key(tenant_id, "input"),
-                _month_key(tenant_id, "output"),
-                _month_key(tenant_id, "total"),
+                _month_key_at(tenant_id, now, "input"),
+                _month_key_at(tenant_id, now, "output"),
+                _month_key_at(tenant_id, now, "total"),
             )
         except Exception as exc:
             raise QuotaUnavailableError(str(exc)) from exc
@@ -227,6 +329,10 @@ class RedisTenantQuotaStore:
         if usage.billable <= 0:
             return
         try:
+            # Seeded first, so the increment lands on the month's history. If
+            # seeding fails this raises into the `except` below and nothing is
+            # incremented -- see the module docstring for why that is right.
+            now = await self._month(tenant_id)
             pipe = self._redis.pipeline()
             for suffix, amount in (
                 ("input", usage.input_tokens),
@@ -235,7 +341,7 @@ class RedisTenantQuotaStore:
             ):
                 if amount <= 0:
                     continue
-                key = _month_key(tenant_id, suffix)
+                key = _month_key_at(tenant_id, now, suffix)
                 pipe.incrby(key, amount)
                 pipe.expire(key, _MONTH_TTL_SECONDS, nx=True)
             await pipe.execute()

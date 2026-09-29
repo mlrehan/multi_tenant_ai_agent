@@ -173,16 +173,77 @@
     "@media (prefers-reduced-motion:reduce){.msg.wait i{animation:none;opacity:.6;}}" +
     ".cites{align-self:flex-start;font-size:12px;color:#6b7280;max-width:88%;}" +
     ".cites a{color:#4b5563;}" +
-    ".foot{display:flex;gap:8px;padding:10px;border-top:1px solid #e5e7eb;}" +
-    ".foot input{flex:1;padding:9px 11px;border:1px solid #d1d5db;border-radius:9px;font:inherit;min-width:0;}" +
-    ".foot input:focus{outline:2px solid var(--accent);outline-offset:-1px;}" +
-    ".foot button{border:0;border-radius:9px;padding:0 15px;background:var(--accent);" +
-    "color:#fff;font:inherit;font-weight:600;cursor:pointer;}" +
-    ".foot button[disabled]{opacity:.5;cursor:default;}" +
+    ".foot{display:flex;align-items:flex-end;gap:8px;padding:10px;border-top:1px solid #e5e7eb;}" +
+    // A textarea, one line by default and growing with its content up to a
+    // cap -- sized in script below, because CSS `field-sizing` is not in
+    // every browser a visitor might bring.
+    ".foot textarea{flex:1;resize:none;min-width:0;max-height:120px;overflow-y:hidden;" +
+    "padding:8px 11px;border:1px solid #d1d5db;border-radius:18px;font:inherit;line-height:1.45;}" +
+    ".foot textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;}" +
+    ".foot button{flex:0 0 auto;width:36px;height:36px;border:0;border-radius:50%;background:var(--accent);" +
+    "color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;}" +
+    ".foot button svg{width:17px;height:17px;}" +
+    ".foot button[disabled]{opacity:.4;cursor:default;}" +
+    // Rendered answers. `.md` turns off the plain bubble's pre-wrap: the
+    // markdown renderer lays out its own paragraphs and line breaks.
+    ".msg.md{white-space:normal;}" +
+    ".md p{margin:0 0 8px;}.md p:last-child{margin-bottom:0;}" +
+    ".md .h{font-weight:600;margin:10px 0 4px;}.md .h:first-child{margin-top:0;}" +
+    ".md ul,.md ol{margin:4px 0 8px;padding-left:20px;}.md li{margin:2px 0;}" +
+    ".md strong{font-weight:600;}" +
+    ".md a{color:var(--accent);text-decoration:underline;text-underline-offset:2px;word-break:break-word;}" +
+    ".md .ic{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(0,0,0,.06);padding:1px 4px;border-radius:4px;}" +
+    ".md pre{margin:6px 0 8px;padding:8px 10px;background:rgba(0,0,0,.06);border-radius:8px;overflow-x:auto;" +
+    "font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;}" +
+    ".md blockquote{margin:6px 0;padding-left:10px;border-left:3px solid #d1d5db;color:#4b5563;}" +
+    ".md hr{border:0;border-top:1px solid #e5e7eb;margin:10px 0;}" +
+    ".md .tbl{overflow-x:auto;margin:6px 0 8px;}" +
+    ".md table{border-collapse:collapse;font-size:13px;}" +
+    ".md th,.md td{border:1px solid #e5e7eb;padding:4px 8px;text-align:left;vertical-align:top;}" +
+    ".md th{background:rgba(0,0,0,.04);font-weight:600;}" +
+    ".md .cite{display:inline-block;min-width:16px;padding:0 4px;margin:0 1px;border-radius:4px;" +
+    "background:rgba(0,0,0,.08);font-size:10.5px;font-weight:600;line-height:16px;text-align:center;vertical-align:1px;}" +
+    ".meta{align-self:flex-start;max-width:88%;margin-top:-6px;display:flex;flex-direction:column;gap:6px;}" +
+    ".srcs{display:flex;flex-direction:column;gap:4px;}" +
+    ".srch{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#6b7280;}" +
+    ".srcpill{align-self:flex-start;display:inline-flex;align-items:center;gap:7px;padding:3px 9px 3px 4px;" +
+    "border:1px solid #e5e7eb;border-radius:999px;background:transparent;color:inherit;font:inherit;font-size:12px;" +
+    "font-weight:500;cursor:pointer;}" +
+    ".srcpill:hover{background:rgba(0,0,0,.04);}.srcpill:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}" +
+    ".srcstack{display:flex;}.srcstack .srcbadge+.srcbadge{margin-left:-6px;}" +
+    ".srcbadge{width:18px;height:18px;border-radius:50%;border:1.5px solid #fff;background:#e5e7eb;color:#4b5563;" +
+    "font-size:9.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;}" +
+    ".srcchev{font-size:10px;color:#6b7280;transition:transform .15s;}.srcpill.open .srcchev{transform:rotate(180deg);}" +
+    ".srclist{list-style:none;margin:6px 0 0;padding:4px;border:1px solid #e5e7eb;border-radius:12px;" +
+    "display:flex;flex-direction:column;gap:2px;}" +
+    ".srclist[hidden]{display:none;}" +
+    ".src{display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border-radius:9px;" +
+    "font-size:12.5px;color:inherit;text-decoration:none;min-width:0;}" +
+    "a.src:hover{background:rgba(0,0,0,.04);}a.src:focus-visible{outline:2px solid var(--accent);}" +
+    ".srctx{display:flex;flex-direction:column;min-width:0;}" +
+    ".srcm{font-size:11px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}" +
+    ".srcn{flex:0 0 auto;min-width:18px;height:18px;padding:0 4px;border-radius:5px;background:rgba(0,0,0,.07);" +
+    "font-size:10.5px;font-weight:600;display:flex;align-items:center;justify-content:center;}" +
+    ".srct{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}" +
+    ".acts{display:flex;align-items:center;gap:2px;flex-wrap:wrap;}" +
+    ".act{width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:#6b7280;" +
+    "display:flex;align-items:center;justify-content:center;cursor:pointer;}" +
+    ".act svg{width:15px;height:15px;}" +
+    ".act:hover:not(:disabled){background:rgba(0,0,0,.06);color:#111827;}" +
+    ".act:disabled{cursor:default;opacity:.45;}.act.on{color:var(--accent);opacity:1;}" +
+    ".act:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}" +
+    ".note{font-size:11.5px;color:#6b7280;margin-left:4px;}.note.bad{color:#b91c1c;}" +
+    ".why{display:flex;gap:6px;width:100%;margin-top:2px;}" +
+    ".why input{flex:1;min-width:0;padding:6px 9px;border:1px solid #d1d5db;border-radius:8px;font:inherit;font-size:12.5px;}" +
+    ".why button{border:0;border-radius:8px;padding:0 10px;background:var(--accent);color:#fff;font:inherit;font-size:12.5px;cursor:pointer;}" +
+    ".why button.skip{background:transparent;color:#6b7280;}" +
     "@media (prefers-color-scheme:dark){" +
     ".panel{background:#111827;border-color:#374151;}.w{color:#e5e7eb;}" +
     ".msg.bot{background:#1f2937;}.foot{border-color:#374151;}" +
-    ".foot input{background:#1f2937;border-color:#4b5563;color:#e5e7eb;}}" +
+    ".foot textarea,.why input{background:#1f2937;border-color:#4b5563;color:#e5e7eb;}" +
+    ".src,.srcpill,.srclist,.md th,.md td,.md hr{border-color:#374151;}.srcbadge{background:#374151;color:#e5e7eb;border-color:#111827;}.md blockquote{color:#9ca3af;border-color:#4b5563;}" +
+    ".md .ic,.md pre,.md .cite,.srcn{background:rgba(255,255,255,.1);}" +
+    ".act:hover:not(:disabled){background:rgba(255,255,255,.08);color:#f3f4f6;}}" +
     "</style>" +
     '<div class="w">' +
     '<div class="panel" part="panel">' +
@@ -193,8 +254,10 @@
     '<button class="close" aria-label="Close">&times;</button></div>' +
     '<div class="log" role="log" aria-live="polite"></div>' +
     '<form class="foot">' +
-    '<input type="text" autocomplete="off" placeholder="Type your question…" aria-label="Your question">' +
-    '<button type="submit">Send</button></form>' +
+    '<textarea rows="1" autocomplete="off" placeholder="Type your question…" aria-label="Your question" maxlength="4000"></textarea>' +
+    '<button type="submit" aria-label="Send" title="Send (Enter)">' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>' +
+    "</button></form>" +
     "</div>" +
     '<button class="launch" aria-label="Open chat" aria-expanded="false">\u{1F4AC}</button>' +
     "</div>";
@@ -206,7 +269,7 @@
   var launch = root.querySelector(".launch");
   var log = root.querySelector(".log");
   var form = root.querySelector(".foot");
-  var input = root.querySelector(".foot input");
+  var input = root.querySelector(".foot textarea");
   var send = root.querySelector(".foot button");
   var headAvatar = root.querySelector(".hdav");
   var headName = root.querySelector(".hdnm");
@@ -235,6 +298,10 @@
         // conversation: re-greeting someone mid-thread reads as though the
         // assistant has forgotten them, which is exactly what it used to do.
         if (resumed) return;
+        // Nor someone who already asked something while the panel was still
+        // opening: a greeting appended *under* their question reads as the
+        // assistant ignoring it.
+        if (log.querySelector(".msg.you")) return;
         bubble("bot", currentGreeting());
         renderQuickReplies(presentation.quick_replies);
       })
@@ -259,12 +326,17 @@
   };
 
   function avatarMarkup(key) {
-    return AVATAR_SVG[key] || AVATAR_SVG["nursery-default"];
+    // Own keys only: `__proto__` or `constructor` must not reach innerHTML
+    // as anything other than a table entry.
+    return Object.prototype.hasOwnProperty.call(AVATAR_SVG, key)
+      ? AVATAR_SVG[key]
+      : AVATAR_SVG["nursery-default"];
   }
 
   /** Paints the header from `presentation`.
    *
-   *  The avatar is the one place this file writes innerHTML, and it is safe
+   *  Besides the static shell, the avatar is the only place this file writes
+   *  innerHTML, and it is safe
    *  for a specific reason: the string comes from the `AVATAR_SVG` table above,
    *  chosen by an *asset key* the server validates against a fixed allowlist.
    *  No value from the response is ever interpolated into markup -- the name
@@ -316,16 +388,624 @@
 
   paintHeader();
 
-  function bubble(kind, text) {
+  function bubble(kind, text, markdown) {
     var el = document.createElement("div");
     el.className = "msg " + kind;
     // textContent, never innerHTML: the answer is model output built from
     // documents a tenant uploaded, so treating it as markup would let a
-    // poisoned document run script on a customer's page.
-    el.textContent = text || "";
+    // poisoned document run script on a customer's page. `renderMarkdown`
+    // keeps that rule -- it builds elements and text nodes, never markup.
+    if (markdown) {
+      el.classList.add("md");
+      renderMarkdown(el, text || "", markdown);
+    } else {
+      el.textContent = text || "";
+    }
     log.appendChild(el);
     log.scrollTop = log.scrollHeight;
     return el;
+  }
+
+  /* ------------------------------------------------------------ markdown */
+
+  /* The assistant writes markdown -- bold, lists, tables, links -- and showing
+   * the raw asterisks and pipes made every answer look broken.
+   *
+   * **Built from DOM nodes, never from an HTML string.** This is model output
+   * derived from tenant-uploaded documents, rendered on a *customer's*
+   * website. A markdown library that emits HTML (and then needs sanitising)
+   * would reopen the exact hole this file has always kept shut, so the
+   * renderer below creates elements and assigns text only through
+   * `textContent` / `createTextNode`. There is no code path in it that
+   * interprets any part of the answer as markup.
+   *
+   * Links are the one place a string becomes an attribute, and only an
+   * absolute `http(s):` or `mailto:` URL is accepted -- `javascript:` and
+   * `data:` fall through to plain text. They open in a new tab with
+   * `noopener noreferrer`, so the linked page gets no handle on this one.
+   *
+   * Deliberately a subset: paragraphs, headings, bold/italic, inline code and
+   * fenced blocks, lists, block quotes, rules, pipe tables, links, bare URLs
+   * and `[n]` citation markers. That covers what the model actually writes;
+   * a full CommonMark parser would be a dependency this file exists to avoid. */
+
+  var SAFE_HREF = /^(https?:\/\/|mailto:)/i;
+  var INLINE_PATTERN = [
+    /(`[^`\n]+`)/.source, // 1 inline code
+    /(\*\*[^*\n]+\*\*|__[^_\n]+__)/.source, // 2 bold
+    /(\*[^*\s][^*\n]*\*|\b_[^_\s][^_\n]*_\b)/.source, // 3 italic
+    /(\[[^\]\n]+\]\((?:[^()\s]|\([^()\s]*\))+\))/.source, // 4 [text](url)
+    /(https?:\/\/[^\s<>()]*[^\s<>().,;:!?'")\]])/.source, // 5 bare URL
+    /(\[\d{1,3}\])/.source, // 6 citation marker
+  ].join("|");
+
+  function node(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function link(label, href) {
+    if (!SAFE_HREF.test(href)) return document.createTextNode(label);
+    var a = node("a", null, label);
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer nofollow";
+    return a;
+  }
+
+  /** What a `[n]` marker becomes: the number of the *source card* it points
+   *  at, or null when it is not a real citation (the model invented it).
+   *
+   *  `cites` is a `label -> card number` map for a live answer -- several
+   *  passages of one page share a card, so `[1]` `[2]` and `[4]` can all be
+   *  card 1 -- or `true` for a restored answer, whose sources were not kept,
+   *  in which case the label is shown as written. */
+  function citeNumber(cites, n) {
+    if (cites === true) return n;
+    if (cites && typeof cites === "object" && Object.prototype.hasOwnProperty.call(cites, n)) {
+      return cites[n];
+    }
+    return null;
+  }
+
+  /** The last element added to `parent`, skipping whitespace-only text. */
+  function lastContent(parent) {
+    var node = parent.lastChild;
+    while (node && node.nodeType === 3 && !node.textContent.trim()) node = node.previousSibling;
+    return node;
+  }
+
+  function appendInline(parent, text, cites) {
+    // A fresh RegExp per call: the recursion for bold and italic would
+    // otherwise share one `lastIndex` and silently skip text.
+    var re = new RegExp(INLINE_PATTERN, "g");
+    var last = 0;
+    var m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var t = m[0];
+      if (m[1]) parent.appendChild(node("code", "ic", t.slice(1, -1)));
+      else if (m[2]) {
+        var b = node("strong");
+        appendInline(b, t.slice(2, -2), cites);
+        parent.appendChild(b);
+      } else if (m[3]) {
+        var em = node("em");
+        appendInline(em, t.slice(1, -1), cites);
+        parent.appendChild(em);
+      } else if (m[4]) {
+        var cut = t.indexOf("](");
+        parent.appendChild(link(t.slice(1, cut), t.slice(cut + 2, -1)));
+      } else if (m[5]) parent.appendChild(link(t, t));
+      else if (m[6]) {
+        var card = citeNumber(cites, t.slice(1, -1));
+        if (card === null) parent.appendChild(document.createTextNode(t));
+        else {
+          // `[1][2]` from one page is one source: a chip for the same card
+          // right after another is dropped rather than drawn twice.
+          var prev = lastContent(parent);
+          if (!(prev && prev.className === "cite" && prev.textContent === card)) {
+            var c = node("span", "cite", card);
+            c.title = (sourceTitles && sourceTitles[card]) || "Source " + card;
+            parent.appendChild(c);
+          }
+        }
+      }
+      last = m.index + t.length;
+    }
+    if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  function tableCells(line) {
+    return line
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map(function (c) {
+        return c.trim();
+      });
+  }
+
+  /* Card number -> title, for chip tooltips during the current render. */
+  var sourceTitles = null;
+
+  function renderMarkdown(box, text, cites, titles) {
+    sourceTitles = titles || null;
+    box.textContent = "";
+    var lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+    var para = null;
+    var i = 0;
+
+    while (i < lines.length) {
+      var line = lines[i];
+
+      if (/^\s*```/.test(line)) {
+        para = null;
+        var code = [];
+        i++;
+        while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++]);
+        i++; // the closing fence -- or past the end while it is still streaming
+        var pre = node("pre");
+        pre.appendChild(node("code", null, code.join("\n")));
+        box.appendChild(pre);
+        continue;
+      }
+      if (!line.trim()) {
+        para = null;
+        i++;
+        continue;
+      }
+      var heading = line.match(/^\s*#{1,6}\s+(.*)$/);
+      if (heading) {
+        para = null;
+        var h = node("div", "h");
+        h.setAttribute("role", "heading");
+        h.setAttribute("aria-level", "4");
+        appendInline(h, heading[1], cites);
+        box.appendChild(h);
+        i++;
+        continue;
+      }
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+        para = null;
+        box.appendChild(node("hr"));
+        i++;
+        continue;
+      }
+      if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1])) {
+        para = null;
+        var table = node("table");
+        var head = node("thead");
+        var headRow = node("tr");
+        tableCells(line).forEach(function (cell) {
+          var th = node("th");
+          appendInline(th, cell, cites);
+          headRow.appendChild(th);
+        });
+        head.appendChild(headRow);
+        table.appendChild(head);
+        var body = node("tbody");
+        i += 2;
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+          var tr = node("tr");
+          tableCells(lines[i++]).forEach(function (cell) {
+            var td = node("td");
+            appendInline(td, cell, cites);
+            tr.appendChild(td);
+          });
+          body.appendChild(tr);
+        }
+        table.appendChild(body);
+        var scroller = node("div", "tbl");
+        scroller.appendChild(table);
+        box.appendChild(scroller);
+        continue;
+      }
+      var bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+      var numbered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+      if (bullet || numbered) {
+        para = null;
+        var ordered = !bullet;
+        var list = node(ordered ? "ol" : "ul");
+        if (ordered && numbered[1] !== "1") list.start = parseInt(numbered[1], 10);
+        while (i < lines.length) {
+          // An indented bullet under an item is a nested list, not a sibling
+          // -- "Pay by bank transfer" / "reference: your child's name" must
+          // keep that relationship. One level deep, which is what the model
+          // writes; deeper nesting flattens into that level.
+          var nested = /^\s{2,}[-*+]\s+(.*)$/.exec(lines[i]);
+          if (nested && list.lastChild) {
+            var sub = list.lastChild.lastChild;
+            if (!sub || sub.nodeName !== "UL") {
+              sub = node("ul");
+              list.lastChild.appendChild(sub);
+            }
+            var subItem = node("li");
+            appendInline(subItem, nested[1], cites);
+            sub.appendChild(subItem);
+            i++;
+            continue;
+          }
+          var item = ordered
+            ? lines[i].match(/^\s*\d+[.)]\s+(.*)$/)
+            : lines[i].match(/^\s*[-*+]\s+(.*)$/);
+          if (item) {
+            var li = node("li");
+            appendInline(li, item[1], cites);
+            list.appendChild(li);
+            i++;
+          } else if (lines[i].trim() && /^\s{2,}/.test(lines[i]) && list.lastChild) {
+            // An indented line under an item -- a wrapped line or a nested
+            // bullet. Kept inside the item rather than breaking the list.
+            list.lastChild.appendChild(node("br"));
+            appendInline(list.lastChild, lines[i].trim().replace(/^[-*+]\s+/, "• "), cites);
+            i++;
+          } else break;
+        }
+        box.appendChild(list);
+        continue;
+      }
+      var quote = line.match(/^\s*>\s?(.*)$/);
+      if (quote) {
+        para = null;
+        var bq = node("blockquote");
+        appendInline(bq, quote[1], cites);
+        box.appendChild(bq);
+        i++;
+        continue;
+      }
+      // Ordinary text. Consecutive lines stay in one paragraph with a line
+      // break between them: in chat, a single newline from the model is
+      // almost always meant as one.
+      if (!para) {
+        para = node("p");
+        box.appendChild(para);
+      } else para.appendChild(node("br"));
+      appendInline(para, line.trim(), cites);
+      i++;
+    }
+  }
+
+  /* --------------------------------------------------------------- icons */
+
+  /* Lucide outlines, built as SVG elements rather than an HTML string. */
+  var ICONS = {
+    copy: [
+      ["rect", { x: 9, y: 9, width: 13, height: 13, rx: 2 }],
+      ["path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" }],
+    ],
+    check: [["path", { d: "M20 6 9 17l-5-5" }]],
+    redo: [
+      ["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }],
+      ["path", { d: "M3 3v5h5" }],
+    ],
+    up: [
+      ["path", { d: "M7 10v12" }],
+      ["path", { d: "M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z" }],
+    ],
+    down: [
+      ["path", { d: "M17 14V2" }],
+      ["path", { d: "M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z" }],
+    ],
+  };
+
+  function icon(name) {
+    var NS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    ICONS[name].forEach(function (part) {
+      var el = document.createElementNS(NS, part[0]);
+      Object.keys(part[1]).forEach(function (k) {
+        el.setAttribute(k, String(part[1][k]));
+      });
+      svg.appendChild(el);
+    });
+    return svg;
+  }
+
+  function actButton(name, label) {
+    var b = node("button", "act");
+    b.type = "button";
+    b.setAttribute("aria-label", label);
+    b.title = label;
+    b.appendChild(icon(name));
+    return b;
+  }
+
+  /** Copies text; resolves whether it worked, so a tick is only shown for a
+   *  copy that happened. `navigator.clipboard` needs a secure context -- a
+   *  host page on plain HTTP falls back to the legacy command. */
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(
+        function () {
+          return true;
+        },
+        function () {
+          return legacyCopy(text);
+        }
+      );
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+
+  function legacyCopy(text) {
+    try {
+      var area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.cssText = "position:fixed;opacity:0;";
+      root.appendChild(area);
+      area.select();
+      var ok = document.execCommand("copy");
+      area.remove();
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /* ------------------------------------------------- sources and actions */
+
+  function webUrl(value) {
+    if (!value) return null;
+    try {
+      var u = new URL(String(value));
+      return u.protocol === "http:" || u.protocol === "https:" ? u : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** One source per document, in ranked order, plus `label -> card number`.
+   *
+   *  Retrieval returns *passages*, and five of one web page is ordinary --
+   *  shown as they came, the visitor saw the same page five times. The server
+   *  now sends `doc`, an ordinal that groups passages of one document without
+   *  naming it; a server from before that falls back to grouping by location,
+   *  which is right for web pages and merely less precise for uploads.
+   *  First appearance is the reranker's order, so card 1 is the best source. */
+  function groupSources(citations) {
+    var groups = [];
+    var byKey = {};
+    var numberOf = {};
+    (citations || []).forEach(function (c) {
+      var key = c.doc ? "d:" + c.doc : "s:" + String(c.source || c.label);
+      var g = byKey[key];
+      if (!g) {
+        var url = webUrl(c.url) || webUrl(c.source);
+        g = {
+          index: String(groups.length + 1),
+          labels: [],
+          url: url ? url.toString() : null,
+          domain: url ? url.hostname.replace(/^www\./, "") : null,
+          // A web page's title is public; an upload's name is never sent.
+          title: c.title || (url ? url.hostname.replace(/^www\./, "") : "Document"),
+          location: url ? null : c.source || null,
+        };
+        byKey[key] = g;
+        groups.push(g);
+      }
+      g.labels.push(String(c.label));
+      numberOf[String(c.label)] = g.index;
+    });
+    return { groups: groups, numberOf: numberOf };
+  }
+
+  /** "3 web pages", "1 document", "2 web pages · 1 document". */
+  function describeSources(groups) {
+    var web = groups.filter(function (g) { return !!g.url; }).length;
+    var docs = groups.length - web;
+    var parts = [];
+    if (web) parts.push(web + (web === 1 ? " web page" : " web pages"));
+    if (docs) parts.push(docs + (docs === 1 ? " document" : " documents"));
+    return parts.join(" · ");
+  }
+
+  /** The sources an answer *cited*, as a compact pill that expands.
+   *
+   *  Only cited documents: listing everything retrieved would imply the
+   *  answer rests on pages it never drew on. The card never shows a raw URL
+   *  -- title and domain only -- and the full address is the hover tooltip.
+   *  Links open in a new tab with no handle on this page.
+   *
+   *  Letter badges, not favicons: fetching a site icon would be an outside
+   *  request from the host page carrying which sources this visitor read. */
+  function renderSources(parent, citations, cited) {
+    if (!citations || !cited || !cited.length) return;
+    var groups = groupSources(citations).groups.filter(function (g) {
+      return g.labels.some(function (l) { return cited.indexOf(l) !== -1; });
+    });
+    if (!groups.length) return;
+
+    var box = node("div", "srcs");
+    var pill = node("button", "srcpill");
+    pill.type = "button";
+    pill.setAttribute("aria-expanded", "false");
+    var stack = node("span", "srcstack");
+    groups.slice(0, 3).forEach(function (g) {
+      var badge = node("span", "srcbadge", g.url ? (g.domain || "?").replace(/[^a-z0-9]/gi, "").charAt(0).toUpperCase() : "≡");
+      badge.setAttribute("aria-hidden", "true");
+      stack.appendChild(badge);
+    });
+    pill.appendChild(stack);
+    pill.appendChild(node("span", null, describeSources(groups)));
+    var chevron = node("span", "srcchev", "▾");
+    chevron.setAttribute("aria-hidden", "true");
+    pill.appendChild(chevron);
+
+    var list = node("ol", "srclist");
+    list.hidden = true;
+    groups.forEach(function (g, i) {
+      var li = node("li");
+      var card = node(g.url ? "a" : "div", "src");
+      if (g.url) {
+        card.href = g.url;
+        card.target = "_blank";
+        card.rel = "noopener noreferrer nofollow";
+        card.title = g.url;
+        card.setAttribute("aria-label", "Source " + (i + 1) + ": " + g.title + ", " + g.domain + ". Opens in a new tab.");
+      }
+      card.appendChild(node("span", "srcn", String(i + 1)));
+      var text = node("span", "srctx");
+      text.appendChild(node("span", "srct", g.title));
+      text.appendChild(
+        node("span", "srcm", g.url ? g.domain + " · Web page" : ["Document", g.location].filter(Boolean).join(" · "))
+      );
+      card.appendChild(text);
+      li.appendChild(card);
+      list.appendChild(li);
+    });
+
+    pill.addEventListener("click", function () {
+      var open = list.hidden;
+      list.hidden = !open;
+      pill.setAttribute("aria-expanded", String(open));
+      pill.classList.toggle("open", open);
+      if (open) log.scrollTop = Math.min(log.scrollHeight, log.scrollTop + list.offsetHeight);
+    });
+
+    box.appendChild(pill);
+    box.appendChild(list);
+    parent.appendChild(box);
+  }
+
+  /** Posts a rating. Resolves on success; rejects with a message to show. */
+  async function sendFeedback(rating, question, answer, comment) {
+    var s = await ensureSession();
+    var res = await apiFetch("/v1/public/chat/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + s.token },
+      body: JSON.stringify({
+        rating: rating,
+        question: question.slice(0, 4000),
+        answer: answer.slice(0, 20000),
+        comment: comment || null,
+      }),
+    });
+    if (!res.ok) {
+      var body = await res.json().catch(function () {
+        return null;
+      });
+      throw new Error((body && body.detail) || "Feedback could not be sent.");
+    }
+  }
+
+  /** The row under a finished answer: copy, regenerate (latest only) and
+   *  thumbs up/down. Feedback locks once sent -- it is stored as a record of
+   *  what the visitor thought, not as a setting to flip. */
+  function renderActions(meta, question, answer, canRegenerate) {
+    var row = node("div", "acts");
+    var copy = actButton("copy", "Copy answer");
+    copy.addEventListener("click", function () {
+      copyText(answer).then(function (ok) {
+        if (!ok) return;
+        copy.textContent = "";
+        copy.appendChild(icon("check"));
+        copy.setAttribute("aria-label", "Copied");
+        setTimeout(function () {
+          copy.textContent = "";
+          copy.appendChild(icon("copy"));
+          copy.setAttribute("aria-label", "Copy answer");
+        }, 1500);
+      });
+    });
+    row.appendChild(copy);
+
+    if (canRegenerate) {
+      var redo = actButton("redo", "Regenerate answer");
+      redo.className += " regen";
+      redo.addEventListener("click", function () {
+        if (busy || handedOff) return;
+        regenerate();
+      });
+      row.appendChild(redo);
+    }
+
+    var up = actButton("up", "Helpful");
+    var down = actButton("down", "Not helpful");
+    var note = node("span", "note");
+    note.setAttribute("role", "status");
+    var why = null;
+
+    function lock(chosen) {
+      up.disabled = true;
+      down.disabled = true;
+      chosen.classList.add("on");
+      chosen.setAttribute("aria-pressed", "true");
+    }
+    function submitRating(rating, comment) {
+      up.disabled = true;
+      down.disabled = true;
+      note.className = "note";
+      note.textContent = "";
+      sendFeedback(rating, question, answer, comment).then(
+        function () {
+          lock(rating === "up" ? up : down);
+          if (why) {
+            why.remove();
+            why = null;
+          }
+          note.textContent = "Thanks for your feedback";
+        },
+        function (err) {
+          up.disabled = false;
+          down.disabled = false;
+          note.className = "note bad";
+          note.textContent = (err && err.message !== "network" && err.message) || "Feedback could not be sent.";
+        }
+      );
+    }
+
+    up.addEventListener("click", function () {
+      submitRating("up", null);
+    });
+    down.addEventListener("click", function () {
+      if (why) return;
+      // Optional reason. A bare thumbs-down says something was wrong and
+      // nothing about what, which is the part a tenant can act on.
+      why = node("div", "why");
+      var box = node("input");
+      box.type = "text";
+      box.maxLength = 1000;
+      box.placeholder = "What was wrong? (optional)";
+      box.setAttribute("aria-label", "What was wrong with this answer? Optional");
+      var go = node("button", null, "Send");
+      go.type = "button";
+      var skip = node("button", "skip", "Skip");
+      skip.type = "button";
+      go.addEventListener("click", function () {
+        submitRating("down", box.value.trim() || null);
+      });
+      skip.addEventListener("click", function () {
+        submitRating("down", null);
+      });
+      box.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.isComposing) {
+          e.preventDefault();
+          submitRating("down", box.value.trim() || null);
+        }
+      });
+      why.appendChild(box);
+      why.appendChild(go);
+      why.appendChild(skip);
+      meta.appendChild(why);
+      box.focus();
+    });
+
+    row.appendChild(up);
+    row.appendChild(down);
+    row.appendChild(note);
+    meta.appendChild(row);
   }
 
 
@@ -347,13 +1027,19 @@
    *  log's first child is not always a message -- the greeting and the
    *  quick-reply row live there too, and they must stay at the top of the
    *  thread where they belong. */
-  function bubbleBefore(kind, text, anchor) {
+  function bubbleBefore(kind, text, anchor, markdown) {
     var el = document.createElement("div");
     el.className = "msg " + kind;
     // textContent for the same reason `bubble` uses it: this is a colleague's
     // free text and model output built from tenant documents, rendered on
-    // someone else's page.
-    el.textContent = text || "";
+    // someone else's page. An AI answer goes through the same DOM-building
+    // renderer as a live one, so a restored thread looks like the original.
+    if (markdown) {
+      el.classList.add("md");
+      renderMarkdown(el, text || "", true);
+    } else {
+      el.textContent = text || "";
+    }
     log.insertBefore(el, anchor || log.firstChild);
     return el;
   }
@@ -392,7 +1078,7 @@
       // keeps its own order instead of being reversed by repeated prepending.
       var anchor = log.firstChild;
       turns.forEach(function (m) {
-        bubbleBefore(m.author === "visitor" ? "you" : "bot", m.content, anchor);
+        bubbleBefore(m.author === "visitor" ? "you" : "bot", m.content, anchor, m.author === "ai");
       });
       oldestSeq = turns[0].seq;
       moreHistory = body.has_more === true;
@@ -426,8 +1112,9 @@
       typingEl = document.createElement("div");
       typingEl.className = "msg bot wait";
       // Built element by element, matching how the assistant's own waiting
-      // dots are made -- this file writes innerHTML in exactly one place and
-      // there is no reason for a second. Reusing the same treatment also means
+      // dots are made -- this file writes innerHTML only for fixed markup (the
+      // static shell and the avatar table), never for anything built at run
+      // time, and there is no reason to start here. Reusing the same treatment also means
       // "someone is composing" looks the same whoever is composing, and the
       // dots are elements rather than text so a screen reader announces
       // nothing: `aria-live` on the log would otherwise read out the wait.
@@ -567,7 +1254,7 @@
         // poll of a still-open handoff would render the whole thread again
         // underneath itself.
         if (m.seq > lastSeq) lastSeq = m.seq;
-        bubble(m.author === "visitor" ? "you" : "bot", m.content);
+        bubble(m.author === "visitor" ? "you" : "bot", m.content, m.author === "ai" ? true : null);
       });
       log.scrollTop = log.scrollHeight;
 
@@ -843,10 +1530,35 @@
     });
   }
 
-  async function ensureSession() {
+  /* One mint at a time. Opening the panel mints a session, and a visitor who
+   * types (or taps a quick reply) before that finishes used to start a
+   * *second* mint in parallel -- two sessions for one visitor, observed live
+   * as two simultaneous `POST /session`s. Memory and the stored conversation
+   * are keyed by session, so the first question could land in a different
+   * conversation from everything after it. Every caller now shares the
+   * request already in flight. */
+  var sessionInFlight = null;
+
+  function ensureSession() {
     // Re-minted a minute early: a token that expires between this check and
     // the request arriving would fail for a reason the visitor cannot act on.
-    if (session && session.expiresAt - Date.now() > 60000) return session;
+    if (session && session.expiresAt - Date.now() > 60000) return Promise.resolve(session);
+    if (!sessionInFlight) {
+      sessionInFlight = mintSession().then(
+        function (s) {
+          sessionInFlight = null;
+          return s;
+        },
+        function (err) {
+          sessionInFlight = null;
+          throw err;
+        }
+      );
+    }
+    return sessionInFlight;
+  }
+
+  async function mintSession() {
 
     var res = await apiFetch("/v1/public/chat/session", {
       method: "POST",
@@ -893,6 +1605,18 @@
     return session;
   }
 
+  /* The latest answered turn: what "Regenerate" re-asks. Only the newest
+   * answer offers it -- regenerating an older one would rewrite the middle of
+   * a conversation the visitor has already moved past. */
+  var lastTurn = null; // { question, bubble, meta }
+
+  function withdrawRegenerate() {
+    if (!lastTurn) return;
+    var button = lastTurn.meta && lastTurn.meta.querySelector(".regen");
+    if (button) button.remove();
+    lastTurn = null;
+  }
+
   async function ask(question) {
     var s = await ensureSession();
     var res = await apiFetch("/v1/public/chat/ask", {
@@ -904,7 +1628,10 @@
       body: JSON.stringify({ question: question }),
     });
 
-    if (res.status === 429) throw new Error("This chat has reached its daily limit. Please try again tomorrow.");
+    // One message for every allowance -- this widget's day, the organisation's
+    // day, or its month. "Tomorrow" was wrong for the monthly one, and which
+    // limit it was is the organisation's business, not the visitor's.
+    if (res.status === 429) throw new Error("Sorry, this chat can't answer any more questions right now. Please try again later.");
     if (res.status === 401 || res.status === 404) {
       session = null; // stale or revoked -- next question starts fresh
       throw new Error("This chat session has ended. Please try again.");
@@ -933,7 +1660,25 @@
     var decoder = new TextDecoder();
     var buffer = "";
     var citations = null;
+    var offered = null; // label -> source card number, for offered labels
+    var titles = null; // card number -> title, for chip tooltips
+    var cited = [];
     var handoff = null;
+    var text = "";
+    var failed = false;
+
+    // Re-rendering the markdown on every token would lay the answer out
+    // dozens of times a second; once per animation frame is all the eye sees.
+    var paintQueued = false;
+    function paint() {
+      if (paintQueued) return;
+      paintQueued = true;
+      requestAnimationFrame(function () {
+        paintQueued = false;
+        renderMarkdown(answer, text, offered, titles);
+        log.scrollTop = log.scrollHeight;
+      });
+    }
 
     while (true) {
       var step = await reader.read();
@@ -963,8 +1708,17 @@
           continue;
         }
 
-        if (event === "sources") citations = body.citations;
-        else if (event === "handoff") {
+        if (event === "sources") {
+          citations = body.citations || [];
+          // Passages of one document share a card, so `[1]` `[2]` and `[4]`
+          // may all become chip 1 -- the same numbering the source list uses.
+          var grouped = groupSources(citations);
+          offered = grouped.numberOf;
+          titles = {};
+          grouped.groups.forEach(function (g) {
+            titles[g.index] = g.title;
+          });
+        } else if (event === "handoff") {
           // A transfer offer arrives instead of an answer. Same bubble the
           // dots were in, so the visitor sees one reply, not two.
           answer.className = "msg bot";
@@ -975,17 +1729,25 @@
           if (!streaming) {
             // Drops the dots. `textContent = ""` also removes the <i>s, so the
             // indicator cannot survive into the answer.
-            answer.className = "msg bot";
+            answer.className = "msg bot md";
             answer.textContent = "";
             streaming = true;
           }
-          answer.textContent += body.text;
+          text += body.text;
+          paint();
+        } else if (event === "done") {
+          // Which of the offered sources the answer actually cited. Only
+          // these are shown -- see `renderSources`.
+          cited = (body.cited || []).map(String);
         } else if (event === "error") {
-          // Assigning textContent also drops the waiting dots; the class has
-          // to go too or the message renders in the indicator's flex layout.
-          answer.className = "msg bot";
-          answer.textContent = answer.textContent || "Sorry, the answer could not be completed.";
+          failed = true;
           citations = null;
+          if (!text) {
+            // Assigning textContent also drops the waiting dots; the class has
+            // to go too or the message renders in the indicator's flex layout.
+            answer.className = "msg bot";
+            answer.textContent = "Sorry, the answer could not be completed.";
+          }
         }
         log.scrollTop = log.scrollHeight;
       }
@@ -998,26 +1760,92 @@
       renderTeams(handoff);
       return;
     }
-    if (!answer.textContent) {
-      // A stream that ended without a single token. The dots must not be left
-      // pulsing forever -- that is the one state worse than a plain failure,
-      // because it never resolves and the visitor keeps waiting.
-      answer.className = "msg bot";
-      answer.textContent = "Sorry, no answer came back.";
+    if (!text) {
+      if (!failed) {
+        // A stream that ended without a single token. The dots must not be
+        // left pulsing forever -- that is the one state worse than a plain
+        // failure, because it never resolves and the visitor keeps waiting.
+        answer.className = "msg bot";
+        answer.textContent = "Sorry, no answer came back.";
+      }
+      return;
     }
+
+    // One last paint now rather than in a frame, so the finished answer is
+    // laid out before the sources and actions go in beneath it.
+    renderMarkdown(answer, text, offered, titles);
+    var meta = node("div", "meta");
+    log.appendChild(meta);
     // Only after the stream ends, and only the citations the answer actually
     // used -- listing every retrieved passage would imply the answer rests on
     // sources it never cited.
-    if (citations) renderCitations(citations);
+    renderSources(meta, citations, cited);
+    if (!failed) {
+      lastTurn = { question: question, bubble: answer, meta: meta };
+      renderActions(meta, question, text, true);
+    }
+    log.scrollTop = log.scrollHeight;
   }
+
+  /** Re-asks the latest question and replaces its answer.
+   *
+   *  It costs exactly what the original did -- a full answer and one unit of
+   *  the daily allowance -- and, because the server records every question,
+   *  the visitor's history holds the question twice. That is the honest
+   *  record of what happened, so it is not hidden. */
+  function regenerate() {
+    if (!lastTurn || busy || handedOff) return;
+    var turn = lastTurn;
+    lastTurn = null;
+    turn.bubble.remove();
+    if (turn.meta) turn.meta.remove();
+    return askAndRender(turn.question);
+  }
+
+  /* ------------------------------------------------------------ composer */
+
+  /* One line by default, growing with its content up to a cap. Sized here
+   * rather than with CSS `field-sizing`, which not every visitor's browser
+   * supports. */
+  var INPUT_MAX_PX = 120;
+
+  function sizeInput() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, INPUT_MAX_PX) + "px";
+    input.style.overflowY = input.scrollHeight > INPUT_MAX_PX ? "auto" : "hidden";
+  }
+
+  /** An empty box cannot be sent, and nothing can while an answer streams. */
+  function syncSend() {
+    send.disabled = busy || !input.value.trim();
+  }
+
+  input.addEventListener("input", function () {
+    sizeInput();
+    syncSend();
+  });
+
+  // Enter sends; Shift+Enter is a new line. Except mid-composition: for
+  // Japanese, Chinese or Korean input, Enter confirms a character in the IME,
+  // and treating that as "send" would fire a half-typed question.
+  input.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    e.preventDefault();
+    if (typeof form.requestSubmit === "function") form.requestSubmit();
+    else form.dispatchEvent(new Event("submit", { cancelable: true }));
+  });
 
   form.addEventListener("submit", function (event) {
     event.preventDefault();
     var question = input.value.trim();
     if (!question) return;
     input.value = "";
+    sizeInput();
+    syncSend();
     submit(question);
   });
+
+  syncSend();
 
   /** One path for everything the visitor says, typed or pressed.
    *
@@ -1026,6 +1854,10 @@
    *  instead of transferring -- the pill would look right and do nothing. */
   function submit(question) {
     if (!question || busy) return;
+
+    // A new question makes the previous answer history: it keeps copy and
+    // feedback, but can no longer be regenerated.
+    withdrawRegenerate();
 
     // Once a colleague owns the conversation the visitor is talking to them,
     // not to the model. Routing this through `ask` would put the assistant
@@ -1062,7 +1894,7 @@
       })
       .then(function () {
         busy = false;
-        send.disabled = false;
+        syncSend();
         input.focus();
       });
   }

@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import tzinfo
+from datetime import UTC, datetime, tzinfo
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+from iam_platform.application.ai_resources.cost_summary import CostSummary, summarise_costs
 from iam_platform.application.ai_resources.entitlements import resolve_quota_zone
 from iam_platform.application.ai_resources.exceptions import (
     ModelConfigurationManagementDeniedError,
@@ -39,7 +41,7 @@ from iam_platform.application.platform_authz.effective_permissions import (
 )
 from iam_platform.application.platform_authz.ports import PlatformUowFactory
 from iam_platform.core.clock import Clock
-from iam_platform.domain.tenancy.entitlements import TenantEntitlements
+from iam_platform.domain.tenancy.entitlements import TenantEntitlements, usage_alert_level
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,12 @@ MANAGE_PERMISSION = "platform.model_configurations.manage"
 #: "running low" means -- two copies of a threshold drift the moment one is
 #: edited, and the drift is invisible until someone is not warned.
 LOW_REMAINING_FRACTION = 0.10
+
+
+def month_start_utc(now: datetime) -> datetime:
+    """The start of the UTC calendar month -- the window the monthly token
+    allowance uses, so ingestion is reported over the same month."""
+    return now.astimezone(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
 def is_running_low(*, limit: int | None, used: int | None) -> bool:
@@ -116,6 +124,26 @@ class TenantSpend:
     used_tokens: int | None
     max_messages_per_day: int | None
     used_messages_today: int | None
+    #: What is actually enforced today: the platform's ceiling lowered by the
+    #: tenant's own preference, via the same `effective_daily_message_limit`
+    #: the answer path uses. `max_messages_per_day` alone is only the ceiling
+    #: -- showing it as "0 / 100" for a tenant capped at 50 told the operator
+    #: the wrong allowance and disagreed with the tenant's own dashboard.
+    effective_messages_per_day: int | None = None
+    #: This month's tokens split by direction. `None` when unreadable. The
+    #: split includes the question's *embedding* in input. It may sum to less
+    #: than `used_tokens`: answers recorded before the adapter fix carried a
+    #: total with no split, and that cannot be reconstructed.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    #: Embedding tokens spent indexing this tenant's documents this UTC month.
+    #: Deliberately *not* in `used_tokens`: that is the chat allowance, and
+    #: ingestion is metered beside it rather than charged against it.
+    ingestion_tokens: int = 0
+    #: Estimated cost this month (chat + embeddings, including ingestion) at
+    #: the platform's entered prices, and the tokens with no price to use.
+    cost_usd: Decimal = Decimal(0)
+    unpriced_tokens: int = 0
     #: Per-model detail behind the tenant's total, for the drill-down. Empty
     #: when the tenant has been granted nothing.
     models: list[TenantModelSpend] = field(default_factory=list)
@@ -131,10 +159,24 @@ class TenantSpend:
         return is_running_low(limit=self.max_tokens_per_month, used=self.used_tokens)
 
     @property
+    def token_alert_level(self) -> int | None:
+        """80/90/95/100 once this month's tokens reach that share, else None."""
+        return usage_alert_level(used=self.used_tokens, limit=self.max_tokens_per_month)
+
+    @property
+    def message_alert_level(self) -> int | None:
+        """Same, for today's messages against the *enforced* daily limit."""
+        return usage_alert_level(
+            used=self.used_messages_today, limit=self.effective_messages_per_day
+        )
+
+    @property
     def remaining_messages_today(self) -> int | None:
-        if self.max_messages_per_day is None or self.used_messages_today is None:
+        # Against the enforced limit, not the ceiling: "remaining" is what the
+        # tenant can actually still send today.
+        if self.effective_messages_per_day is None or self.used_messages_today is None:
             return None
-        return max(0, self.max_messages_per_day - self.used_messages_today)
+        return max(0, self.effective_messages_per_day - self.used_messages_today)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +208,11 @@ class PlatformOverview:
     #: `None` when any counter involved could not be read -- a difference
     #: computed from a partial sum would be a fiction presented as a figure.
     unattributed_tokens: int | None = None
+    #: Every tenant's ingestion embeddings this month -- the spend that
+    #: `unattributed_tokens` and the provider rows do not include.
+    ingestion_tokens: int = 0
+    #: This month's estimated cost, by model and in total. See `usage_costs`.
+    costs: CostSummary = field(default_factory=CostSummary)
 
     @property
     def tenants_running_low(self) -> int:
@@ -225,6 +272,15 @@ class GetPlatformOverview:
             zones = {
                 t.id: await resolve_quota_zone(uow, tenant_id=t.id) for t in tenants
             }
+            # The tenant's own (lower) daily preference, for the enforced limit.
+            ingestion = await uow.activity.ingestion_tokens_since(since=month_start_utc(now))
+            costs = summarise_costs(
+                await uow.activity.usage_cost_lines(since=month_start_utc(now))
+            )
+            preferences: dict[UUID, int | None] = {}
+            for t in tenants:
+                settings = await uow.chatbot_settings.get_for_tenant(t.id)
+                preferences[t.id] = settings.daily_message_limit if settings else None
 
         by_id = {c.id: c for c in configurations}
 
@@ -258,6 +314,7 @@ class GetPlatformOverview:
                 for configuration_id, tenant_ids in grants.items()
                 if tenant.id in tenant_ids
             ]
+            split = await self._safe_split(tenant.id)
             tenant_rows.append(
                 TenantSpend(
                     tenant_id=tenant.id,
@@ -270,7 +327,19 @@ class GetPlatformOverview:
                     # against the platform default model, which resolves no
                     # configuration and therefore appears in no per-model row.
                     used_tokens=await self._safe_tenant_tokens(tenant.id),
+                    input_tokens=split[0],
+                    output_tokens=split[1],
+                    ingestion_tokens=ingestion.get(tenant.id, 0),
+                    cost_usd=costs.by_tenant[tenant.id].cost_usd
+                    if tenant.id in costs.by_tenant
+                    else Decimal(0),
+                    unpriced_tokens=costs.by_tenant[tenant.id].unpriced_tokens
+                    if tenant.id in costs.by_tenant
+                    else 0,
                     max_messages_per_day=entitlements.max_messages_per_day,
+                    effective_messages_per_day=entitlements.effective_daily_message_limit(
+                        preferences.get(tenant.id)
+                    ),
                     used_messages_today=await self._safe_messages(
                         tenant.id, zones.get(tenant.id)
                     ),
@@ -292,6 +361,8 @@ class GetPlatformOverview:
 
         return PlatformOverview(
             unattributed_tokens=unattributed,
+            ingestion_tokens=sum(ingestion.values()),
+            costs=costs,
             providers=providers,
             # Tenants running low first: the dashboard's job is to put what
             # needs attention where it is seen without scrolling.
@@ -375,6 +446,16 @@ class GetPlatformOverview:
         except Exception:
             logger.warning("monthly token usage unavailable for tenant %s", tenant_id)
             return None
+
+    async def _safe_split(self, tenant_id: UUID) -> tuple[int | None, int | None]:
+        """Input/output for the drill-down; `None` on any failure -- the split
+        is detail, and an unreadable one must not cost the operator the page."""
+        try:
+            usage = await self._tenant_quota.token_breakdown(tenant_id=tenant_id)
+        except Exception:
+            logger.warning("token split unavailable for tenant %s", tenant_id)
+            return None, None
+        return int(usage.input_tokens), int(usage.output_tokens)
 
     async def _safe_messages(
         self, tenant_id: UUID, zone: tzinfo | None = None

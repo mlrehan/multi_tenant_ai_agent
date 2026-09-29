@@ -52,8 +52,11 @@ export function useKnowledgeBaseDocuments(
     // worker finishes. Poll while any document is still in flight, and stop
     // once they have all settled -- a fixed interval would keep polling a
     // fully-ingested knowledge base forever.
+    // 1.5 s while anything is in flight: fast enough that each stage and the
+    // embedding percentage visibly move, and the request is cheap (one list,
+    // one Redis MGET). Stops entirely once everything has settled.
     refetchInterval: (query) =>
-      query.state.data?.documents.some((d) => d.status === "processing") ? 3000 : false,
+      query.state.data?.documents.some((d) => d.status === "processing") ? 1500 : false,
   });
 }
 
@@ -239,6 +242,17 @@ export function useCreateChatWidget(tenantId: string) {
   });
 }
 
+export function useRecordAnswerFeedback(tenantId: string, knowledgeBaseId: string) {
+  return useMutation({
+    mutationFn: (body: {
+      rating: "up" | "down";
+      question: string;
+      answer: string;
+      comment?: string | null;
+    }) => api.recordAnswerFeedback(tenantId, knowledgeBaseId, body),
+  });
+}
+
 export function useUpdateChatWidget(tenantId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -322,6 +336,19 @@ export function useRetryDocument(tenantId: string, knowledgeBaseId: string) {
   });
 }
 
+export function useDeleteKnowledgeBase(tenantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (knowledgeBaseId: string) => api.deleteKnowledgeBase(tenantId, knowledgeBaseId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["knowledge-bases", tenantId] });
+      // A deleted knowledge base frees its place in the plan, so the "plan
+      // limit reached" notice and the New button update at once.
+      void queryClient.invalidateQueries({ queryKey: ["tenant-plan", tenantId] });
+    },
+  });
+}
+
 export function useDeleteDocument(tenantId: string, knowledgeBaseId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -331,5 +358,21 @@ export function useDeleteDocument(tenantId: string, knowledgeBaseId: string) {
       queryClient.invalidateQueries({
         queryKey: ["kb-documents", tenantId, knowledgeBaseId],
       }),
+  });
+}
+
+export function useAnswerFeedback(tenantId: string, filters: api.FeedbackFilters) {
+  return useQuery({
+    queryKey: ["answer-feedback", tenantId, filters],
+    queryFn: () => api.listAnswerFeedback(tenantId, filters),
+    placeholderData: (previous) => previous,
+  });
+}
+
+export function usePlatformAnswerFeedback(filters: api.FeedbackFilters) {
+  return useQuery({
+    queryKey: ["platform-answer-feedback", filters],
+    queryFn: () => api.listPlatformAnswerFeedback(filters),
+    placeholderData: (previous) => previous,
   });
 }

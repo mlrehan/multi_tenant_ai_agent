@@ -88,10 +88,14 @@ class FakeKnowledgeBaseRepository:
         self.by_id: dict[UUID, KnowledgeBase] = {}
 
     async def get_by_id(self, knowledge_base_id: UUID) -> KnowledgeBase | None:
-        return self.by_id.get(knowledge_base_id)
+        # Mirrors the SQL repository: a deleted knowledge base is not found.
+        kb = self.by_id.get(knowledge_base_id)
+        return kb if kb is not None and kb.deleted_at is None else None
 
     async def list_by_tenant(self, tenant_id: UUID) -> list[KnowledgeBase]:
-        return [kb for kb in self.by_id.values() if kb.tenant_id == tenant_id]
+        return [
+            kb for kb in self.by_id.values() if kb.tenant_id == tenant_id and kb.deleted_at is None
+        ]
 
     async def add(self, knowledge_base: KnowledgeBase) -> None:
         self.by_id[knowledge_base.id] = knowledge_base
@@ -101,6 +105,13 @@ class FakeKnowledgeBaseRepository:
 
 
 class FakeDocumentRepository:
+    async def describe_many(self, document_ids: list[UUID]) -> dict[UUID, tuple[str, str | None]]:
+        return {
+            d: (self.by_id[d].filename, getattr(self.by_id[d], "source_url", None))
+            for d in document_ids
+            if d in self.by_id
+        }
+
     def __init__(self) -> None:
         self.by_id: dict[UUID, Document] = {}
         #: Chunk counts per document, kept separately from the rows below so a
@@ -412,7 +423,7 @@ class FakeVectorSearchClient:
         self.deleted: list[tuple[str, UUID]] = []
 
     async def query(
-        self, *, namespace: str, query_text: str, top_k: int
+        self, *, namespace: str, query_text: str, top_k: int, **kwargs: object
     ) -> list[tuple[UUID, float]]:
         # Recorded so tests can assert *which* namespace was searched -- the
         # server-derived-namespace guarantee is only meaningful if the value
@@ -471,6 +482,14 @@ class FakeObjectStorageClient:
 class FakeChatWidgetRepository:
     def __init__(self) -> None:
         self.by_id: dict[UUID, ChatWidget] = {}
+        self.seen: list[tuple[UUID, str]] = []
+        self.refused: list[tuple[UUID, str]] = []
+
+    async def record_seen(self, *, tenant_id: UUID, widget_id: UUID, origin: str, **_: object) -> None:
+        self.seen.append((widget_id, origin))
+
+    async def record_refused(self, *, tenant_id: UUID, widget_id: UUID, origin: str, **_: object) -> None:
+        self.refused.append((widget_id, origin))
 
     async def add(self, widget: ChatWidget) -> None:
         self.by_id[widget.id] = widget
@@ -546,6 +565,10 @@ class FakeTenantEntitlementRepository:
 class FakeTenantChatbotSettingsRepository:
     def __init__(self) -> None:
         self.stored: dict[UUID, object] = {}
+        self.display_names: dict[UUID, str] = {}
+
+    async def tenant_display_name(self, tenant_id: UUID) -> str | None:
+        return self.display_names.get(tenant_id)
 
     async def get_for_tenant(self, tenant_id: UUID) -> object | None:
         return self.stored.get(tenant_id)
@@ -558,6 +581,7 @@ class FakeTenantTeamRepository:
     def __init__(self) -> None:
         self.teams: dict[UUID, object] = {}
         self.members: dict[UUID, list[UUID]] = {}
+        self.inactive_members: set[UUID] = set()
 
     async def get(self, *, tenant_id: UUID, team_id: UUID) -> object | None:
         team = self.teams.get(team_id)
@@ -580,6 +604,17 @@ class FakeTenantTeamRepository:
 
     async def list_members(self, *, tenant_id: UUID, team_id: UUID) -> list[UUID]:
         return list(self.members.get(team_id, []))
+
+    async def staffed_team_ids(self, *, tenant_id: UUID) -> set[UUID]:
+        # `inactive_members` stands in for a suspended/revoked membership,
+        # which the SQL version excludes by joining `tenant_memberships`.
+        return {
+            team_id
+            for team_id, members in self.members.items()
+            if (team := self.teams.get(team_id)) is not None
+            and team.tenant_id == tenant_id  # type: ignore[attr-defined]
+            and any(m not in self.inactive_members for m in members)
+        }
 
     async def set_members(
         self, *, tenant_id: UUID, team_id: UUID, membership_ids: list[UUID]
@@ -664,6 +699,69 @@ class FakeConversationHandoffRepository:
             and (team_ids is None or c.assigned_team_id in team_ids)
         ]
 
+class FakeAnswerFeedbackRepository:
+    def __init__(self) -> None:
+        self.rows: list[object] = []
+
+    async def add(self, feedback: object) -> None:
+        self.rows.append(feedback)
+
+    async def count_for_visitor_session(
+        self, *, tenant_id: UUID, visitor_session_id: UUID
+    ) -> int:
+        return sum(
+            1
+            for r in self.rows
+            if r.tenant_id == tenant_id  # type: ignore[attr-defined]
+            and r.visitor_session_id == visitor_session_id  # type: ignore[attr-defined]
+        )
+
+    def _matching(self, tenant_id: UUID | None, rating: str | None) -> list[object]:
+        return [
+            r
+            for r in self.rows
+            if (tenant_id is None or r.tenant_id == tenant_id)  # type: ignore[attr-defined]
+            and (rating is None or r.rating.value == rating)  # type: ignore[attr-defined]
+        ]
+
+    async def list_page(self, *, tenant_id, rating, channel, limit, offset, with_identity=False):  # type: ignore[no-untyped-def]
+        from iam_platform.application.ai_resources.ports import AnswerFeedbackRecord
+
+        self.last_list_tenant = tenant_id
+        rows = self._matching(tenant_id, rating)
+        records = [
+            AnswerFeedbackRecord(
+                id=r.id,  # type: ignore[attr-defined]
+                tenant_id=r.tenant_id,  # type: ignore[attr-defined]
+                rating=r.rating.value,  # type: ignore[attr-defined]
+                question=r.question,  # type: ignore[attr-defined]
+                answer=r.answer,  # type: ignore[attr-defined]
+                comment=r.comment,  # type: ignore[attr-defined]
+                channel="website" if r.widget_id else "console",  # type: ignore[attr-defined]
+                knowledge_base_name=None,
+                created_at=r.created_at,  # type: ignore[attr-defined]
+            )
+            for r in rows
+        ]
+        return records[offset : offset + limit], len(records)
+
+    async def summarize(self, *, tenant_id, with_identity=False):  # type: ignore[no-untyped-def]
+        from iam_platform.application.ai_resources.ports import AnswerFeedbackSummary
+
+        by: dict[UUID, list[object]] = {}
+        for r in self._matching(tenant_id, None):
+            by.setdefault(r.tenant_id, []).append(r)  # type: ignore[attr-defined]
+        return [
+            AnswerFeedbackSummary(
+                tenant_id=t,
+                total=len(rs),
+                helpful=sum(1 for r in rs if r.rating.value == "up"),  # type: ignore[attr-defined]
+                not_helpful=sum(1 for r in rs if r.rating.value == "down"),  # type: ignore[attr-defined]
+            )
+            for t, rs in by.items()
+        ]
+
+
 class FakeAiResourceUnitOfWork:
     _REPO_ATTRS = (
         "tenant_memberships",
@@ -682,6 +780,9 @@ class FakeAiResourceUnitOfWork:
         "entitlements",
         "chatbot_settings",
         "teams",
+        # In the snapshot so a refused write is really rolled back -- a fake
+        # that kept it would let a test pass for a write the database discards.
+        "answer_feedback",
     )
 
     def __init__(self) -> None:
@@ -702,6 +803,7 @@ class FakeAiResourceUnitOfWork:
         self.handoff = FakeConversationHandoffRepository(self.conversations)
         self.audit = FakeAuditWriter()
         self.security_events = FakeSecurityEventWriter()
+        self.answer_feedback = FakeAnswerFeedbackRepository()
         self.last_user_id: UUID | None = None
         self.last_tenant_id: UUID | None = None
         self._snapshot: dict[str, object] | None = None

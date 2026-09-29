@@ -12,7 +12,8 @@ lands in, or that a later query reads from. That is what makes the
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from iam_platform.application.ai_resources.authorize import load_visible_knowledge_base
@@ -24,14 +25,20 @@ from iam_platform.application.ai_resources.exceptions import (
     PermissionDeniedError,
 )
 from iam_platform.application.ai_resources.ports import (
+    SEARCH_CHANNEL,
     AiResourceUowFactory,
     DocumentIngestionQueue,
+    IngestionProgress,
+    IngestionProgressStore,
     ObjectStorageClient,
     ObjectStoragePathFactory,
+    TokenUsage,
+    UsageLedger,
     VectorNamespaceFactory,
     VectorSearchClient,
 )
 from iam_platform.application.ai_resources.requester import build_requester_context
+from iam_platform.application.ai_resources.usage_recording import record_embedding_usage
 from iam_platform.core.clock import Clock
 from iam_platform.domain.ai_resources.entities import (
     Document,
@@ -311,12 +318,44 @@ class QueryKnowledgeBase:
     """
 
     def __init__(
-        self, uow_factory: AiResourceUowFactory, search_client: VectorSearchClient
+        self,
+        uow_factory: AiResourceUowFactory,
+        search_client: VectorSearchClient,
+        usage_ledger: UsageLedger | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._search_client = search_client
+        # Optional so every existing construction keeps working; without a
+        # ledger the search is made exactly as before, unmetered.
+        self._usage_ledger = usage_ledger
+        self._clock = clock
 
     async def execute(self, query: QueryKnowledgeBaseQuery) -> list[KnowledgeBaseSearchHit]:
+        """Searches, then records what the query embedding cost.
+
+        Recorded in `finally`, after the unit of work has closed: the embedding
+        is billed when the provider returns it, even if the vector store then
+        fails -- and a refusal before any search (no permission, no such
+        knowledge base) costs nothing, so the meter stays empty and nothing is
+        written.
+        """
+        meter = TokenUsage() if self._usage_ledger is not None else None
+        try:
+            return await self._search(query, meter)
+        finally:
+            if meter is not None:
+                await record_embedding_usage(
+                    self._usage_ledger,
+                    tenant_id=UUID(query.tenant_id),
+                    channel=SEARCH_CHANNEL,
+                    usage=meter,
+                    occurred_at=self._clock.now() if self._clock else datetime.now(UTC),
+                )
+
+    async def _search(
+        self, query: QueryKnowledgeBaseQuery, meter: TokenUsage | None
+    ) -> list[KnowledgeBaseSearchHit]:
         actor_id = UUID(query.actor_user_id)
         tenant_id = UUID(query.tenant_id)
         knowledge_base_id = UUID(query.knowledge_base_id)
@@ -335,10 +374,20 @@ class QueryKnowledgeBase:
                 uow, knowledge_base_id=knowledge_base_id, requester=requester
             )
 
-            raw_hits = await self._search_client.query(
-                namespace=knowledge_base.vector_namespace,
-                query_text=query.query_text,
-                top_k=query.top_k,
+            # No meter means exactly the call that was made before metering.
+            raw_hits = (
+                await self._search_client.query(
+                    namespace=knowledge_base.vector_namespace,
+                    query_text=query.query_text,
+                    top_k=query.top_k,
+                    usage=meter,
+                )
+                if meter is not None
+                else await self._search_client.query(
+                    namespace=knowledge_base.vector_namespace,
+                    query_text=query.query_text,
+                    top_k=query.top_k,
+                )
             )
 
             # Re-read each hit through the RLS-scoped repository rather than
@@ -384,6 +433,10 @@ class DocumentSummary:
 
     document: Document
     chunk_count: int
+    #: Live stage and percent while the document is being ingested, and the
+    #: stage it had reached if it failed. `None` when nothing is in flight, or
+    #: when progress is unavailable -- the console then shows plain status.
+    progress: IngestionProgress | None = None
 
 
 class ListDocuments:
@@ -395,8 +448,15 @@ class ListDocuments:
     repository.
     """
 
-    def __init__(self, uow_factory: AiResourceUowFactory) -> None:
+    def __init__(
+        self,
+        uow_factory: AiResourceUowFactory,
+        progress: IngestionProgressStore | None = None,
+    ) -> None:
         self._uow_factory = uow_factory
+        # Optional so existing construction sites keep working; without it
+        # the list is exactly what it was.
+        self._progress = progress
 
     async def execute(self, query: ListDocumentsQuery) -> list[DocumentSummary]:
         actor_id = UUID(query.actor_user_id)
@@ -423,10 +483,35 @@ class ListDocuments:
             # round trips, but a knowledge base holds tens to hundreds of
             # documents, not millions, and adding a bespoke aggregate to the
             # repository for that is optimising the wrong thing first.
-            return [
+            summaries = [
                 DocumentSummary(
                     document=document,
                     chunk_count=await uow.documents.count_chunks(document.id),
                 )
                 for document in documents
             ]
+        return await self._with_progress(tenant_id, summaries)
+
+    async def _with_progress(
+        self, tenant_id: UUID, summaries: list[DocumentSummary]
+    ) -> list[DocumentSummary]:
+        """Attaches live progress to documents still in flight, or failed.
+
+        Read only for ids this caller was just authorized to list, and keyed
+        by the caller's own tenant -- the store cannot be asked about anything
+        else. A ready document has no use for it: it finished.
+        """
+        if self._progress is None:
+            return summaries
+        wanted = [
+            s.document.id
+            for s in summaries
+            if s.document.status in (DocumentStatus.PROCESSING, DocumentStatus.FAILED)
+        ]
+        if not wanted:
+            return summaries
+        found = await self._progress.read_many(tenant_id=tenant_id, document_ids=wanted)
+        return [
+            replace(s, progress=found[s.document.id]) if s.document.id in found else s
+            for s in summaries
+        ]

@@ -42,6 +42,32 @@ export function useTenantPlan(tenantId: string | null) {
     queryKey: ["tenant-plan", tenantId],
     queryFn: () => api.getTenantPlan(tenantId!),
     enabled: Boolean(tenantId),
+    // Usage moves with every answer; the dashboard's "questions today" and
+    // allowance warnings were otherwise frozen until the tab lost focus.
+    refetchInterval: 60_000,
+  });
+}
+
+/** The tenant dashboard's activity. Only fetched for someone who may read
+ *  conversations (`enabled`), so a basic member's dashboard makes no request
+ *  it would be refused. Refreshed every minute, like the platform's. */
+export function useTenantActivity(tenantId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["tenant-activity", tenantId],
+    queryFn: () => api.getTenantActivity(tenantId!),
+    enabled: Boolean(tenantId) && enabled,
+    refetchInterval: 60_000,
+  });
+}
+
+/** Questions the chatbot could not answer. Needs `tenant.conversations.view`
+ *  (they are visitors' own words), so callers pass `enabled` from that. */
+export function useUnansweredQuestions(tenantId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["unanswered-questions", tenantId],
+    queryFn: () => api.getUnansweredQuestions(tenantId!),
+    enabled: Boolean(tenantId) && enabled,
+    refetchInterval: 5 * 60_000,
   });
 }
 

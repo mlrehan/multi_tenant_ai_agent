@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { markSigningOut } from "@/lib/api-client";
 import { useRouter } from "next/navigation";
 import * as api from "@/features/auth/api";
 import { useTenantStore } from "@/stores/tenant-store";
@@ -43,9 +44,9 @@ export function useRegister() {
 
 export function useLogout() {
   const queryClient = useQueryClient();
-  const router = useRouter();
   return useMutation({
     mutationFn: api.logout,
+    onMutate: () => markSigningOut(),
     onSettled: () => {
       // Settled, not onSuccess: the proxy clears cookies on this path
       // regardless of the upstream backend response (see the LOGOUT_PATHS
@@ -54,7 +55,12 @@ export function useLogout() {
       useTenantStore.getState().setCurrentTenant(null);
       useImpersonationStore.getState().end();
       queryClient.clear();
-      router.push("/login");
+      // A full page load, not router.push(): it discards every piece of
+      // in-memory state from the ended session -- including the
+      // `markSigningOut()` flag, which must not outlive this sign-out or it
+      // would swallow a genuine session expiry for the next person.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.href = "/login";
     },
   });
 }

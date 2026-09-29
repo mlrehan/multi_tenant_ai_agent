@@ -75,7 +75,7 @@ class _Uow:
     def __init__(self, teams: _Teams) -> None:
         self.teams = teams
 
-    async def __aenter__(self) -> "_Uow":
+    async def __aenter__(self) -> _Uow:
         return self
 
     async def __aexit__(self, *exc: object) -> None:

@@ -427,6 +427,19 @@ class FakeTenantEntitlementRepository:
     async def count_assistants(self, tenant_id: UUID) -> int:
         return 0
 
+class FakeTenantMemberDirectory:
+    """Contacts keyed by (tenant, membership) so a test can prove the use case
+    asks for *its* tenant's contacts and no other."""
+
+    def __init__(self) -> None:
+        self.by_tenant: dict[UUID, dict[UUID, object]] = {}
+        self.asked_for: list[UUID] = []
+
+    async def contacts(self, tenant_id: UUID) -> dict[UUID, object]:
+        self.asked_for.append(tenant_id)
+        return dict(self.by_tenant.get(tenant_id, {}))
+
+
 class FakeTenantUnitOfWork:
     """Shared instance doubles as its own factory (``self(user_id, tenant_id)``
     returns itself, matching ``TenantUowFactory``'s call shape) so tests can
@@ -451,6 +464,8 @@ class FakeTenantUnitOfWork:
     )
 
     def __init__(self) -> None:
+        self.tenants = FakeTenantRepository()
+        self.member_directory = FakeTenantMemberDirectory()
         self.tenant_memberships = FakeTenantMembershipRepository()
         self.tenant_invitations = FakeTenantInvitationRepository()
         self.tenant_features = FakeTenantFeatureRepository()

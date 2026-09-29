@@ -59,7 +59,7 @@ class _Uow:
         self.entitlements = _Entitlements(limit)
         self.chatbot_settings = _NoChatbotSettings()
 
-    async def __aenter__(self) -> "_Uow":
+    async def __aenter__(self) -> _Uow:
         return self
 
     async def __aexit__(self, *exc: object) -> None:

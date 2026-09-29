@@ -180,6 +180,42 @@ export function usePlatformOverview() {
   });
 }
 
+/** Activity, satisfaction, queues and health -- refreshed on the same 60s
+ *  cadence as spend, so the two halves of the dashboard are never minutes
+ *  apart. */
+export function usePlatformActivity() {
+  return useQuery({
+    queryKey: ["platform-activity"],
+    queryFn: () => api.getPlatformActivity(),
+    refetchInterval: 60_000,
+  });
+}
+
+const modelPricesKey = ["platform-model-prices"];
+
+export function useModelPrices() {
+  return useQuery({ queryKey: modelPricesKey, queryFn: api.getModelPrices });
+}
+
+/** A price change reprices the dashboard, so both are invalidated. */
+function useInvalidatePrices() {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: modelPricesKey });
+    void queryClient.invalidateQueries({ queryKey: ["platform-overview"] });
+  };
+}
+
+export function useSetModelPrice() {
+  const invalidate = useInvalidatePrices();
+  return useMutation({ mutationFn: api.setModelPrice, onSuccess: invalidate });
+}
+
+export function useDeleteModelPrice() {
+  const invalidate = useInvalidatePrices();
+  return useMutation({ mutationFn: api.deleteModelPrice, onSuccess: invalidate });
+}
+
 const modelConfigurationsKey = ["platform-model-configurations"];
 
 export function usePlatformModelConfigurations() {

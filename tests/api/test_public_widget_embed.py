@@ -191,8 +191,14 @@ class TestTheScriptIsActuallyServed:
         """
         source = (await client.get("/v1/public/chat/widget.js")).text
 
-        assignments = re.findall(r"\.innerHTML\s*=", source)
-        # Exactly one: the static shell, written before any network call.
-        assert assignments == [".innerHTML ="], assignments
-        assert "root.innerHTML =" in source
+        # Every innerHTML write, with its target and the start of its value.
+        assignments = re.findall(r"(\w+)\.innerHTML\s*=\s*(\S+)", source)
+        # Exactly two, both fixed markup: the static shell, written before any
+        # network call, and the header avatar, which only ever takes a string
+        # from the script's own SVG table (`avatarMarkup`) -- never a value
+        # from the response.
+        assert sorted(assignments) == [
+            ("headAvatar", "avatarMarkup(presentation.avatar_key);"),
+            ("root", '"<style>"'),
+        ], assignments
         assert "textContent" in source

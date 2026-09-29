@@ -230,6 +230,12 @@ class ChatWidgetInvalidError(AiResourceError):
     """
 
 
+class KnowledgeBaseInUseError(AiResourceError):
+    """A knowledge base cannot be deleted yet: a chatbot still answers from
+    it, or something in it is still being ingested. The message says which,
+    and what to do."""
+
+
 class ChatWidgetInUseError(AiResourceError):
     """The widget has conversations and cannot be deleted without losing them.
 
@@ -238,6 +244,16 @@ class ChatWidgetInUseError(AiResourceError):
     The message names the alternative (disable), because a refusal that does
     not say what to do instead is a dead end.
     """
+
+
+class AnswerFeedbackInvalidError(AiResourceError):
+    """Feedback that cannot be stored as sent -- empty, oversized, or naming
+    no answer. 400: the caller can fix it."""
+
+
+class AnswerFeedbackLimitError(AiResourceError):
+    """One anonymous session has rated too many answers. 429: the bound that
+    stops feedback on a public page being used as free storage."""
 
 
 class EntitlementExceededError(AiResourceError):
@@ -357,4 +373,17 @@ class PushSubscriptionInvalidError(AiResourceError):
 
     A 400: the endpoint or its keys are malformed, which is a fact about the
     request.
+    """
+
+
+class ModelPriceNotFoundError(AiResourceError):
+    """No price entry with that id. A 404."""
+
+
+class ModelPriceConflictError(AiResourceError):
+    """The model already has a price from exactly that moment.
+
+    A 409: entries are never edited, so replacing one is delete-then-add, and
+    two entries from the same instant would leave "the price in force" at that
+    moment undefined.
     """

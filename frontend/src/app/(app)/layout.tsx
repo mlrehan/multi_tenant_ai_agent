@@ -12,7 +12,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           raises, whether or not the console is the window in front of them. */}
       <HandoffAlerts />
       <AppSidebar />
-      <SidebarInset>
+      {/* `min-w-0`: this is a flex item beside the sidebar, and a flex item's
+          minimum width defaults to its content's. Without it, one wide table
+          row (Knowledge bases' action buttons, Conversations' columns)
+          stretched the whole page sideways -- cutting off the top bar --
+          instead of scrolling inside the table's own container. */}
+      <SidebarInset className="min-w-0">
         <ImpersonationBanner />
         <Topbar />
         {/* Capped and centred: an operations table stretched across a 2560px

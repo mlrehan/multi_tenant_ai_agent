@@ -150,6 +150,17 @@ class TestPlatformAndTenantAuthzFlow:
                 owner_user_id=str(admin_user_id),
             )
         )
+        # Inviting is a plan capability, off until the platform grants it (a
+        # tenant without an entitlements row gets the restrictive defaults).
+        # Granted here the way a platform administrator's plan edit would be.
+        async with migrator_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO tenant_entitlements (id, tenant_id, allow_invite_members) "
+                    "VALUES (:id, :t, true)"
+                ),
+                {"id": str(uuid4()), "t": str(tenant_id)},
+            )
 
         email_sender = FakeInvitationEmailSender()
         await InviteMember(tenant_uow_factory, email_sender, clock).execute(

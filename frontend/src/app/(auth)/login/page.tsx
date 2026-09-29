@@ -48,7 +48,7 @@ function LoginPageContent() {
   } = useForm<MfaForm>({ resolver: zodResolver(mfaSchema) });
 
   function goToDestination() {
-    router.push(searchParams.get("next") ?? "/select-tenant");
+    router.push(safeNext(searchParams.get("next")));
   }
 
   async function onSubmit(values: LoginForm) {
@@ -224,4 +224,27 @@ export default function LoginPage() {
       <LoginPageContent />
     </Suspense>
   );
+}
+
+/** Where to go after signing in.
+ *
+ * **Only a path on this site.** `next` arrives in the URL, so anyone can write
+ * one: `/login?next=https://evil.example` used to send a person to an outside
+ * site the moment they had authenticated -- an open redirect, the classic
+ * phishing hop, because the link starts on the real login page. `//host` and
+ * `/\host` are refused too: browsers read both as another origin.
+ *
+ * **Defaults to `/`, not `/select-tenant`.** The root page routes by what the
+ * signed-in person can actually do -- a platform operator to the platform
+ * overview, someone with one tenant straight to its dashboard -- and sending
+ * everyone to the tenant picker skipped that, so a platform admin landed on
+ * "No tenants yet". `/login` itself is treated the same way, so a stale
+ * `next=/login` cannot bounce someone back to the form they just used.
+ */
+function safeNext(next: string | null): string {
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) {
+    return "/";
+  }
+  if (next === "/login" || next.startsWith("/login?")) return "/";
+  return next;
 }

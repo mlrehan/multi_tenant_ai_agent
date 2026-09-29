@@ -25,6 +25,7 @@ from sqlalchemy import (
     Index,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -91,7 +92,7 @@ class TenantPermissionModel(Base):
     is_system: Mapped[bool] = mapped_column(default=True)
     tenant_customizable: Mapped[bool] = mapped_column(default=False)
     required_feature: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(server_default="now()")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class TenantRolePermissionModel(Base):
@@ -111,7 +112,7 @@ class TenantRolePermissionModel(Base):
     role_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
     permission_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
-    granted_at: Mapped[datetime] = mapped_column(server_default="now()")
+    granted_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class TenantMembershipRoleModel(Base):
@@ -143,7 +144,7 @@ class TenantMembershipRoleModel(Base):
     granted_by_user_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
-    granted_at: Mapped[datetime] = mapped_column(server_default="now()")
+    granted_at: Mapped[datetime] = mapped_column(server_default=func.now())
     revoked_at: Mapped[datetime | None]
 
 
@@ -171,7 +172,7 @@ class RoleHierarchyModel(Base):
     child_role_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     role_scope: Mapped[str] = mapped_column(Text, nullable=False)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
-    created_at: Mapped[datetime] = mapped_column(server_default="now()")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class AuthorizationOverrideModel(Base):
@@ -210,5 +211,5 @@ class AuthorizationOverrideModel(Base):
         PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     expires_at: Mapped[datetime | None]
-    created_at: Mapped[datetime] = mapped_column(server_default="now()")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     revoked_at: Mapped[datetime | None]

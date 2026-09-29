@@ -116,6 +116,13 @@ class OfferWidgetHandoff:
         async with self._uow_factory(uuid4(), widget.tenant_id) as uow:
             settings = await uow.chatbot_settings.get_for_tenant(widget.tenant_id)
             teams = await uow.teams.list_for_tenant(widget.tenant_id, active_only=True)
+            # **Only teams someone is in.** An empty team used to be offered,
+            # and choosing it told the visitor "someone will pick this up"
+            # while no one staffed it. Withholding it here makes `build_offer`
+            # give its honest "I'm not able to transfer you" when every team
+            # is empty, rather than a button that leads nowhere.
+            staffed = await uow.teams.staffed_team_ids(tenant_id=widget.tenant_id)
+            teams = [t for t in teams if t.id in staffed]
         # A tenant with no settings row has never opened the screen, so both
         # switches take their documented defaults rather than being read as
         # "off" -- which would silently disable every widget on the platform
@@ -155,6 +162,14 @@ class HandoffResult:
     #: than from 0 -- otherwise the first poll re-fetches every turn the
     #: visitor already saw live and renders them a second time.
     last_seq: int
+
+
+#: What the visitor reads when the team they chose can't take them. The widget
+#: shows an error's message as-is; this used to be the team's raw id.
+_TEAM_UNAVAILABLE = (
+    "That team isn't available right now. Please use the contact details on "
+    "our website and someone will be able to help."
+)
 
 
 class SelectHandoffTeam:
@@ -221,7 +236,13 @@ class SelectHandoffTeam:
                 tenant_id=widget.tenant_id, team_id=command.team_id
             )
             if team is None or not team.is_active:
-                raise TeamNotFoundError(str(command.team_id))
+                raise TeamNotFoundError(_TEAM_UNAVAILABLE)
+            # The offer already hides an empty team; this closes the same gap
+            # for a request naming one directly (a stale widget, or a team
+            # emptied between the offer and the click). Reported as "not
+            # found", exactly like an inactive team -- it is not selectable.
+            if team.id not in await uow.teams.staffed_team_ids(tenant_id=widget.tenant_id):
+                raise TeamNotFoundError(_TEAM_UNAVAILABLE)
 
             conversation = await self._ensure_conversation(
                 uow, widget=widget, session_id=command.session_id, now=now

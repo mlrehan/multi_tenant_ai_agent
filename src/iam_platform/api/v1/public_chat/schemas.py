@@ -9,6 +9,7 @@ caller.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -93,3 +94,14 @@ class VisitorTypingRequest(BaseModel):
     message coming that never does."""
 
     typing: bool
+
+
+class WidgetFeedbackRequest(BaseModel):
+    """A visitor's rating of one answer. No tenant, widget or knowledge base
+    field: all three come from the session token and the widget row, so a
+    visitor cannot file feedback anywhere but the chat they are in."""
+
+    rating: Literal["up", "down"]
+    question: str = Field(min_length=1, max_length=4000)
+    answer: str = Field(min_length=1, max_length=20000)
+    comment: str | None = Field(default=None, max_length=1000)

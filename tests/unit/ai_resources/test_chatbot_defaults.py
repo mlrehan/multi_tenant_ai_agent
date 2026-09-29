@@ -93,7 +93,9 @@ class TestTheDefaultsAreNamedForTheRightNursery:
         default that described every tenant as the shipped nursery would be
         worse than no default at all -- it reads as correct and is wrong."""
         text = default_company_description("Bright Beginnings")
-        assert "Bright Beginnings is a London-based day nursery" in text
+        assert "Bright Beginnings is a day nursery" in text
+        # A default stands in for every tenant, so it claims no location.
+        assert "London" not in text
         assert DEFAULT_COMPANY_NAME not in text
 
     def test_the_role_is_written_for_this_company(self) -> None:
@@ -116,14 +118,14 @@ class TestThePromptUsesThem:
     def test_an_unconfigured_tenant_still_gets_a_described_company(self) -> None:
         layers = PromptLayers.from_settings(_settings(), tenant_display_name="Acme Ltd")
         assert layers.company_name == "Acme Ltd"
-        assert "Acme Ltd is a London-based day nursery" in layers.company_description
+        assert "Acme Ltd is a day nursery" in layers.company_description
         assert layers.role.startswith("Acme Ltd AI Assistant")
 
     def test_a_tenant_with_no_settings_row_at_all_still_gets_one(self) -> None:
         """The row is created lazily, so the very first question a visitor asks
         can arrive before the tenant has ever opened the Chatbot screen."""
         layers = PromptLayers.from_settings(None, tenant_display_name="Acme Ltd")
-        assert "Acme Ltd is a London-based day nursery" in layers.company_description
+        assert "Acme Ltd is a day nursery" in layers.company_description
         assert layers.role.startswith("Acme Ltd AI Assistant")
 
     def test_a_configured_assistant_is_untouched(self) -> None:

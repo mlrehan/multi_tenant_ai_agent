@@ -172,6 +172,7 @@ export function HandoffAlerts() {
             // alarm too -- an agent who has gone to deal with it should not
             // then have to also find a button to stop the noise.
             onClick={() => stopHandoffAlarm()}
+            nativeButton={false}
             render={<Link href={`/tenant/${tenantId}/inbox`} />}
           >
             Open Inbox

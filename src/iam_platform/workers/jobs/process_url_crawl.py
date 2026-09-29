@@ -30,6 +30,7 @@ import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -42,6 +43,8 @@ from iam_platform.application.ai_resources.ports import (
     EmbeddingClient,
     ObjectStorageClient,
     ParsedBlock,
+    TokenUsage,
+    UsageLedger,
     VectorSearchClient,
     WebCrawler,
 )
@@ -52,7 +55,11 @@ from iam_platform.workers.job_context import (
     VerifiedJobContext,
     establish_job_context,
 )
-from iam_platform.workers.jobs.indexing import IndexingTarget, index_blocks
+from iam_platform.workers.jobs.indexing import (
+    IndexingTarget,
+    index_blocks,
+    record_ingestion_usage,
+)
 
 logger = logging.getLogger("iam_platform.workers.jobs.process_url_crawl")
 
@@ -77,6 +84,8 @@ class CrawlDependencies:
     embedding_client: EmbeddingClient
     vector_search: VectorSearchClient
     limits: CrawlLimits
+    #: Where embedding spend is recorded; see `IngestionDependencies`.
+    usage_ledger: UsageLedger | None = None
 
 
 class CrawlFailed(Exception):
@@ -269,7 +278,42 @@ async def _index_one_page(
     Zero means the page was fetched but held nothing searchable; the caller
     counts only non-zero pages as indexed. See the module docstring for why
     each page gets its own transaction.
+
+    Each page's embedding spend is recorded after its transaction, whether it
+    committed or not -- one ledger row per page, as for an uploaded file.
     """
+    meter = TokenUsage()
+    try:
+        return await _index_page_in_transaction(
+            session_factory,
+            dependencies,
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            data_source_id=data_source_id,
+            source=source,
+            page=page,
+            usage=meter,
+        )
+    finally:
+        await record_ingestion_usage(
+            dependencies.usage_ledger,
+            tenant_id=tenant_id,
+            usage=meter,
+            occurred_at=datetime.now(UTC),
+        )
+
+
+async def _index_page_in_transaction(
+    session_factory: Callable[[], AsyncSession],
+    dependencies: CrawlDependencies,
+    *,
+    tenant_id: UUID,
+    actor_user_id: UUID,
+    data_source_id: UUID,
+    source: _DataSourceRow,
+    page: CrawledPage,
+    usage: TokenUsage,
+) -> int:
     body = page.markdown.encode("utf-8")
     checksum = hashlib.sha256(body).hexdigest()
 
@@ -313,6 +357,7 @@ async def _index_one_page(
             chunker=dependencies.chunker,
             embedding_client=dependencies.embedding_client,
             vector_search=dependencies.vector_search,
+            usage=usage,
         )
 
         # A page that indexed nothing is *not* ready -- there is nothing in it

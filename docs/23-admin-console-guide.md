@@ -83,14 +83,31 @@ Only visible if you hold platform permissions. A tenant-only user won't see this
 
 ### Platform → Overview
 
-**What it is:** the operator's front page.
+**What it is:** the operator's front page. It refreshes every minute and shows when it was last
+updated; **Refresh** reloads it immediately.
 
-**What it's for:** a glance at the size and shape of the deployment — how many tenants (and how many
-are suspended), how many user accounts, how many roles and permissions are defined — plus the
-newest tenants and, importantly, **what you personally are allowed to do**.
+**What it's for**, in the order the page shows it:
 
-That last panel is worth reading when something is missing. If a screen you expected isn't in the
-sidebar, this page tells you which permissions you actually hold, which is usually the answer.
+1. **Needs attention.** Every open problem, most urgent first: a service that isn't responding,
+   documents stuck in processing for over 30 minutes (usually a stopped ingestion worker),
+   conversations waiting for a person, tenants under 10% of their monthly tokens or at their daily
+   message limit, and failed documents. When there's nothing, it says so explicitly.
+2. **Headline numbers.** Questions and conversations over the last 7 days, each compared with the
+   7 days before. Satisfaction is the share of "helpful" ratings over 30 days. Tokens are this month's
+   total across tenants. Growth from zero is labelled as new rather than given an infinite percentage.
+3. **Activity** (14 days, UTC) beside **Operations** (database, Redis, document ingestion and the
+   human-handoff queue).
+4. **AI spend this month.** The platform default model comes first, because website-chatbot and
+   console answers use it. Budgeted model configurations follow. Then the per-tenant usage table,
+   which opens each tenant's breakdown.
+5. **Directory, recent tenants and your platform authority.** Your permissions are shown in plain
+   language with their risk level. If a screen you expected isn't in the sidebar, this panel tells
+   you which permissions you actually hold, which is usually the answer.
+
+**Two definitions worth knowing.** A *question* is a turn in a saved conversation, from the website
+chatbot or a console thread. One-off questions from the Knowledge-bases **Ask** panel aren't saved
+as conversations, so they count towards token spend but not towards questions. Token history comes
+from the usage ledger, which starts on the day it was deployed (27 Sep 2026 in the dev environment).
 
 ### Platform → Tenants
 

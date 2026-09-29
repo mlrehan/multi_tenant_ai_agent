@@ -7,6 +7,8 @@ import type {
   ResponseLength,
   Team,
   TenantEntitlements,
+  TenantActivity,
+  UnansweredQuestion,
   TenantPlan,
   UnassignedConversation,
   WidgetPresentation,
@@ -41,6 +43,17 @@ export function listAiProviders() {
 
 export function getTenantPlan(tenantId: string) {
   return apiFetch<TenantPlan>(`v1/tenants/${tenantId}/plan`, { tenantId });
+}
+
+export function getTenantActivity(tenantId: string) {
+  return apiFetch<TenantActivity>(`v1/tenants/${tenantId}/activity`, { tenantId });
+}
+
+export function getUnansweredQuestions(tenantId: string, days = 30, limit = 10) {
+  return apiFetch<{ days: number; questions: UnansweredQuestion[] }>(
+    `v1/tenants/${tenantId}/unanswered-questions?days=${days}&limit=${limit}`,
+    { tenantId },
+  );
 }
 
 export function getChatbotSettings(tenantId: string) {

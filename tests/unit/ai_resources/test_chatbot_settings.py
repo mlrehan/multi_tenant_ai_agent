@@ -12,6 +12,7 @@ was refused. Asserting "it raises" would have passed against the broken code.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -242,3 +243,75 @@ class TestClaimReportsTheRightFailure:
         await self._claim(uow, conversation.id, tenant_id)  # first agent wins
         with pytest.raises(ConversationAlreadyClaimedError):
             await self._claim(uow, conversation.id, tenant_id)  # second loses
+
+
+class TestOmittedFieldsAreKept:
+    """The console's save never sent retention or time zone, and the request
+    defaulted them to 30 and "UTC" -- so saving *any* other setting silently
+    reset both. Omitted now means "keep what is stored"."""
+
+    async def _stored(self, uow: FakeAiResourceUnitOfWork, tenant_id: UUID, **fields: object):
+        await UpdateChatbotSettings(lambda _a, _t: uow, _FixedClock()).execute(  # type: ignore[arg-type,return-value]
+            dataclasses.replace(_command(tenant_id, daily_limit=None), **fields)
+        )
+
+    async def test_an_unrelated_save_keeps_retention_and_time_zone(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        _with_ceiling(uow, tenant_id, None)
+        await self._stored(uow, tenant_id, conversation_retention_days=90, quota_timezone="Europe/London")
+
+        # The console's Company-tab save: neither field sent.
+        await self._stored(uow, tenant_id, company_description="Updated.")
+
+        saved = await uow.chatbot_settings.get_for_tenant(tenant_id)
+        assert saved is not None
+        assert (saved.conversation_retention_days, saved.quota_timezone) == (90, "Europe/London")
+
+    async def test_a_new_tenant_gets_the_defaults(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        _with_ceiling(uow, tenant_id, None)
+        await self._stored(uow, tenant_id)
+        saved = await uow.chatbot_settings.get_for_tenant(tenant_id)
+        assert saved is not None
+        assert (saved.conversation_retention_days, saved.quota_timezone) == (30, "UTC")
+
+
+class TestTimeZoneChoice:
+    async def test_a_mistyped_zone_is_refused_rather_than_silently_used_as_utc(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        _with_ceiling(uow, tenant_id, None)
+        with pytest.raises(ChatbotSettingsInvalidError):
+            await UpdateChatbotSettings(lambda _a, _t: uow, _FixedClock()).execute(  # type: ignore[arg-type,return-value]
+                dataclasses.replace(_command(tenant_id, daily_limit=None), quota_timezone="Europe/Londn")
+            )
+
+    async def test_a_real_zone_is_saved(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        _with_ceiling(uow, tenant_id, None)
+        await UpdateChatbotSettings(lambda _a, _t: uow, _FixedClock()).execute(  # type: ignore[arg-type,return-value]
+            dataclasses.replace(_command(tenant_id, daily_limit=None), quota_timezone="Asia/Dhaka")
+        )
+        saved = await uow.chatbot_settings.get_for_tenant(tenant_id)
+        assert saved is not None and saved.quota_timezone == "Asia/Dhaka"
+
+    async def test_a_stored_zone_gone_stale_does_not_block_other_settings(self) -> None:
+        uow = FakeAiResourceUnitOfWork()
+        tenant_id = uuid4()
+        _with_ceiling(uow, tenant_id, None)
+        await UpdateChatbotSettings(lambda _a, _t: uow, _FixedClock()).execute(  # type: ignore[arg-type,return-value]
+            _command(tenant_id, daily_limit=None)
+        )
+        stale = await uow.chatbot_settings.get_for_tenant(tenant_id)
+        assert stale is not None
+        stale.quota_timezone = "Mars/Olympus_Mons"  # renamed out of the IANA list
+        await uow.chatbot_settings.upsert(stale)
+
+        await UpdateChatbotSettings(lambda _a, _t: uow, _FixedClock()).execute(  # type: ignore[arg-type,return-value]
+            dataclasses.replace(
+                _command(tenant_id, daily_limit=None), quota_timezone="Mars/Olympus_Mons"
+            )
+        )

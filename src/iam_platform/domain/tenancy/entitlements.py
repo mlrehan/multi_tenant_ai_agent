@@ -119,6 +119,31 @@ class TenantEntitlements(Entity):
         return min(tenant_preference, self.max_messages_per_day)
 
 
+#: Usage alert thresholds, in percent of an allowance. One definition for the
+#: tenant's plan and the operator's overview, so both are warned at the same
+#: moment -- a copy per screen drifts the first time one is edited.
+USAGE_ALERT_LEVELS = (80, 90, 95, 100)
+
+
+def usage_alert_level(*, used: int | None, limit: int | None) -> int | None:
+    """The highest threshold `used` has reached, or `None` below the first.
+
+    `None` on either side is not an alert: an uncapped allowance cannot run
+    out, and an unreadable counter is unknown rather than alarming -- flagging
+    on a failed read would cry wolf whenever Redis blinked.
+
+    A limit of `0` is a real limit meaning "none at all", so it reads as
+    exhausted rather than as a division error. Integer arithmetic throughout,
+    so 80% of 1,000,000 is exactly 800,000 and not 799,999.9999.
+    """
+    if used is None or limit is None:
+        return None
+    if limit <= 0:
+        return 100
+    reached = [level for level in USAGE_ALERT_LEVELS if used * 100 >= level * limit]
+    return reached[-1] if reached else None
+
+
 def _within(current: int, limit: int | None) -> bool:
     """`None` => uncapped. Otherwise room for one more."""
     return True if limit is None else current < limit

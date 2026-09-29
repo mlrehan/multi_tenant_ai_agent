@@ -27,6 +27,7 @@ from typing import Protocol
 from uuid import UUID, uuid4
 
 from iam_platform.application.ai_resources.exceptions import (
+    ChatWidgetInvalidError,
     EntitlementExceededError,
     FeatureNotEntitledError,
 )
@@ -107,6 +108,46 @@ async def resolve_daily_message_limit(
         settings.daily_message_limit if settings else None
     )
     return limit
+
+
+async def guard_widget_daily_limit(
+    uow: AiResourceUnitOfWork,
+    *,
+    tenant_id: UUID,
+    requested: int,
+    clock: Clock,
+    current: int | None = None,
+) -> None:
+    """Refuses a widget cap above the tenant's platform daily message ceiling.
+
+    Every widget answer also spends from the tenant-wide counter, so a widget
+    set to 500 on a plan of 100 can never answer its 101st question -- the
+    number on the screen would be a promise the platform does not keep. This
+    makes the stored value one that can actually be reached.
+
+    **The platform ceiling, not the tenant's own lower preference.** The
+    preference is the tenant's to move up and down, and tying widget caps to
+    it would make lowering one number silently invalidate others. The lower
+    of all three still wins at answer time.
+
+    **An unchanged value is accepted** (`current`). A cap stored before this
+    rule existed, or before the platform lowered the ceiling, must not block
+    an edit that only touches the website list -- "a limit governs creation,
+    never existence". The admin is refused only when choosing a new number.
+
+    Combined use across widgets is not validated as a sum here: widgets share
+    one tenant-wide counter, which is enforced atomically at answer time, so
+    the tenant total cannot exceed the ceiling whatever the caps add up to.
+    """
+    if current is not None and requested == current:
+        return
+    entitlements = await resolve_entitlements(uow, tenant_id=tenant_id, clock=clock)
+    ceiling = entitlements.max_messages_per_day
+    if ceiling is not None and requested > ceiling:
+        raise ChatWidgetInvalidError(
+            f"questions per day can be at most {ceiling:,}: that is your "
+            f"organisation's daily message limit, shared by all its chatbots"
+        )
 
 
 async def guard_knowledge_base_quota(

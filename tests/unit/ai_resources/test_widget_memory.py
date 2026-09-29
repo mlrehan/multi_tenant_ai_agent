@@ -55,7 +55,7 @@ class _FakeLookup:
 
 
 class _AlwaysWithinQuota:
-    async def consume(self, *, widget_id: UUID, limit: int) -> bool:
+    async def consume(self, *, widget_id: UUID, limit: int, **kwargs: object) -> bool:
         return True
 
 

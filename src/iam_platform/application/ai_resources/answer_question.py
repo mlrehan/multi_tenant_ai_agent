@@ -60,11 +60,19 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, tzinfo
 from typing import Any
 from uuid import UUID, uuid4
 
+from iam_platform.application.ai_resources.answer_gate import (
+    WITHHELD_REPLY,
+    HeldText,
+    has_marker,
+    outcome_of,
+    should_withhold,
+    strip_marker,
+)
 from iam_platform.application.ai_resources.authorize import (
     load_visible_assistant,
     load_visible_knowledge_base,
@@ -105,7 +113,13 @@ from iam_platform.application.ai_resources.ports import (
     RetrievedChunk,
     TokenUsage,
     TokenUsageStore,
+    UsageEvent,
+    UsageLedger,
     VectorSearchClient,
+)
+from iam_platform.application.ai_resources.prompt_layers import (
+    PromptLayers,
+    build_system_prompt,
 )
 from iam_platform.application.ai_resources.requester import build_requester_context
 from iam_platform.core.clock import Clock, SystemClock
@@ -175,6 +189,8 @@ GROUNDING AND SOURCE-OF-TRUTH
 - Cite every factual claim taken from supplied sources with its source label in square brackets, for example [1]. A sentence supported by more than one source must cite each relevant label, for example [1][3].
 - Never fabricate, infer, or recycle a citation label. A citation may refer only to a source label actually supplied in the current grounding context.
 - If the approved sources do not contain enough information to answer safely and accurately, say so plainly. Do not guess, interpolate from adjacent facts, fill gaps from general knowledge, or present assumptions as facts.
+- Whenever the approved sources do not answer the visitor's actual question, begin your reply with the exact marker [NO_ANSWER] before any other text. The platform removes it before the visitor sees the reply and uses it to show the nursery which questions its sources do not cover. After it, say plainly that you cannot confirm the answer; you may still add related information that the sources do support, cited as usual (for example, how to contact the nursery). Never use the marker when the sources do answer the question, and never for questions about yourself — who you are or what you can help with — which you answer from the tenant-configured role below without the marker or any "cannot confirm" preface.
+- When you decline or redirect a question because of the tenant-configured additional restrictions below — not because the sources lack the answer — begin your reply with the exact marker [RESTRICTED] instead of [NO_ANSWER]. The platform removes it before the visitor sees the reply. It tells the nursery that you withheld the answer on purpose, so the question is not listed as missing from their sources.
 - When approved sources conflict, do not silently choose whichever answer seems plausible. State briefly that the information cannot be confirmed from the available sources and, where appropriate, recommend human confirmation.
 - Conversation history is continuity context only. It is not an authoritative nursery source and must never be cited as one.
 - Current regulatory or statutory information must come from approved, current, version-controlled sources supplied by the platform. Do not rely on remembered knowledge of EYFS, safeguarding, SEND, funded childcare, Ofsted, data protection, ratios, qualification requirements, local-authority arrangements, or other changing requirements.
@@ -364,6 +380,12 @@ class Citation:
     chunk_id: UUID
     source_location: str | None
     relevance: float
+    #: The document's title and, for a crawled page, its URL. Filled by one
+    #: best-effort lookup after retrieval (see `_with_titles`) and `None` if it
+    #: could not be made -- a missing title costs a source card its name, never
+    #: the answer.
+    title: str | None = None
+    source_url: str | None = None
 
 
 @dataclass
@@ -380,6 +402,18 @@ class AnswerStream:
     tokens: AsyncIterator[str]
     #: Populated as tokens stream; only labels that were genuinely offered.
     cited_labels: set[str] = field(default_factory=set)
+    #: How it turned out -- `no_sources`, `grounded`, `uncited` (shown without
+    #: a citation because it was exempt), `not_in_sources` (the model declared
+    #: the sources don't answer it), `restricted` (declined because of the
+    #: tenant's avoid rules) or `withheld` (replaced, see `answer_gate`) --
+    #: set once known: before the first token for
+    #: `no_sources`, after the last for the rest. Stored on the assistant turn
+    #: for the "couldn't answer" feed.
+    outcome: str | None = None
+    #: What the answer cost, filled in as it streams; None when unmetered.
+    #: Read by a caller that persists the exchange itself (the widget), so
+    #: its stored turn carries the same figure the ledger does.
+    usage: TokenUsage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +461,7 @@ class AnswerQuestion:
         *,
         token_usage: TokenUsageStore | None = None,
         tenant_quota: Any | None = None,
+        usage_ledger: UsageLedger | None = None,
         clock: Clock | None = None,
         retrieve_candidates: int = DEFAULT_RETRIEVE_CANDIDATES,
         context_passages: int = DEFAULT_CONTEXT_PASSAGES,
@@ -448,6 +483,10 @@ class AnswerQuestion:
         # is every widget answer -- reaches the second and not the first, so
         # metering only the first left widget traffic uncounted everywhere.
         self._tenant_quota = tenant_quota
+        # The durable record behind both counters above. Redis is what the
+        # answer path reads; this is what Redis is rebuilt from when it loses
+        # a key, and what a bill is reconciled against.
+        self._usage_ledger = usage_ledger
         self._clock = clock or SystemClock()
         self._retrieve_candidates = retrieve_candidates
         self._context_passages = context_passages
@@ -672,6 +711,42 @@ class AnswerQuestion:
         )
         return conversation, tail
 
+    async def _with_titles(
+        self, tenant_id: UUID | None, citations: list[Citation]
+    ) -> list[Citation]:
+        """Attaches each cited document's title and URL, for source cards.
+
+        Several passages usually come from one document -- five chunks of one
+        web page is ordinary -- and without the document's own name a reader
+        is shown the same raw URL five times. The chunks do not carry a title
+        (the vector payload holds only ids and text), so it is read once per
+        answer, for the distinct documents only.
+
+        **Best effort, deliberately.** This runs on the answer path, and a
+        failed lookup must not cost anyone their answer: it is logged and the
+        citations go out without titles, exactly as they did before this
+        existed. The read is tenant-scoped like every other.
+        """
+        if tenant_id is None or not citations:
+            return citations
+        try:
+            async with self._uow_factory(_ANONYMOUS_ACTOR, tenant_id) as uow:
+                described = await uow.documents.describe_many(
+                    list(dict.fromkeys(c.document_id for c in citations))
+                )
+        except Exception:
+            logger.warning(
+                "source titles unavailable for tenant %s; answering without them",
+                tenant_id,
+            )
+            return citations
+        return [
+            replace(c, title=described[c.document_id][0], source_url=described[c.document_id][1])
+            if c.document_id in described
+            else c
+            for c in citations
+        ]
+
     def _meter_for(
         self, tenant_id: UUID | None, model_configuration_id: UUID | None
     ) -> TokenUsage | None:
@@ -687,7 +762,7 @@ class AnswerQuestion:
         """
         if tenant_id is None:
             return None
-        if self._tenant_quota is not None:
+        if self._tenant_quota is not None or self._usage_ledger is not None:
             return TokenUsage()
         if self._token_usage is not None and model_configuration_id is not None:
             return TokenUsage()
@@ -888,6 +963,7 @@ class AnswerQuestion:
         credential_ciphertext: bytes | None = None,
         memory: ConversationMemory | None = None,
         turn: _PendingTurn | None = None,
+        channel: str = "console",
     ) -> AnswerStream:
         """Retrieve, rerank, ground -- the pipeline, with authorization already
         settled by the caller.
@@ -917,6 +993,9 @@ class AnswerQuestion:
         `credential_ciphertext` bills the tenant's own provider account instead
         of the platform's. Passed through still encrypted -- this layer never
         holds the key in plaintext.
+
+        `channel` labels the ledger row -- "console" or "widget" -- so usage
+        can be split by where it was spent. It changes nothing else.
         """
         # **The tenant's own monthly allowance, checked before anything is
         # spent.** This sits here rather than in `execute` because both front
@@ -966,25 +1045,93 @@ class AnswerQuestion:
                 context, [r.relevance for r in reranked], strict=True
             )
         ]
+        citations = await self._with_titles(tenant_id, citations)
 
-        stream = AnswerStream(citations=citations, tokens=_empty())
+        stream = AnswerStream(citations=citations, tokens=_empty(), usage=meter)
         if not context:
+            stream.outcome = "no_sources"
             # Refused before the model is reached. See the module docstring:
             # an empty context is an invitation to answer from training data.
             refusal = "I don't have anything in this knowledge base that answers that."
             stream.tokens = _single(refusal)
+            # Still recorded: the question consumed a daily message and paid
+            # for an embedding. Skipping it left both unrecorded, and a ledger
+            # missing it could not rebuild the day's message count.
+            await self._record_usage(
+                tenant_id=tenant_id,
+                model_configuration_id=model_configuration_id,
+                meter=meter,
+                channel=channel,
+            )
             if turn is not None:
-                await self._append_turn(turn, question=question, answer=refusal)
+                await self._append_turn(
+                    turn,
+                    question=question,
+                    answer=refusal,
+                    tokens=meter.total if meter is not None else 0,
+                    answer_status="no_sources",
+                )
             return stream
 
+        # The tenant's own chatbot brief, beneath the platform policy. Read
+        # here -- the one point both front doors share -- and only once the
+        # model is actually going to be called.
+        system_prompt = await self._with_tenant_layers(tenant_id, system_prompt)
         stream.tokens = self._stream_and_track(
             question, context, stream,
             model_name=model_name, model_parameters=model_parameters, system_prompt=system_prompt,
             tenant_id=tenant_id, model_configuration_id=model_configuration_id,
             credential_ciphertext=credential_ciphertext,
-            memory=memory, turn=turn, meter=meter,
+            memory=memory, turn=turn, meter=meter, channel=channel,
         )
         return stream
+
+    async def _with_tenant_layers(self, tenant_id: UUID | None, base: str) -> str:
+        """`base` with the tenant's chatbot configuration layered beneath it.
+
+        Everything a tenant sets on the AI Chatbot page -- role, avoid rules,
+        personality, response length, company context -- and whether a
+        transfer to a person really exists. Until this was wired in, all of it
+        was stored and never sent: `build_system_prompt` had no caller, so
+        every tenant's answers came from the bare platform policy, which even
+        told the model to follow "the handoff configuration appended below"
+        with nothing appended.
+
+        The layers go *under* the platform policy, never in place of it, and
+        each introduces itself as unable to override what is above
+        (`prompt_layers`). A handoff is described as available only when the
+        tenant allows it *and* an active team has someone in it -- the same
+        rule the widget uses to offer one, so the model and the widget cannot
+        disagree.
+
+        **Fails open to the platform policy alone**, which is what every answer
+        used before this existed. The platform rules are the safety floor; a
+        settings read that fails must not take the chatbot down. Logged, so a
+        persistent failure is visible.
+        """
+        if tenant_id is None:
+            return base
+        try:
+            # Any id fills `app.user_id` for RLS; the tenant scope is what
+            # confines every read, and a widget visitor has no user anyway.
+            async with self._uow_factory(uuid4(), tenant_id) as uow:
+                settings = await uow.chatbot_settings.get_for_tenant(tenant_id)
+                display_name = await uow.chatbot_settings.tenant_display_name(tenant_id)
+                active = await uow.teams.list_for_tenant(tenant_id, active_only=True)
+                staffed = await uow.teams.staffed_team_ids(tenant_id=tenant_id)
+        except Exception:
+            logger.warning(
+                "chatbot settings unavailable for tenant %s; answering with the "
+                "platform policy only",
+                tenant_id,
+            )
+            return base
+        layers = PromptLayers.from_settings(
+            settings,
+            tenant_display_name=display_name or "",
+            teams_configured=any(team.id in staffed for team in active),
+        )
+        return build_system_prompt(base, layers)
 
     async def _stream_and_track(
         self,
@@ -1001,12 +1148,20 @@ class AnswerQuestion:
         memory: ConversationMemory | None = None,
         turn: _PendingTurn | None = None,
         meter: TokenUsage | None = None,
+        channel: str = "console",
     ) -> AsyncIterator[str]:
         # The meter arrives already carrying the embedding's cost -- see
         # `answer_from_namespace`. It is not created here any more, because a
         # meter created after retrieval can only ever see half the bill.
         offered = {item.label for item in context}
-        buffer = ""
+        # `raw` is everything the model wrote; `shown` is what the caller was
+        # actually given. They differ by the marker, and entirely when an
+        # uncited answer is withheld -- see `answer_gate`.
+        raw = ""
+        shown = ""
+        held = HeldText()
+        released = False
+        withheld = False
         try:
             async for piece in self._chat_model.stream_answer(
                 question=_with_memory(question, memory),
@@ -1017,43 +1172,59 @@ class AnswerQuestion:
                 usage=meter,
                 credential_ciphertext=credential_ciphertext,
             ):
-                buffer += piece
+                raw += piece
                 # Labels are recorded only if they were genuinely offered. A
                 # model that invents "[9]" produces no citation rather than a
                 # link to something that was never sent -- the fabrication
                 # becomes visible instead of plausible.
-                for label in _CITATION_PATTERN.findall(buffer):
+                for label in _CITATION_PATTERN.findall(raw):
                     if label in offered:
                         stream.cited_labels.add(label)
-                yield piece
+                held.push(piece)
+                # **Nothing is released until the answer cites a real
+                # passage.** Once it has, the rest streams as it arrives.
+                released = released or bool(stream.cited_labels)
+                if released:
+                    out = held.take()
+                    if not shown:
+                        out = out.lstrip()
+                    if out:
+                        shown += out
+                        yield out
+            # The model has finished. An answer that never cited anything is
+            # shown only if it declared why it could not answer (a marker) or
+            # is exempt;
+            # otherwise it did not come from the tenant's sources and the
+            # visitor gets `WITHHELD_REPLY` instead.
+            rest = held.take(final=True)
+            if not released:
+                rest = rest.strip()
+                if not has_marker(raw) and should_withhold(question, rest):
+                    withheld = True
+                    rest = WITHHELD_REPLY
+            elif not shown:
+                rest = rest.lstrip()
+            if rest:
+                shown += rest
+                yield rest
         finally:
+            # Decided from what the model actually cited and declared, never
+            # from its wording: an answer that cites nothing did not come from
+            # the tenant's sources, however confident it sounds.
+            stream.outcome = outcome_of(
+                raw=raw, cited=bool(stream.cited_labels), withheld=withheld
+            )
             # `finally`, so an answer the caller abandoned halfway is still
             # billed for what it consumed. The provider charges for tokens it
             # generated whether or not anyone read them, and a budget that only
             # counted completed reads would be trivially avoidable by
             # disconnecting.
-            if meter is not None and meter.total > 0:
-                assert tenant_id is not None  # implied by `meter`
-                # Per-configuration, for budget enforcement. Only when the
-                # answer actually resolved one.
-                if self._token_usage is not None and model_configuration_id is not None:
-                    await self._token_usage.record(
-                        tenant_id=tenant_id,
-                        model_configuration_id=model_configuration_id,
-                        tokens=meter.total,
-                    )
-                # Per-tenant, for the dashboards. **Fails open**, like every
-                # other recording path: the money is already spent, and raising
-                # here would show an error for an answer that succeeded.
-                if self._tenant_quota is not None:
-                    try:
-                        await self._tenant_quota.record_tokens(
-                            tenant_id=tenant_id, usage=meter
-                        )
-                    except Exception:
-                        logger.warning(
-                            "tenant token usage could not be recorded for %s", tenant_id
-                        )
+            await self._record_usage(
+                tenant_id=tenant_id,
+                model_configuration_id=model_configuration_id,
+                meter=meter,
+                channel=channel,
+            )
             # Same `finally`, same reason: an abandoned answer was still
             # generated, and a thread that silently drops it would show the
             # question with no reply and re-ask it with no memory of having
@@ -1062,7 +1233,10 @@ class AnswerQuestion:
                 await self._append_turn(
                     turn,
                     question=question,
-                    answer=buffer,
+                    # What the person was shown. An answer abandoned before it
+                    # was released showed nothing, so its (marker-free) text
+                    # is kept instead of an empty reply.
+                    answer=shown or strip_marker(raw).strip(),
                     # Only labels the model *used*, not everything offered:
                     # reopening a thread should show what the answer drew on,
                     # and the full candidate set would misrepresent that.
@@ -1070,6 +1244,68 @@ class AnswerQuestion:
                         c for c in stream.citations if c.label in stream.cited_labels
                     ],
                     tokens=meter.total if meter is not None else 0,
+                    answer_status=stream.outcome,
+                )
+
+    async def _record_usage(
+        self,
+        *,
+        tenant_id: UUID | None,
+        model_configuration_id: UUID | None,
+        meter: TokenUsage | None,
+        channel: str,
+    ) -> None:
+        """Records one answer's cost: Redis counters first, then the ledger.
+
+        **Every step fails open.** The person already has their answer and the
+        provider has already been paid; raising here would show an error for
+        work that succeeded, and would not un-spend the money.
+
+        **Redis before the ledger, deliberately.** A counter whose key is
+        missing seeds itself from the ledger before incrementing. Written the
+        other way round, this answer's row would already be in the ledger when
+        the seed read it, and the increment would then count it a second time.
+        """
+        if tenant_id is None or meter is None:
+            return
+        if meter.total > 0:
+            # Per-configuration, for budget enforcement. Only when the answer
+            # actually resolved one.
+            if self._token_usage is not None and model_configuration_id is not None:
+                await self._token_usage.record(
+                    tenant_id=tenant_id,
+                    model_configuration_id=model_configuration_id,
+                    tokens=meter.total,
+                )
+            # Per-tenant, for the dashboards and the tenant-wide allowance.
+            if self._tenant_quota is not None:
+                try:
+                    await self._tenant_quota.record_tokens(tenant_id=tenant_id, usage=meter)
+                except Exception:
+                    logger.warning(
+                        "tenant token usage could not be recorded for %s", tenant_id
+                    )
+        # One row per answer even when the provider reported no cost: the row
+        # is also what the day's message count is rebuilt from.
+        if self._usage_ledger is not None:
+            try:
+                await self._usage_ledger.record(
+                    UsageEvent(
+                        tenant_id=tenant_id,
+                        channel=channel,
+                        model_configuration_id=model_configuration_id,
+                        input_tokens=meter.input_tokens,
+                        output_tokens=meter.output_tokens,
+                        total_tokens=meter.billable,
+                        occurred_at=self._clock.now(),
+                        embedding_tokens=meter.embedding_tokens,
+                        chat_model=meter.chat_model,
+                        embedding_model=meter.embedding_model,
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "usage ledger row could not be written for tenant %s", tenant_id
                 )
 
     async def _append_turn(
@@ -1080,6 +1316,7 @@ class AnswerQuestion:
         answer: str,
         citations: list[Citation] | None = None,
         tokens: int = 0,
+        answer_status: str | None = None,
     ) -> None:
         """Writes both halves of the exchange, and compacts if the thread has
         grown past the verbatim window.
@@ -1124,6 +1361,7 @@ class AnswerQuestion:
                             # and splitting it across the question and the
                             # answer would be a guess presented as a fact.
                             token_count=tokens,
+                            answer_status=answer_status,
                         ),
                     ]
                 )

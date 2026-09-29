@@ -26,6 +26,7 @@ from iam_platform.core.config import Settings
 from iam_platform.infrastructure.cache.conversation_events import (
     RedisConversationEventPublisher,
 )
+from iam_platform.infrastructure.cache.ingestion_progress import RedisIngestionProgressStore
 from iam_platform.infrastructure.cache.mfa_challenge_store import RedisMfaChallengeStore
 from iam_platform.infrastructure.cache.oauth_state_store import RedisOAuthStateStore
 from iam_platform.infrastructure.cache.rate_limiter import RedisRateLimiter
@@ -53,6 +54,7 @@ from iam_platform.infrastructure.db.unit_of_work import (
     SqlPlatformUnitOfWork,
     SqlTenantUnitOfWork,
 )
+from iam_platform.infrastructure.db.usage_ledger import SqlUsageLedger
 from iam_platform.infrastructure.email.console_sender import (
     ConsoleEmailSender,
     ConsoleInvitationEmailSender,
@@ -120,6 +122,10 @@ async def build_container(settings: Settings) -> AppContainer:
         settings.encryption.data_key.get_secret_value()
     )
 
+    # On the RLS-subject engine: every ledger query is confined to the tenant
+    # it names by the database itself, not only by its own WHERE clause.
+    usage_ledger = SqlUsageLedger(session_factory)
+
     oauth_providers: dict[str, OAuthProvider] = {}
     if settings.oauth_google.enabled:
         oauth_providers["google"] = GoogleOAuthProvider(settings.oauth_google, http_client)
@@ -172,9 +178,13 @@ async def build_container(settings: Settings) -> AppContainer:
         # No configuration knob: an indicator that silently did nothing would
         # be indistinguishable from nobody typing.
         typing_indicators=RedisTypingIndicatorStore(redis),
-        token_usage=RedisTokenUsageStore(redis),
-        tenant_quota=RedisTenantQuotaStore(redis),
+        # Both seed a missing key from the ledger, so a Redis restart can no
+        # longer hand a tenant a fresh allowance or zero the dashboards.
+        token_usage=RedisTokenUsageStore(redis, ledger=usage_ledger),
+        tenant_quota=RedisTenantQuotaStore(redis, ledger=usage_ledger),
+        usage_ledger=usage_ledger,
         conversation_events=RedisConversationEventPublisher(redis),
+        ingestion_progress=RedisIngestionProgressStore(redis),
         web_push=build_web_push_sender(settings.push),
         widget_token_service=WidgetTokenService(settings.jwt),
         # Cohere absent degrades ranking quality; OpenAI absent makes an answer

@@ -167,6 +167,15 @@ class DocumentResponse(BaseModel):
     #: memory -- nothing in the console showed it. That is what this is for.
     chunk_count: int
     created_at: datetime
+    #: Live pipeline stage while `processing` (and the stage reached when it
+    #: `failed`): extracting, chunking, embedding or indexing. `None` while a
+    #: document is still waiting for a worker, or when progress is
+    #: unavailable -- a console shows plain status then.
+    stage: Literal["extracting", "chunking", "embedding", "indexing"] | None = None
+    #: 0-100 across the whole pipeline.
+    progress_percent: int | None = None
+    #: e.g. "120 of 466 passages".
+    stage_detail: str | None = None
 
 
 class DocumentListResponse(BaseModel):
@@ -270,11 +279,33 @@ class ChatWidgetResponse(BaseModel):
     status: Literal["active", "disabled"]
     daily_question_limit: int
     created_at: datetime
+    #: Install check -- see migration a9d7c2e4f1b3.
+    last_seen_at: datetime | None = None
+    last_seen_origin: str | None = None
+    last_refused_at: datetime | None = None
+    last_refused_origin: str | None = None
     #: Built server-side from `public_api_base_url`. The console has no way to
     #: derive it (no NEXT_PUBLIC backend origin exists, by design), and one
     #: builder means the snippet a tenant copies cannot drift from the URL the
     #: script is actually served at.
     embed_snippet: str
+
+
+class AnswerFeedbackRequest(BaseModel):
+    """A rating of one answer from the Ask panel.
+
+    `question` and `answer` are what the rater saw -- the Ask panel is
+    stateless, so nothing else records them. Bounds mirror the table's CHECKs.
+    """
+
+    rating: Literal["up", "down"]
+    question: str = Field(min_length=1, max_length=4000)
+    answer: str = Field(min_length=1, max_length=20000)
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+class AnswerFeedbackResponse(BaseModel):
+    id: UUID
 
 
 class UpdateChatWidgetRequest(BaseModel):
@@ -354,6 +385,10 @@ class ConversationResponse(BaseModel):
     status: Literal["active", "archived"]
     created_at: datetime
     last_message_at: datetime | None
+    #: Who replies next -- `ai_active`, `handoff_requested`, `unassigned`,
+    #: `assigned`, `human_active` or `resolved`. `status` only says whether the
+    #: thread is in the list; this is what an administrator scanning it needs.
+    state: str | None = None
 
 
 class ConversationMessageResponse(BaseModel):
@@ -420,3 +455,23 @@ class ConversationListResponse(BaseModel):
 # surface: the platform owns every credential now, so a tenant has nothing to
 # store, rotate, revoke or attach and therefore no request or response shape
 # to carry one.
+
+
+class AnswerFeedbackItem(BaseModel):
+    id: UUID
+    rating: Literal["up", "down"]
+    question: str
+    answer: str
+    comment: str | None
+    channel: Literal["website", "console"]
+    knowledge_base_name: str | None
+    created_at: datetime
+
+
+class AnswerFeedbackListResponse(BaseModel):
+    items: list[AnswerFeedbackItem]
+    #: Matching the current filters -- what paging counts.
+    total: int
+    #: Tenant-wide, unfiltered: the headline numbers.
+    helpful: int
+    not_helpful: int

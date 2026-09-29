@@ -18,7 +18,7 @@ nothing.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from uuid import UUID
 
 from redis.asyncio import Redis
@@ -35,9 +35,16 @@ class RedisWidgetQuotaStore:
     def __init__(self, redis: Redis) -> None:
         self._redis = redis
 
-    async def consume(self, *, widget_id: UUID, limit: int) -> bool:
-        """Records one question; returns whether it was within today's limit."""
-        key = f"widget-quota:{widget_id}:{datetime.now(UTC):%Y-%m-%d}"
+    async def consume(
+        self, *, widget_id: UUID, limit: int, zone: tzinfo | None = None
+    ) -> bool:
+        """Records one question; returns whether it was within today's limit.
+
+        "Today" is the tenant's quota day (`zone`), the same one the
+        tenant-wide counter uses -- otherwise the two caps on one question
+        would reset at different midnights. `None` keeps UTC.
+        """
+        key = f"widget-quota:{widget_id}:{datetime.now(zone or UTC):%Y-%m-%d}"
         try:
             pipe = self._redis.pipeline()
             pipe.incr(key)
@@ -54,7 +61,16 @@ class RedisWidgetQuotaStore:
                 widget_id,
             )
             return False
-        return int(count) <= limit
+        if int(count) <= limit:
+            return True
+        # A refused question hands its increment back, so the counter means
+        # "questions this widget took today" and a limit raised mid-day takes
+        # effect at once. Same reasoning as the tenant counter.
+        try:
+            await self._redis.decr(key)
+        except Exception:
+            logger.warning("could not return a refused widget reservation for %s", widget_id)
+        return False
 
 
 class UnlimitedWidgetQuotaStore:
@@ -68,7 +84,7 @@ class UnlimitedWidgetQuotaStore:
     def __init__(self) -> None:
         self.consumed: list[UUID] = []
 
-    async def consume(self, *, widget_id: UUID, limit: int) -> bool:
-        del limit
+    async def consume(self, *, widget_id: UUID, limit: int, **kwargs: object) -> bool:
+        del limit, kwargs
         self.consumed.append(widget_id)
         return True

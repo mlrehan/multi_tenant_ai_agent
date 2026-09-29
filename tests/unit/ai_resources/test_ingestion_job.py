@@ -55,13 +55,14 @@ class _FakeResult:
 class _FakeSession:
     """Records SQL and answers the handful of reads the job makes."""
 
-    def __init__(self, *, document_missing: bool = False) -> None:
+    def __init__(self, *, document_missing: bool = False, source_url: str | None = None) -> None:
         self.statements: list[str] = []
         #: Bound parameters, so a test can assert on the *value* written and
         #: not merely that some UPDATE ran. `failure_reason` is shown verbatim
         #: to the tenant, which makes its content worth asserting.
         self.parameters: list[dict[str, Any]] = []
         self._document_missing = document_missing
+        self._source_url = source_url
 
     async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _FakeResult:
         sql = " ".join(str(statement).split())
@@ -79,7 +80,9 @@ class _FakeSession:
         if "FROM documents d" in sql:
             if self._document_missing:
                 return _FakeResult(None)
-            return _FakeResult((KB_ID, "report.csv", "text/csv", "t/kb/doc", NAMESPACE))
+            return _FakeResult(
+                (KB_ID, "report.csv", "text/csv", "t/kb/doc", NAMESPACE, self._source_url)
+            )
         return _FakeResult(None)
 
     async def __aenter__(self) -> _FakeSession:
@@ -136,10 +139,10 @@ class _FakeParser:
 class _FakeEmbeddings:
     dimensions = 4
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, **kwargs: object) -> list[float]:
         return [1.0, 0.0, 0.0, 0.0]
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch(self, texts: list[str], **kwargs: object) -> list[list[float]]:
         return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
 
 
@@ -158,7 +161,9 @@ class _FakeVectorSearch:
     async def delete_document(self, *, namespace: str, document_id: UUID) -> None:
         self.deleted_documents.append(document_id)
 
-    async def query(self, *, namespace: str, query_text: str, top_k: int) -> list[Any]:
+    async def query(
+        self, *, namespace: str, query_text: str, top_k: int, **kwargs: object
+    ) -> list[Any]:
         return []
 
 
@@ -430,3 +435,41 @@ class TestEmptyDocuments:
             if "status = 'ready'" in s or "status = 'failed'" in s
         ]
         assert terminal, "the document must reach a terminal status"
+
+
+class TestACrawledPageIsReindexedFromItsMarkdown:
+    """Retry on a crawled page used to fail every time: the upload parser
+    identifies text by extension, and a crawled page is named after its title."""
+
+    async def test_the_stored_markdown_is_indexed_without_the_upload_parser(self) -> None:
+        session = _FakeSession(source_url="https://site.example/offers")
+        vectors = _FakeVectorSearch()
+        refusing_parser = _FakeParser(error=AssertionError("the upload parser must not run"))
+
+        await process_document_upload(
+            _factory(session),
+            _dependencies(
+                object_storage=_FakeStorage(b"# Offers\n\nTen percent off for teachers."),
+                parser=refusing_parser,
+                vector_search=vectors,
+            ),
+            tenant_id=TENANT_ID,
+            actor_user_id=ACTOR_ID,
+            document_id=DOCUMENT_ID,
+        )
+
+        assert any("status = 'ready'" in s for s in session.statements)
+        (chunk,) = vectors.upserted
+        assert "Ten percent off for teachers." in chunk.text
+        assert chunk.metadata["source_location"] == "https://site.example/offers"
+
+    async def test_an_uploaded_file_still_goes_through_the_parser(self) -> None:
+        session = _FakeSession(source_url=None)
+        await process_document_upload(
+            _factory(session),
+            _dependencies(parser=_FakeParser(error=DocumentParseError("parser ran"))),
+            tenant_id=TENANT_ID,
+            actor_user_id=ACTOR_ID,
+            document_id=DOCUMENT_ID,
+        )
+        assert any(p.get("reason") == "parser ran" for p in session.parameters)

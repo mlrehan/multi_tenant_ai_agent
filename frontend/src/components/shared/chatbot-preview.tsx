@@ -106,8 +106,13 @@ export function ChatbotPreview(props: PreviewProps) {
         ) : (
           <>
             <Bubble side="bot">
+              {/* Worded exactly as widget.js's default greeting: this is a
+                  preview, and it read "the Nursery Support Assistant
+                  assistant" while visitors saw something else. */}
               {greeting?.trim() ||
-                `Hello! I'm the ${chatbotName || "nursery"} assistant. How can I help?`}
+                (chatbotName?.trim()
+                  ? `Hello! I'm the ${chatbotName.trim()}. How can I help?`
+                  : "Hello! How can I help?")}
             </Bubble>
             {showQuickReplies && (
               <div className="flex flex-wrap gap-1.5">

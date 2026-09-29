@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
+import { useTenantPlan } from "@/features/chatbot/hooks";
+import { useMyAccount } from "@/features/auth/hooks";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -64,6 +66,11 @@ export default function MembersPage({ params }: { params: Promise<{ tenantId: st
   const { data: members, isLoading, error } = useTenantMembers(tenantId);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  // The plan decides whether this tenant may add people at all -- for both
+  // doors, invitation and direct add. `=== false`, not falsy: an unread plan
+  // leaves the buttons usable and the server (409/403) is the real gate.
+  const plan = useTenantPlan(tenantId);
+  const addingWithheld = plan.data?.allow_invite_members === false;
 
   return (
     <div>
@@ -72,15 +79,23 @@ export default function MembersPage({ params }: { params: Promise<{ tenantId: st
         description="Everyone with a membership in this tenant, and the roles they hold."
         actions={
           <div className="flex items-center gap-2">
+            {addingWithheld && (
+              <span className="text-xs text-muted-foreground">
+                Your plan doesn&rsquo;t include adding members. Ask your platform
+                administrator.
+              </span>
+            )}
             <Dialog open={addOpen} onOpenChange={setAddOpen}>
-              <DialogTrigger render={<Button size="sm" variant="outline" />}>
+              <DialogTrigger
+                render={<Button size="sm" variant="outline" disabled={addingWithheld} />}
+              >
                 <UserRoundPlus />
                 Add member
               </DialogTrigger>
               <AddMemberDialog tenantId={tenantId} onDone={() => setAddOpen(false)} />
             </Dialog>
             <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
-              <DialogTrigger render={<Button size="sm" />}>
+              <DialogTrigger render={<Button size="sm" disabled={addingWithheld} />}>
                 <UserPlus />
                 Invite member
               </DialogTrigger>
@@ -113,7 +128,7 @@ export default function MembersPage({ params }: { params: Promise<{ tenantId: st
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>User</TableHead>
+                  <TableHead>Person</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Roles</TableHead>
                   <TableHead>Joined</TableHead>
@@ -135,12 +150,17 @@ export default function MembersPage({ params }: { params: Promise<{ tenantId: st
 
 function MemberRow({ tenantId, member }: { tenantId: string; member: TenantMember }) {
   const lifecycle = useMembershipLifecycle(tenantId);
-  const { data: roleAssignments } = useMembershipRoles(tenantId, member.membership_id);
+  const { data: roleAssignments, isLoading: rolesLoading } = useMembershipRoles(
+    tenantId,
+    member.membership_id,
+  );
   const { data: roles } = useTenantRoles(tenantId);
   const [rolesOpen, setRolesOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
   const roleNameById = new Map((roles ?? []).map((r) => [r.id, r]));
+  const { data: me } = useMyAccount();
+  const isMe = me !== undefined && me.user_id === member.user_id;
 
   async function run(action: "suspend" | "reactivate" | "revoke" | "restore") {
     try {
@@ -163,7 +183,29 @@ function MemberRow({ tenantId, member }: { tenantId: string; member: TenantMembe
   return (
     <TableRow>
       <TableCell>
-        <IdentityChip value={member.user_id} label="user" />
+        {/* A person, not a UUID: an administrator about to suspend someone
+            must be able to see who. The id stays available, secondary, for
+            support conversations. */}
+        {/* `undefined` (an API from before names were returned) is not
+            `null` (a deleted account): only the second may be called deleted. */}
+        {member.email === undefined && member.display_name === undefined ? (
+          <div className="flex items-center gap-2">
+            <IdentityChip value={member.user_id} label="user" />
+            {isMe && <Badge variant="outline" className="shrink-0 text-[0.65rem]">You</Badge>}
+          </div>
+        ) : (
+          <>
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate font-medium">
+                {member.display_name || member.email || "Deleted account"}
+              </span>
+              {isMe && <Badge variant="outline" className="shrink-0 text-[0.65rem]">You</Badge>}
+            </div>
+            {member.display_name && member.email && (
+              <p className="truncate text-xs text-muted-foreground">{member.email}</p>
+            )}
+          </>
+        )}
         <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
           {member.job_title ?? <span className="italic">No title</span>}
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
@@ -183,12 +225,18 @@ function MemberRow({ tenantId, member }: { tenantId: string; member: TenantMembe
       </TableCell>
       <TableCell>
         <div className="flex flex-wrap items-center gap-1">
-          {roleAssignments?.length ? (
+          {/* While the request is in flight there is no answer yet -- showing
+              "No roles" then told an owner they held nothing. */}
+          {rolesLoading ? (
+            <span className="h-4 w-20 animate-pulse rounded bg-muted" aria-label="Loading roles" />
+          ) : roleAssignments?.length ? (
             roleAssignments.map((assignment) => {
               const role = roleNameById.get(assignment.role_id);
               return (
-                <Badge key={assignment.role_id} variant="secondary" className="font-mono text-xs">
-                  {role?.code ?? assignment.role_id.slice(0, 8)}
+                // The role's *name* ("Tenant Owner"), not its code: the code
+                // is an identifier for integrations, not a word for people.
+                <Badge key={assignment.role_id} variant="secondary" className="text-xs">
+                  {role?.name ?? role?.code ?? "Unknown role"}
                 </Badge>
               );
             })
@@ -365,7 +413,9 @@ function InviteDialog({ tenantId, onDone }: { tenantId: string; onDone: () => vo
         <DialogHeader>
           <DialogTitle>Invite a member</DialogTitle>
           <DialogDescription>
-            They&apos;ll get an email with a link to join this tenant.
+            Creates an invitation for this address. This deployment doesn&apos;t send
+            email yet, so to give someone access now, use{" "}
+            <span className="font-medium">Add member</span> instead.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">

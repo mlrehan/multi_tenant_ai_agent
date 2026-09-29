@@ -27,7 +27,7 @@ from iam_platform.application.platform_authz.effective_permissions import (
 )
 from iam_platform.application.platform_authz.ports import PlatformUowFactory
 from iam_platform.core.clock import Clock
-from iam_platform.domain.tenancy.entitlements import TenantEntitlements
+from iam_platform.domain.tenancy.entitlements import TenantEntitlements, usage_alert_level
 
 #: Reused rather than a new permission. Governing a tenant's plan is the same
 #: authority as governing the model catalogue -- both are the platform
@@ -181,6 +181,18 @@ class TenantPlanView:
     messages_used_today: int | None
     tokens_used_this_month: int | None
     effective_daily_message_limit: int | None
+
+    @property
+    def token_alert_level(self) -> int | None:
+        return usage_alert_level(
+            used=self.tokens_used_this_month, limit=self.entitlements.max_tokens_per_month
+        )
+
+    @property
+    def message_alert_level(self) -> int | None:
+        return usage_alert_level(
+            used=self.messages_used_today, limit=self.effective_daily_message_limit
+        )
 
 
 class GetTenantEntitlements:

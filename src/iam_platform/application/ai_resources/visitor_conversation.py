@@ -96,6 +96,8 @@ async def append_exchange(
     question: str,
     answer: str,
     now: datetime,
+    token_count: int = 0,
+    answer_status: str | None = None,
 ) -> None:
     """Records one question-and-answer pair as two consecutive turns.
 
@@ -127,6 +129,10 @@ async def append_exchange(
                 role=MessageRole.ASSISTANT,
                 content=answer,
                 created_at=now,
+                # The exchange's whole cost, on the turn that incurred it --
+                # the same rule the authenticated thread follows.
+                token_count=token_count,
+                answer_status=answer_status,
             ),
         ]
     )

@@ -67,7 +67,9 @@ interface ApiFetchOptions {
   signal?: AbortSignal;
 }
 
-function parseErrorBody(status: number, body: unknown): ApiError {
+/** Exported for callers that cannot use `apiFetch` -- the upload, which needs
+ *  `XMLHttpRequest` for progress events -- so their errors read identically. */
+export function parseErrorBody(status: number, body: unknown): ApiError {
   if (body && typeof body === "object" && "detail" in body) {
     const detail = (body as { detail: unknown }).detail;
     if (typeof detail === "string") {
@@ -82,6 +84,21 @@ function parseErrorBody(status: number, body: unknown): ApiError {
     }
   }
   return new ApiError(status, `Request failed with status ${status}`);
+}
+
+/** True from the moment someone presses "Sign out" until the page leaves.
+ *
+ *  Logout clears the query cache, and every query still on screen refetches
+ *  and gets a 401 -- which used to send the browser to
+ *  `/login?next=<the page they were on>`, racing logout's own navigation. The
+ *  *next* person to sign in on that browser was then taken to the previous
+ *  person's page: a tenant admin landing on the platform overview, which
+ *  refuses them. Signing out is not a lost session; it has nowhere to return.
+ */
+let signingOut = false;
+
+export function markSigningOut(): void {
+  signingOut = true;
 }
 
 export async function apiFetch<T = unknown>(path: string, options: ApiFetchOptions = {}): Promise<T> {
@@ -110,7 +127,7 @@ export async function apiFetch<T = unknown>(path: string, options: ApiFetchOptio
     // revoked, reuse-detected, or the account is gone). Send the user to
     // sign in rather than surfacing the backend's raw "missing bearer
     // token" string on whatever screen they happened to be looking at.
-    if (response.status === 401 && typeof window !== "undefined") {
+    if (response.status === 401 && typeof window !== "undefined" && !signingOut) {
       const next = encodeURIComponent(window.location.pathname);
       // A full page load, not router.push(), on purpose: the session is
       // dead, so every piece of client state derived from it (React Query

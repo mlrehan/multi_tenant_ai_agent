@@ -42,7 +42,12 @@ class UnconfiguredVectorSearchClient:
         raise RuntimeError(_MESSAGE)
 
     async def query(
-        self, *, namespace: str, query_text: str, top_k: int
+        self,
+        *,
+        namespace: str,
+        query_text: str,
+        top_k: int,
+        usage: TokenUsage | None = None,
     ) -> list[tuple[UUID, float]]:
         raise RuntimeError(_MESSAGE)
 

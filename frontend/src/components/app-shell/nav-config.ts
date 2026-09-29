@@ -3,6 +3,7 @@ import {
   BarChart3,
   Bot,
   Building2,
+  CircleDollarSign,
   Cpu,
   Inbox,
   Gauge,
@@ -13,6 +14,7 @@ import {
   ShieldCheck,
   ShieldQuestion,
   SlidersHorizontal,
+  ThumbsUp,
   UserCircle,
   Users,
 } from "lucide-react";
@@ -47,11 +49,25 @@ export const platformNavItems: NavItem[] = [
     requiresPlatformPermission: "platform.model_configurations.manage",
   },
   {
+    label: "AI prices",
+    href: "/platform/model-prices",
+    icon: CircleDollarSign,
+    requiresPlatformPermission: "platform.model_configurations.manage",
+  },
+  {
     label: "Tenant entitlements",
     href: "/platform/entitlements",
     icon: SlidersHorizontal,
     // Same permission as the model catalogue: both are the platform deciding
     // what a tenant may spend the platform's money on.
+    requiresPlatformPermission: "platform.model_configurations.manage",
+  },
+  {
+    label: "Answer feedback",
+    href: "/platform/feedback",
+    icon: ThumbsUp,
+    // The operator dashboard's permission: judging whether answers are any
+    // good is the same job as watching what they cost.
     requiresPlatformPermission: "platform.model_configurations.manage",
   },
   { label: "Platform roles", href: "/platform/roles", icon: ShieldCheck },
@@ -120,6 +136,14 @@ export function tenantNavItems(tenantId: string): NavItem[] {
       label: "Conversations",
       href: `/tenant/${tenantId}/conversations`,
       icon: MessagesSquare,
+    },
+    {
+      label: "Answer feedback",
+      href: `/tenant/${tenantId}/feedback`,
+      icon: ThumbsUp,
+      // Ratings carry visitors' questions -- the same permission as reading
+      // every conversation.
+      requiresTenantPermission: "tenant.conversations.view",
     },
   ];
 }

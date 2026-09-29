@@ -89,6 +89,8 @@ _AI_RESOURCE_STATUS_MAP: dict[type[ai_resource_errors.AiResourceError], int] = {
     ai_resource_errors.ConversationNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.ModelConfigurationNotFoundError: status.HTTP_404_NOT_FOUND,
     ai_resource_errors.ModelConfigurationManagementDeniedError: status.HTTP_403_FORBIDDEN,
+    ai_resource_errors.ModelPriceNotFoundError: status.HTTP_404_NOT_FOUND,
+    ai_resource_errors.ModelPriceConflictError: status.HTTP_409_CONFLICT,
     ai_resource_errors.ModelConfigurationInUseError: status.HTTP_409_CONFLICT,
     ai_resource_errors.TokenBudgetExceededError: status.HTTP_429_TOO_MANY_REQUESTS,
     ai_resource_errors.DailyMessageLimitExceededError: status.HTTP_429_TOO_MANY_REQUESTS,
@@ -134,6 +136,9 @@ _AI_RESOURCE_STATUS_MAP: dict[type[ai_resource_errors.AiResourceError], int] = {
     # 409, not 400: the request is well formed and permitted -- the
     # widget is simply in a state that refuses deletion.
     ai_resource_errors.ChatWidgetInUseError: status.HTTP_409_CONFLICT,
+    ai_resource_errors.KnowledgeBaseInUseError: status.HTTP_409_CONFLICT,
+    ai_resource_errors.AnswerFeedbackInvalidError: status.HTTP_400_BAD_REQUEST,
+    ai_resource_errors.AnswerFeedbackLimitError: status.HTTP_429_TOO_MANY_REQUESTS,
     ai_resource_errors.UnsafeCrawlTargetError: status.HTTP_400_BAD_REQUEST,
 }
 

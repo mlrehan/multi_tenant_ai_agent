@@ -36,7 +36,10 @@ function OAuthCallbackPageContent({
     completeOAuth(provider, code, state)
       .then(() => {
         queryClient.invalidateQueries({ queryKey: sessionQueryKey });
-        router.push("/select-tenant");
+        // "/" routes by permission (platform overview, a single tenant's
+        // dashboard, or the picker) -- the same destination a password
+        // sign-in now uses, so the two ways in cannot land somewhere different.
+        router.push("/");
       })
       .catch((err) => {
         setExchangeError(

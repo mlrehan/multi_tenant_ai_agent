@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -297,7 +298,27 @@ class TenantSpendResponse(BaseModel):
     running_low: bool
     max_messages_per_day: int | None
     used_messages_today: int | None
+    #: The limit actually enforced today (ceiling lowered by the tenant's
+    #: own preference). Show this, not the ceiling, as the allowance.
+    effective_messages_per_day: int | None = None
     remaining_messages_today: int | None
+    #: 80 / 90 / 95 / 100 once usage reaches that percentage, else null --
+    #: the same rule the tenant's own plan screen applies.
+    token_alert_level: int | None = None
+    message_alert_level: int | None = None
+    #: This month's tokens by direction (input includes the embedding). May
+    #: sum to less than `used_tokens` for answers recorded before the split
+    #: existed; null when the counter could not be read.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    #: Embedding tokens spent indexing documents this UTC month; not in
+    #: `used_tokens`, which is the chat allowance.
+    ingestion_tokens: int = 0
+    #: Estimated cost this month at the platform's entered prices (chat and
+    #: embeddings, ingestion included), as a decimal string. Tokens with no
+    #: price in force are in `unpriced_tokens`, never costed at zero.
+    cost_usd: Decimal = Decimal(0)
+    unpriced_tokens: int = 0
     #: Per-model rows behind this tenant's total, for the drill-down modal.
     models: list[TenantModelSpendResponse] = []
 
@@ -314,7 +335,162 @@ class PlatformOverviewResponse(BaseModel):
     #: on this page disagree with no explanation. `None` when a counter could
     #: not be read.
     unattributed_tokens: int | None = None
+    #: All tenants' ingestion embeddings this month.
+    ingestion_tokens: int = 0
+    #: This month's estimated cost. Optional so an older client ignores it.
+    costs: CostSummaryResponse | None = None
     #: The threshold the flags above were computed with, so the console can
     #: explain *why* something is highlighted rather than restating a number
     #: that could drift from the server's.
     low_remaining_fraction: float
+
+
+class DailyActivityResponse(BaseModel):
+    day: date
+    conversations_started: int
+    questions: int
+    answers: int
+    handoffs: int
+    tokens: int
+
+
+class PeriodComparisonResponse(BaseModel):
+    current: int
+    previous: int
+
+
+class TenantAttentionResponse(BaseModel):
+    tenant_id: UUID
+    display_name: str
+    slug: str
+    waiting_handoffs: int
+    oldest_waiting_at: datetime | None
+    stuck_documents: int
+    failed_documents: int
+
+
+class DependencyHealthResponse(BaseModel):
+    #: A stable identifier (`postgres_tenant`, `postgres_platform`, `redis`).
+    name: str
+    healthy: bool
+
+
+class PlatformActivityResponse(BaseModel):
+    generated_at: datetime
+    #: Oldest first, UTC days, zero-filled -- a quiet day is 0, never absent.
+    daily: list[DailyActivityResponse]
+    trend_days: int
+    questions: PeriodComparisonResponse
+    conversations: PeriodComparisonResponse
+    handoffs: PeriodComparisonResponse
+    satisfaction_days: int
+    helpful: PeriodComparisonResponse
+    not_helpful: PeriodComparisonResponse
+    active_tenants: int
+    waiting_handoffs: int
+    handled_handoffs: int
+    oldest_waiting_at: datetime | None
+    documents_processing: int
+    documents_stuck: int
+    documents_failed: int
+    stuck_after_minutes: int
+    attention: list[TenantAttentionResponse]
+    usage_recorded_since: datetime | None
+    #: This API process's view of its own dependencies -- the same probe as
+    #: `/readyz`. Failure details are omitted: they can carry hostnames.
+    health: list[DependencyHealthResponse]
+
+
+class PlatformFeedbackItem(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    tenant_name: str | None
+    rating: str
+    question: str
+    answer: str
+    comment: str | None
+    channel: str
+    knowledge_base_name: str | None
+    #: The member who rated it from the console; `None` for a website visitor.
+    author_email: str | None
+    created_at: datetime
+
+
+class PlatformFeedbackTenantSummary(BaseModel):
+    tenant_id: UUID
+    tenant_name: str | None
+    total: int
+    helpful: int
+    not_helpful: int
+
+
+class PlatformFeedbackResponse(BaseModel):
+    items: list[PlatformFeedbackItem]
+    total: int
+    by_tenant: list[PlatformFeedbackTenantSummary]
+
+
+# --- estimated cost and the price list ---------------------------------------
+#
+# Money is a Decimal, serialised as a string: a price is per *million* tokens
+# and one answer costs fractions of a cent, so a float would round visibly.
+
+
+class ModelCostResponse(BaseModel):
+    model: str | None
+    #: "chat" or "embedding".
+    kind: str
+    tokens: int
+    unpriced_tokens: int
+    cost_usd: Decimal
+
+
+class CostSummaryResponse(BaseModel):
+    """An estimate: tokens times the prices entered here, not an invoice."""
+
+    currency: str = "USD"
+    total_usd: Decimal
+    priced_tokens: int
+    #: Tokens with no price in force, or no recorded model. Counted, never
+    #: costed at zero -- a total that silently dropped them would understate.
+    unpriced_tokens: int
+    by_model: list[ModelCostResponse]
+
+
+class ModelPriceResponse(BaseModel):
+    id: UUID
+    model_name: str
+    input_usd_per_million: Decimal
+    output_usd_per_million: Decimal
+    effective_from: datetime
+    created_at: datetime
+
+
+class ModelInUseResponse(BaseModel):
+    model: str
+    kind: str
+    tokens_this_month: int
+    current: ModelPriceResponse | None
+
+
+class ModelPriceCatalogueResponse(BaseModel):
+    prices: list[ModelPriceResponse]
+    models_in_use: list[ModelInUseResponse]
+
+
+class SetModelPriceRequest(BaseModel):
+    model_name: str = Field(min_length=1, max_length=200)
+    input_usd_per_million: Decimal = Field(ge=0)
+    #: Embedding models have no output; 0 is the honest value for them.
+    output_usd_per_million: Decimal = Field(default=Decimal(0), ge=0)
+    #: Omitted = from now. Earlier = prices usage already recorded.
+    effective_from: datetime | None = None
+
+
+class CreateModelPriceResponse(BaseModel):
+    id: UUID
+
+
+
+# Declared above the cost models it references.
+PlatformOverviewResponse.model_rebuild()

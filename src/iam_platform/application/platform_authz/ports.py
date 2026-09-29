@@ -13,6 +13,9 @@ from typing import Protocol
 from uuid import UUID
 
 from iam_platform.application.ai_resources.ports import (
+    AnswerFeedbackRepository,
+    ModelPriceRepository,
+    PlatformActivityReader,
     TenantChatbotSettingsRepository,
     TenantEntitlementRepository,
 )
@@ -164,6 +167,13 @@ class PlatformUnitOfWork(Protocol):
     #: platform view must resolve it exactly as the tenant's own screen does or
     #: the two show different numbers for the same day.
     chatbot_settings: TenantChatbotSettingsRepository
+    #: The platform's cross-tenant view of answer ratings. Every read is
+    #: audited by the use case -- it is tenants' conversation content.
+    answer_feedback: AnswerFeedbackRepository
+    #: Counts-only, cross-tenant aggregates for the operator dashboard.
+    activity: PlatformActivityReader
+    #: The price list estimated costs are computed with. Platform-only.
+    model_prices: ModelPriceRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 

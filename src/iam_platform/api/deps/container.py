@@ -27,6 +27,7 @@ from iam_platform.application.ai_resources.ports import (
     CredentialEncryptor,
     DocumentIngestionQueue,
     DocumentParser,
+    IngestionProgressStore,
     ObjectStorageClient,
     ObjectStoragePathFactory,
     PublicWidgetLookup,
@@ -35,6 +36,7 @@ from iam_platform.application.ai_resources.ports import (
     TokenUsageStore,
     TypingIndicatorStore,
     UrlValidator,
+    UsageLedger,
     VectorNamespaceFactory,
     VectorSearchClient,
     WebPushSender,
@@ -112,9 +114,14 @@ class AppContainer:
     #: from `token_usage`, which bounds one model configuration -- a tenant
     #: granted three models must not be able to spend three budgets' worth.
     tenant_quota: TenantQuotaStore
+    #: The durable, append-only record of every answer's cost. Redis above is
+    #: the fast counter; this is what it is rebuilt from after losing a key.
+    usage_ledger: UsageLedger
     #: Realtime fan-out for the Unassigned inbox, over SSE (this platform has
     #: no WebSocket layer -- see the port docstring).
     conversation_events: ConversationEventPublisher
+    #: Live stage/percent of documents being ingested, written by the worker.
+    ingestion_progress: IngestionProgressStore
 
     #: Reaches an agent whose console is closed. Always present -- an
     #: unconfigured deployment gets a sender that reports `is_configured` as

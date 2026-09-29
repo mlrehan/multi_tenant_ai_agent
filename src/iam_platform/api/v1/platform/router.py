@@ -39,10 +39,26 @@ from iam_platform.application.ai_resources.manage_model_configuration import (
     UpdateModelConfiguration,
     UpdateModelConfigurationCommand,
 )
+from iam_platform.application.ai_resources.platform_activity import (
+    SATISFACTION_DAYS,
+    STUCK_AFTER,
+    TREND_DAYS,
+    GetPlatformActivity,
+    PeriodComparison,
+    PlatformActivityQuery,
+)
 from iam_platform.application.ai_resources.platform_overview import (
     LOW_REMAINING_FRACTION,
     GetPlatformOverview,
     PlatformOverviewQuery,
+)
+from iam_platform.application.ai_resources.usage_costs import (
+    DeleteModelPrice,
+    DeleteModelPriceCommand,
+    ListModelPrices,
+    ListModelPricesQuery,
+    SetModelPrice,
+    SetModelPriceCommand,
 )
 from iam_platform.application.identity.ports import AccessTokenClaims
 from iam_platform.application.platform_authz.effective_permissions import (
@@ -94,6 +110,7 @@ from iam_platform.application.platform_authz.manage_users import (
     UpdateUserCommand,
     UserSummary,
 )
+from iam_platform.domain.ai_resources.pricing import ModelPrice
 from iam_platform.domain.ai_resources.providers import all_capabilities
 from iam_platform.domain.tenancy.entitlements import TenantEntitlements
 
@@ -564,8 +581,16 @@ async def get_platform_overview(
                 remaining_tokens=t.remaining_tokens,
                 running_low=t.running_low,
                 max_messages_per_day=t.max_messages_per_day,
+                effective_messages_per_day=t.effective_messages_per_day,
                 used_messages_today=t.used_messages_today,
                 remaining_messages_today=t.remaining_messages_today,
+                token_alert_level=t.token_alert_level,
+                message_alert_level=t.message_alert_level,
+                input_tokens=t.input_tokens,
+                output_tokens=t.output_tokens,
+                ingestion_tokens=t.ingestion_tokens,
+                cost_usd=t.cost_usd,
+                unpriced_tokens=t.unpriced_tokens,
                 models=[
                     schemas.TenantModelSpendResponse(
                         model_configuration_id=m.model_configuration_id,
@@ -581,8 +606,163 @@ async def get_platform_overview(
         ],
         tenants_running_low=overview.tenants_running_low,
         unattributed_tokens=overview.unattributed_tokens,
+        ingestion_tokens=overview.ingestion_tokens,
+        costs=schemas.CostSummaryResponse(
+            total_usd=overview.costs.total_usd,
+            priced_tokens=overview.costs.priced_tokens,
+            unpriced_tokens=overview.costs.unpriced_tokens,
+            by_model=[
+                schemas.ModelCostResponse(
+                    model=m.model,
+                    kind=m.kind,
+                    tokens=m.tokens,
+                    unpriced_tokens=m.unpriced_tokens,
+                    cost_usd=m.cost_usd,
+                )
+                for m in overview.costs.by_model
+            ],
+        ),
         low_remaining_fraction=LOW_REMAINING_FRACTION,
     )
+
+
+@router.get("/activity", response_model=schemas.PlatformActivityResponse)
+async def get_platform_activity(
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.PlatformActivityResponse:
+    """Activity, satisfaction, queues, ingestion and health for the dashboard.
+
+    Counts only -- see `platform_activity.py` -- so, unlike the feedback
+    review, reading it is not audited. The permission check runs first; the
+    health probe only after it, so an unauthorised caller learns nothing about
+    the deployment's dependencies.
+    """
+    activity = await GetPlatformActivity(container.platform_uow_factory, container.clock).execute(
+        PlatformActivityQuery(actor_user_id=str(claims.user_id))
+    )
+    # Never raises by contract -- a failed probe is a result, not an error.
+    report = await container.health_check.check()
+
+    def comparison(c: PeriodComparison) -> schemas.PeriodComparisonResponse:
+        return schemas.PeriodComparisonResponse(current=c.current, previous=c.previous)
+
+    return schemas.PlatformActivityResponse(
+        generated_at=activity.generated_at,
+        daily=[
+            schemas.DailyActivityResponse(
+                day=d.day,
+                conversations_started=d.conversations_started,
+                questions=d.questions,
+                answers=d.answers,
+                handoffs=d.handoffs,
+                tokens=d.tokens,
+            )
+            for d in activity.daily
+        ],
+        trend_days=TREND_DAYS,
+        questions=comparison(activity.questions),
+        conversations=comparison(activity.conversations),
+        handoffs=comparison(activity.handoffs),
+        satisfaction_days=SATISFACTION_DAYS,
+        helpful=comparison(activity.helpful),
+        not_helpful=comparison(activity.not_helpful),
+        active_tenants=activity.active_tenants,
+        waiting_handoffs=activity.waiting_handoffs,
+        handled_handoffs=activity.handled_handoffs,
+        oldest_waiting_at=activity.oldest_waiting_at,
+        documents_processing=activity.documents_processing,
+        documents_stuck=activity.documents_stuck,
+        documents_failed=activity.documents_failed,
+        stuck_after_minutes=int(STUCK_AFTER.total_seconds() // 60),
+        attention=[
+            schemas.TenantAttentionResponse(
+                tenant_id=a.tenant_id,
+                display_name=a.display_name,
+                slug=a.slug,
+                waiting_handoffs=a.waiting_handoffs,
+                oldest_waiting_at=a.oldest_waiting_at,
+                stuck_documents=a.stuck_documents,
+                failed_documents=a.failed_documents,
+            )
+            for a in activity.attention
+        ],
+        usage_recorded_since=activity.usage_recorded_since,
+        health=[
+            schemas.DependencyHealthResponse(name=d.name, healthy=d.healthy)
+            for d in report.dependencies
+        ],
+    )
+
+
+def _price_response(p: ModelPrice) -> schemas.ModelPriceResponse:
+    return schemas.ModelPriceResponse(
+        id=p.id,
+        model_name=p.model_name,
+        input_usd_per_million=p.input_usd_per_million,
+        output_usd_per_million=p.output_usd_per_million,
+        effective_from=p.effective_from,
+        created_at=p.created_at,
+    )
+
+
+@router.get("/model-prices", response_model=schemas.ModelPriceCatalogueResponse)
+async def list_model_prices(
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.ModelPriceCatalogueResponse:
+    """The price list, and the models this month's usage needs priced."""
+    catalogue = await ListModelPrices(container.platform_uow_factory, container.clock).execute(
+        ListModelPricesQuery(actor_user_id=str(claims.user_id))
+    )
+    return schemas.ModelPriceCatalogueResponse(
+        prices=[_price_response(p) for p in catalogue.prices],
+        models_in_use=[
+            schemas.ModelInUseResponse(
+                model=m.model,
+                kind=m.kind,
+                tokens_this_month=m.tokens_this_month,
+                current=_price_response(m.current) if m.current else None,
+            )
+            for m in catalogue.models_in_use
+        ],
+    )
+
+
+@router.post(
+    "/model-prices",
+    status_code=status.HTTP_201_CREATED,
+    response_model=schemas.CreateModelPriceResponse,
+)
+async def set_model_price(
+    body: schemas.SetModelPriceRequest,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.CreateModelPriceResponse:
+    """Adds a price entry. Entries are never edited: a change is a new entry."""
+    price_id = await SetModelPrice(container.platform_uow_factory, container.clock).execute(
+        SetModelPriceCommand(
+            actor_user_id=str(claims.user_id),
+            model_name=body.model_name,
+            input_usd_per_million=body.input_usd_per_million,
+            output_usd_per_million=body.output_usd_per_million,
+            effective_from=body.effective_from,
+        )
+    )
+    return schemas.CreateModelPriceResponse(id=price_id)
+
+
+@router.delete("/model-prices/{price_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_model_price(
+    price_id: UUID,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    """Removes a mistaken entry; the values it held are kept in the audit log."""
+    await DeleteModelPrice(container.platform_uow_factory, container.clock).execute(
+        DeleteModelPriceCommand(actor_user_id=str(claims.user_id), price_id=str(price_id))
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
@@ -837,4 +1017,64 @@ def _entitlements_response(
         allow_invite_members=entitlements.allow_invite_members,
         allow_create_roles=entitlements.allow_create_roles,
         updated_at=entitlements.updated_at,
+    )
+
+
+@router.get("/answer-feedback", response_model=schemas.PlatformFeedbackResponse)
+async def list_platform_answer_feedback(
+    tenant_id: str | None = None,
+    rating: str | None = None,
+    channel: str | None = None,
+    limit: int = 25,
+    offset: int = 0,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.PlatformFeedbackResponse:
+    """Answer ratings across every tenant. Each read is audited: it returns
+    tenants' conversation content to someone outside the tenant."""
+    from iam_platform.application.ai_resources.platform_feedback import (
+        ListPlatformAnswerFeedback,
+        PlatformFeedbackQuery,
+    )
+
+    page = await ListPlatformAnswerFeedback(
+        container.platform_uow_factory, container.clock
+    ).execute(
+        PlatformFeedbackQuery(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            rating=rating,
+            channel=channel,
+            limit=limit,
+            offset=offset,
+        )
+    )
+    return schemas.PlatformFeedbackResponse(
+        items=[
+            schemas.PlatformFeedbackItem(
+                id=r.id,
+                tenant_id=r.tenant_id,
+                tenant_name=r.tenant_name,
+                rating=r.rating,
+                question=r.question,
+                answer=r.answer,
+                comment=r.comment,
+                channel=r.channel,
+                knowledge_base_name=r.knowledge_base_name,
+                author_email=r.author_email,
+                created_at=r.created_at,
+            )
+            for r in page.items
+        ],
+        total=page.total,
+        by_tenant=[
+            schemas.PlatformFeedbackTenantSummary(
+                tenant_id=s.tenant_id,
+                tenant_name=s.tenant_name,
+                total=s.total,
+                helpful=s.helpful,
+                not_helpful=s.not_helpful,
+            )
+            for s in page.by_tenant
+        ],
     )

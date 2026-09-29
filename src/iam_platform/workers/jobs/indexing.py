@@ -18,21 +18,58 @@ chunking/embedding/Qdrant-upsert pipeline — no separate code path".
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from iam_platform.application.ai_resources.ports import (
+    INGESTION_CHANNEL,
     EmbeddingClient,
+    IngestionStage,
     ParsedBlock,
+    TokenUsage,
+    UsageLedger,
     VectorChunk,
     VectorSearchClient,
 )
+from iam_platform.application.ai_resources.usage_recording import record_embedding_usage
 from iam_platform.infrastructure.parsing.chunking import TokenAwareChunker
 
 logger = logging.getLogger("iam_platform.workers.jobs.indexing")
+
+#: Called as each stage starts: (stage, overall percent 0-100, detail).
+ProgressCallback = Callable[[IngestionStage, int, "str | None"], Awaitable[None]]
+
+#: Where each stage sits on one 0-100 bar per file. Extraction is the upload
+#: job's; the rest happen here. Embedding gets the widest band because it is
+#: the only stage whose length grows with the document *and* is reported in
+#: steps (`EMBED_SLICE`).
+PERCENT_EXTRACTING = 5
+PERCENT_CHUNKING = 30
+PERCENT_EMBEDDING_START = 35
+PERCENT_EMBEDDING_END = 85
+PERCENT_INDEXING = 90
+
+#: Passages per embedding request when progress is being reported. The
+#: provider accepts far more in one call, which is what an unreported caller
+#: still does; slicing trades a few extra round trips for a bar that moves.
+EMBED_SLICE = 64
+
+
+async def report_progress(
+    progress: ProgressCallback | None, stage: IngestionStage, percent: int, detail: str | None
+) -> None:
+    """Never lets progress reporting affect the ingestion itself."""
+    if progress is None:
+        return
+    try:
+        await progress(stage, percent, detail)
+    except Exception:
+        logger.warning("could not report ingestion progress (%s)", stage.value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,12 +90,24 @@ async def index_blocks(
     chunker: TokenAwareChunker,
     embedding_client: EmbeddingClient,
     vector_search: VectorSearchClient,
+    usage: TokenUsage | None = None,
+    progress: ProgressCallback | None = None,
 ) -> int:
     """Chunks, embeds and indexes ``blocks``. Returns the chunk count.
 
     Safe to run twice: it clears the document's previous chunks and vectors
     before writing, so a redelivered job replaces rather than accumulates.
+
+    ``usage``, when given, is filled with what the embedding calls cost. It is
+    passed in rather than returned because the cost is spent the moment the
+    provider answers -- a caller whose transaction later rolls back still owes
+    it, and must be able to record it after the unwind.
+
+    ``progress``, when given, is told as each stage starts, and the
+    embeddings are requested in slices so that stage can report how far it
+    has got. Without it the behaviour is exactly as before.
     """
+    await report_progress(progress, IngestionStage.CHUNKING, PERCENT_CHUNKING, None)
     chunks = chunker.chunk(blocks)
 
     # Clear any previous attempt *before* writing, so a redelivered job
@@ -90,7 +139,30 @@ async def index_blocks(
     await vector_search.ensure_namespace(
         namespace=target.vector_namespace, dimensions=embedding_client.dimensions
     )
-    embeddings = await embedding_client.embed_batch([c.text for c in chunks])
+    texts = [c.text for c in chunks]
+    if progress is None:
+        embeddings = await embedding_client.embed_batch(texts, usage=usage)
+    else:
+        embeddings = []
+        total = len(texts)
+        for start in range(0, total, EMBED_SLICE):
+            done = start
+            await report_progress(
+                progress,
+                IngestionStage.EMBEDDING,
+                PERCENT_EMBEDDING_START
+                + (PERCENT_EMBEDDING_END - PERCENT_EMBEDDING_START) * done // total,
+                f"{done} of {total} passages",
+            )
+            embeddings.extend(
+                await embedding_client.embed_batch(texts[start : start + EMBED_SLICE], usage=usage)
+            )
+        await report_progress(
+            progress,
+            IngestionStage.INDEXING,
+            PERCENT_INDEXING,
+            f"Saving {total} passage{'s' if total != 1 else ''}",
+        )
 
     vector_chunks: list[VectorChunk] = []
     # `strict=True` is load-bearing: a mismatch between chunks and embeddings
@@ -129,3 +201,32 @@ async def index_blocks(
 
     await vector_search.upsert(namespace=target.vector_namespace, chunks=vector_chunks)
     return len(vector_chunks)
+
+
+async def record_ingestion_usage(
+    ledger: UsageLedger | None,
+    *,
+    tenant_id: UUID,
+    usage: TokenUsage,
+    occurred_at: datetime,
+) -> None:
+    """One ledger row for one document's embeddings. Never raises.
+
+    Called by each job **after** its transaction has finished, successful or
+    not: the provider bills the embeddings the moment it returns them, so a
+    document that then failed to index still cost what it cost. Recording
+    inside the job's transaction would let the very failure being handled
+    roll the record away.
+
+    Fails open. The document's outcome is already decided; an error here
+    would only replace it with a bookkeeping one, and the loss is a
+    slightly-low figure on a dashboard, not an uncapped allowance -- ingestion
+    is not part of any enforced limit.
+    """
+    await record_embedding_usage(
+        ledger,
+        tenant_id=tenant_id,
+        channel=INGESTION_CHANNEL,
+        usage=usage,
+        occurred_at=occurred_at,
+    )

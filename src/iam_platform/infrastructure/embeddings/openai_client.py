@@ -97,5 +97,9 @@ class OpenAIEmbeddingClient:
                     spent = int(getattr(reported, "prompt_tokens", 0) or 0)
                     usage.input_tokens += spent
                     usage.total += spent
+                    # Also counted as embedding, so a cost can price it at the
+                    # embedding model's rate rather than the chat model's.
+                    usage.embedding_tokens += spent
+                    usage.embedding_model = self._model
 
         return vectors

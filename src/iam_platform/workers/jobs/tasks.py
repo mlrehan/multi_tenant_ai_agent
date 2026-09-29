@@ -225,10 +225,12 @@ from typing import Any, TypeVar
 from uuid import UUID
 
 from iam_platform.application.ai_resources.ports import CrawlLimits
+from iam_platform.infrastructure.cache.ingestion_progress import RedisIngestionProgressStore
 from iam_platform.infrastructure.crawling.crawl4ai_crawler import (
     Crawl4AiWebCrawler,
 )
 from iam_platform.infrastructure.crawling.url_safety import UrlSafetyPolicy
+from iam_platform.infrastructure.db.usage_ledger import SqlUsageLedger
 from iam_platform.infrastructure.parsing.chunking import TokenAwareChunker
 from iam_platform.infrastructure.parsing.dispatcher import ParserDispatcher
 from iam_platform.workers.bootstrap import (
@@ -628,6 +630,8 @@ async def _process_document_upload_async(
         ),
         embedding_client=container.embedding_client,
         vector_search=container.vector_search,
+        usage_ledger=SqlUsageLedger(container.session_factory),
+        progress=RedisIngestionProgressStore(container.redis),
     )
 
     await process_document_upload(
@@ -683,6 +687,7 @@ async def _process_url_crawl_async(
             ),
             max_page_bytes=settings.crawl.max_page_bytes,
         ),
+        usage_ledger=SqlUsageLedger(container.session_factory),
     )
 
     await process_url_crawl(

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from iam_platform.application.ai_resources.entitlements import resolve_entitlements
 from iam_platform.application.ai_resources.exceptions import (
@@ -89,8 +90,19 @@ class UpdateChatbotSettingsCommand:
     allow_ai_for_unassigned_conversations: bool
     daily_message_limit: int | None
     share_visitor_location: bool
-    conversation_retention_days: int = DEFAULT_RETENTION_DAYS
-    quota_timezone: str = "UTC"
+    #: None keeps what is stored. These two used to default to 30 and "UTC",
+    #: and the console's save never sent them -- so every save of *any* other
+    #: setting silently reset a tenant's retention period and time zone.
+    conversation_retention_days: int | None = None
+    quota_timezone: str | None = None
+
+
+def _is_known_zone(name: str) -> bool:
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
 
 
 class UpdateChatbotSettings:
@@ -137,14 +149,36 @@ class UpdateChatbotSettings:
             # Bounded here as well as by the database CHECK. The constraint
             # protects the table; this protects the *person*, who otherwise
             # gets an IntegrityError-shaped 500 for typing a zero.
-            retention = command.conversation_retention_days
+            existing = await uow.chatbot_settings.get_for_tenant(tenant_id)
+
+            retention = (
+                command.conversation_retention_days
+                if command.conversation_retention_days is not None
+                else (existing.conversation_retention_days if existing else DEFAULT_RETENTION_DAYS)
+            )
             if not MIN_RETENTION_DAYS <= retention <= MAX_RETENTION_DAYS:
                 raise ChatbotSettingsInvalidError(
                     f"conversation retention must be between {MIN_RETENTION_DAYS} "
                     f"and {MAX_RETENTION_DAYS} days; {retention} is outside that range"
                 )
 
-            existing = await uow.chatbot_settings.get_for_tenant(tenant_id)
+            stored_zone = existing.quota_timezone if existing else "UTC"
+            zone = (
+                (command.quota_timezone or "").strip() or "UTC"
+                if command.quota_timezone is not None
+                else stored_zone
+            )
+            # A *change* to an unknown zone is refused -- otherwise a typo such
+            # as "Europe/Londn" is stored and quietly behaves as UTC, which is
+            # the silent failure a non-technical admin can never diagnose. A
+            # stored zone that has since become unknown is still accepted on an
+            # unrelated save (see below), so one stale value cannot block every
+            # other setting.
+            if zone != stored_zone and not _is_known_zone(zone):
+                raise ChatbotSettingsInvalidError(
+                    f"{zone!r} is not a recognised time zone; choose one from the list"
+                )
+
             settings = existing or TenantChatbotSettings(
                 id=uuid4(), tenant_id=tenant_id, created_at=now, updated_at=now
             )
@@ -162,11 +196,11 @@ class UpdateChatbotSettings:
             settings.daily_message_limit = requested
             settings.share_visitor_location = command.share_visitor_location
             settings.conversation_retention_days = retention
-            # Stored as given; `quota_day_zone()` degrades an unknown name to
-            # UTC at read time rather than refusing the save. Refusing here
-            # would mean a tenant whose zone was renamed upstream could not
-            # save any other setting either.
-            settings.quota_timezone = command.quota_timezone.strip() or "UTC"
+            # A stored zone that is no longer recognised is kept as it is;
+            # `quota_day_zone()` degrades it to UTC at read time. Refusing it
+            # here would mean a tenant whose zone was renamed upstream could
+            # not save any other setting either.
+            settings.quota_timezone = zone
             settings.updated_at = now
 
             await uow.chatbot_settings.upsert(settings)

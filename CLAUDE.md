@@ -26,6 +26,407 @@ This project is built in the 9 phases below, **one phase per work session, never
 
 **All 9 phases are complete.** Continuing work means extending a finished system, not starting a new phase: read the relevant "Phase N — what's built" section first, and check [docs/22-deployment-and-operations.md](docs/22-deployment-and-operations.md#known-gaps) for the consolidated list of what was deliberately left unbuilt.
 
+## Current state — read this before trusting any older section below (updated 2026-09-24)
+
+This file went unedited from 2026-08-20 to 2026-09-24 while eleven commits landed. **Sections further down describe some features as tenant-facing that no longer are.** Where this section and an older one disagree, this one is right.
+
+**Withdrawn from tenants (commit `05c60e3`, migration `f1c94a70b2d8`):** bring-your-own-key and AI Assistant management. A tenant admin now configures *their chatbot* — brief, identity, handoff policy — and nothing about how it is powered. The platform owns provider credentials, model choice and token budgets. The tenant brief (role / avoid / personality / response length) moved from `ai_assistants` to `tenant_chatbot_settings`. Five `tenant.assistants.*` / `tenant.provider_credentials.manage` permissions were deleted, and eight routes are gone (`tests/api/test_ai_resource_authorization.py::TestTheTenantBringYourOwnKeySurfaceIsGone` asserts it). **Nothing tenant-authored was deleted** — `ai_assistants`, `provider_credentials` and historical `assistant_id` values are kept, just unreachable. So the "Bring-your-own-key", "The tenant can now see what an assistant buys them" and assistant-editing parts of the older sections describe the *platform's* machinery, not a tenant screen.
+
+**The system prompt was rewritten (commit `9ab8a1c`)** into a long UK-nursery safeguarding prompt, with a dedicated "UNTRUSTED CONTENT AND PROMPT-INJECTION DEFENCE" section. The eight tests that asserted the old wording were re-pointed on 2026-09-29 (see "Full test run" below), and deleting any one of the protections now fails a test.
+
+The prompt's text lines produce 55 ruff E501 (line-too-long) errors in `answer_question.py`. They are the only ruff errors left.
+
+**Work in the 2026-09 production-fix pass** (all mutation-tested):
+- **Widget origins are compared as origins.** A browser sends `Origin` as `scheme://host[:port]`, never a path, so an allowlist entry stored as a full page URL could never match. `normalise_origin()` in `domain/ai_resources/entities.py` is used both when storing and when matching.
+- **Widget edit and delete** — `PATCH`/`DELETE /chat-widgets/{id}`. The public key cannot be edited (it's in script tags on sites the tenant doesn't control). Delete returns **409** when conversations reference the widget; disabling it is the way to stop a used widget.
+- **Tenant-wide token allowance enforced** at `answer_from_namespace`, the choke point both the Ask panel and the widget pass through. Before this, `max_tokens_per_month` was enforced nowhere, and widget answers skipped the per-model budget check entirely.
+- **Embedding tokens are metered.** One meter now spans embedding and completion. Rerank is not counted: Cohere bills in search units, not tokens.
+- **Ask-panel questions count toward the daily message limit**, not just widget traffic. `resolve_daily_message_limit` is shared by both paths, and a reservation is released if the answer fails (`release_message` previously had no callers).
+- **Per-tenant quota timezone** — `tenant_chatbot_settings.quota_timezone` (migration `b3e7f52a9c14`, IANA name, NOT NULL default `UTC`). Only the *daily* window uses it; the monthly token window stays UTC on purpose. `resolve_quota_zone` is the only resolver, because the Redis key *is* the window: the write, release and both dashboard reads must derive the same key. An unknown zone falls back to UTC rather than raising.
+- **Platform dashboard reconciles.** `unattributed_tokens` = tenant total − per-configuration total, which is where platform-default (widget) traffic lands.
+- **Default "Support" team** auto-created when the Inbox lists teams; concurrency is settled by `UNIQUE(tenant_id, name)`.
+- **New Knowledge Base button** disabled at the plan limit. It fails toward *enabled* when the plan can't be read, since the server's 409 is the real gate.
+- **Staff-only notes never reach the model** (commit `178c4a3`). The model's history now passes the same `MessageRole.visible_to_visitor` predicate as the visitor's transcript — both the recent window and compaction into the stored summary. *Anything the model can see, the person asking can extract with a prompt.*
+
+**Tenant isolation, audited 2026-09-24:** no cross-tenant path found. The model has no tools; every part of its context is tenant-scoped by the database or by a signed token (per-tenant Qdrant collection plus a knowledge-base filter; a composite FK from widget to knowledge base; owner-only thread loading; session-keyed widget memory; per-tenant event channels; no shared caches). 152 security/RLS/Qdrant/route tests pass against the live stack.
+
+**Platform dashboard audit (2026-09-27).** Two accuracy fixes: the tenant row's "Messages today" showed the platform *ceiling* (100) for a tenant enforcing its own 50 -- `TenantSpend.effective_messages_per_day` now carries the enforced limit (same `effective_daily_message_limit` the answer path uses) and "remaining" is measured against it (`test_platform_overview_limits.py`, mutation-tested); and the Users tile no longer claims "across all tenants". Redis persistence was *off* in both compose files, so every restart zeroed tenant token/message counters (dashboards read 0 used, *and every quota was handed back in full*) -- fixed in the ledger pass below. The AI-providers card and the hard-coded "U" avatar were fixed in the redesign below.
+
+**Durable AI usage: Redis AOF + a Postgres ledger (2026-09-27).**
+- **AOF** in both compose files (`--appendonly yes --appendfsync everysec --save ""`, named `redis-data` volume). Proven by a key surviving `up --force-recreate`.
+- **`ai_usage_events`** (migration `d8b2e6f41a07`): one row per answered question, *including* one refused for lack of passages (it still consumed a message and an embedding). It holds counts only (channel, model configuration, input/output/total), never text, so it outlives conversation retention. RLS covers `USING` and `WITH CHECK`. `app_tenant` holds only INSERT+SELECT, `app_platform` only SELECT; both were proven as those roles.
+- **Redis stays the counter; the ledger is what it rebuilds from.** `RedisTenantQuotaStore` and `RedisTokenUsageStore` take an optional `ledger`. On a *missing* key, any read **or write** first seeds it with `SET NX`. Writes must seed too: an `INCR` on a missing key would create it holding only this answer.
+- **`_record_usage` writes Redis before the ledger, deliberately.** The other order double-counts, because the seed would already see this row. Seeding follows each caller's fail-mode: a reservation or read that cannot seed fails closed; a recording that cannot seed skips its increment and leaves the key absent. Releasing a reservation whose key is gone no longer creates `-1`.
+- **Proven live.** One console and one widget answer wrote two rows. The tenant's Redis keys were then deleted, and the platform overview read back the identical 26,313 tokens and 4 messages. 12 mutations caught (`test_usage_ledger.py`).
+- **A real adapter bug found by the live ledger:** `openai_chat.py` *assigned* `usage.total = ...`. That overwrote the embedding cost the meter already held, and the input/output split was never filled, so every breakdown read "input = embedding, output = 0". It now adds all three (`test_chat_and_reranking.py::TestUsageIsAddedToTheMeter`, mutation-tested). The first two dev ledger rows predate the fix and carry the old split.
+- **Widget turns now store their `token_count`** via `AnswerStream.usage`; previously it was 0 for every widget message.
+- **Limit, stated:** usage before this ledger existed cannot be reconstructed. For the current month, a Redis loss rebuilds only what the ledger holds.
+
+**Platform dashboard redesign (2026-09-28).**
+- **New `GET /v1/platform/activity`**, gated like `/overview` on `platform.model_configurations.manage`. It returns counts only, so it isn't audited. It provides a 14-day zero-filled UTC series (questions, conversations started, handoffs, tokens), 7-day vs previous-7-day comparisons, 30-day satisfaction vs the previous 30, active tenants, the handoff queue, document health, a per-tenant attention list, and the `/readyz` dependency probe.
+  - Code: `application/ai_resources/platform_activity.py` plus `infrastructure/db/repositories/platform_activity.py` (`SqlPlatformActivityReader`, on the platform UoW as `uow.activity`).
+  - **Comparisons are server-side on purpose:** a client can't make a different claim about the same week.
+  - Mutation-tested (`test_platform_activity.py`): 7 caught, including the week-boundary off-by-one and overlapping satisfaction windows.
+- **Definitions, stated rather than implied:**
+  - A *question* is a `user` turn in `conversation_messages`. Stateless Ask-panel questions aren't saved as conversations, so they count in tokens only.
+  - *Stuck* means a document still `processing` after 30 minutes. This is the only visible signal of a dead worker, because the API can't probe Celery.
+- **Migration `e5c3a8f10b92`:** timestamp-only indexes on `conversation_messages`, `conversations`, `answer_feedback` and `ai_usage_events`. Every existing index led with `tenant_id`, so the cross-tenant time window, polled every minute, was a full scan of the largest table. For a large production table, build it `CONCURRENTLY` by hand first; the migration uses `IF NOT EXISTS`.
+- **Console, in priority order:**
+  - **Needs attention** combines `/overview` and `/activity`, with an explicit all-clear state.
+  - Four KPI cards with trend and sparkline. Growth from zero reads as "new", never as ∞%; satisfaction moves in percentage points.
+  - A recharts activity chart beside an Operations card, then AI spend (the platform default model first, since it's where traffic lands), tenant usage, the directory, and humanized authority (catalogue description plus `RiskBadge`).
+  - Code lives in `frontend/src/features/platform/dashboard/`. The "Updated HH:mm" label and Refresh button invalidate the real query keys (`platform-tenants`, not `tenants`).
+- **Top bar:** initials and email from `/v1/auth/me`. "Platform overview" is offered only to holders of platform permissions; the old "Platform admin" link sent tenant admins to a refusal. 
+- **Tenant names in the switcher (2026-09-28):**
+  - `GET /v1/tenants/me/memberships` now returns `tenant_slug` / `tenant_display_name`, via `ListMyTenantMemberships.execute_with_tenant_names`.
+  - Each name is read by a unit of work scoped to *that* membership's tenant (`tenants` is RLS own-row-only), so the database lets a member see exactly their tenants' names and nothing else, with no platform bypass. The tenant UoW gained a `tenants` repository for this.
+  - Revoked memberships get no name: the former member isn't told a tenant's current name.
+  - The fields are optional, and the console falls back to the id (`tenantLabel`), so an older API still works.
+  - Mutation-tested (reading every name from the unscoped bootstrap UoW, and naming revoked memberships, are each caught). Verified live as the tenant admin in the switcher and on `/select-tenant`.
+- **Verified:**
+  - Live numbers matched SQL.
+  - A conversation was temporarily put into `unassigned` to see the attention panel and queue react, then restored exactly.
+  - No horizontal scroll at 375px.
+  - `tsc`, `eslint src` and `npm run build` pass.
+- **Old-API compatibility (found 2026-09-28):** against an API image from before this work, the overview omitted `effective_messages_per_day` (`undefined`, not `null`), and a strict `=== null` check crashed the whole dashboard. Now `enforcedDailyLimit()` in `features/platform/dashboard/format.ts` falls back to the ceiling. A failed `/activity` read shows "—" and "unavailable" instead of skeletons that never resolve. Verified in the browser against the older API.
+- **Verified against the rebuilt image (2026-09-28, after the user re-seeded the dev database):** every `/activity` and `/overview` figure matched direct SQL (15 questions, 8 conversations, 3 helpful / 1 not helpful, 0 waiting, 0 failed or processing documents; Falgoon enforced at 50 against a ceiling of 100, Northwind at 1,000). Both users' switchers showed tenant names, and switching into Northwind showed its name on the button. At 375px the page is `scrollWidth == clientWidth` and the tenant table scrolls inside its own container. The dev database had been emptied earlier that day, before the re-seed; the cause is unknown and it wasn't a test run.
+
+**Tenant-admin console audit (2026-09-28).** Every menu page was driven as `tenant_007` and every figure compared with SQL. The dashboard, feedback, knowledge-base (25 docs / 466 chunks / crawl 25/25), widget and conversation (8) numbers all matched. Fixed:
+- **Plan bypass (security):** `AddMemberDirectly` checked `tenant.users.invite` but not the plan's `allow_invite_members`, so "Add member" worked for a tenant whose plan withholds adding members. It now uses the same `_guard_entitlement` as `InviteMember` (`test_invite_member.py::TestAddMemberDirectlyHonoursThePlan`, mutation-tested).
+- **Sign-out handed the next user the previous user's page.** After logout the cache refetched, got 401s, and redirected to `/login?next=<page>`, so a tenant admin signing in after a platform admin landed on `/platform`. The fix is `markSigningOut()` in `lib/api-client.ts`, plus logout now does a full page load so the flag can't outlive the session.
+- **Whole-page sideways overflow** (Knowledge bases, Conversations; the top bar was cut off). `SidebarInset` is a flex item and lacked `min-w-0`; one class in `app/(app)/layout.tsx` fixes every page.
+- **Controls the plan withholds are now disabled with a reason:** Add/Invite member, New custom role, Create widget. They fail toward enabled, because the server stays the gate.
+- **Conversations:** the "Assistant" column (always "—") became "Handled by", from a new optional `state` on `ConversationResponse`.
+- **Smaller fixes:**
+  - The preview greeting said "Assistant assistant", unlike the real widget.
+  - The web-source picker showed the raw `url_list` value (Base UI `SelectValue` render-prop).
+  - The invite dialog promised an email that this deployment never sends.
+  - The widget limit now explains that the tenant's daily cap applies too.
+  - Stale "assistants" copy removed.
+  - Two permission descriptions corrected. `bootstrap_tenant_catalog.py` now refreshes descriptions on re-run (`ON CONFLICT … DO UPDATE SET description`) and was re-run on dev.
+- **Found, not fixed:** (the roster ids, team staffing, time zone and retention controls, and the tenant dashboard were all fixed in the next pass, below.)
+  - The "Nursery analytics" link is a hard-coded URL shown to every tenant.
+  - Falgoon's knowledge base holds IT-academy pages, not nursery content (a data issue).
+- **The backend changes (`AddMemberDirectly` guard, conversation `state`) need an API image rebuild** to reach :18000.
+
+**Non-technical tenant UX pass (2026-09-28).** Audit report: https://claude.ai/artifact/Li67wdWoPrBMgd5r7Jm29p (scores, a plain-language terms table and a prioritised roadmap).
+
+Built:
+- **Roster names people.** `TenantMemberDirectory` is a two-field projection (email, display name) on the tenant UoW, returning this tenant's memberships only, behind the roster's existing `tenant.users.manage` check.
+  - **`users` has no RLS, and `app_tenant` can SELECT all of it**, so the `m.tenant_id = :tenant_id` filter is load-bearing. It was proven live: without it, the caller's own membership in another tenant leaks through the self-lookup policy.
+- **Teams are staffable.** The API already accepted `member_ids`; only the UI was missing. The team dialog has a member picker that keeps current members untouched when the editor can't read the roster, and cards warn about empty active teams.
+- **Tenant dashboard rebuilt** for non-technical admins:
+  - Setup checklist, needs-attention panel with an explicit all-clear, four plain-language KPIs, an activity chart, and "Your chatbot" and "What your chatbot knows" cards.
+  - No permission codes, no raw ids, and tokens shown as a percentage of the allowance.
+  - Backed by the new `GET /v1/tenants/{id}/activity` (gated on `tenant.conversations.view`, counts only).
+  - `SqlPlatformActivityReader` now takes an optional `tenant_id` fixed at construction; the AI-resource UoW builds it scoped (`uow.activity`), and it gained `knowledge_summary()`.
+- **Time zone and retention controls** on the chatbot page's Handoff & limits tab.
+- **Latent silent-reset bug fixed.** The settings PUT defaulted `quota_timezone` to UTC and `conversation_retention_days` to 30, and the console never sent them, so every save reset both.
+  - Omitted now means "keep what's stored".
+  - A *change* to an unknown zone gets a 400; a stale stored zone is still tolerated.
+  - Mutation-tested (4 caught) and proven live with an old-style save.
+- **Graceful degradation against an older API:** activity cards show "—", and the roster falls back to ids instead of saying "Deleted account".
+
+Tests: 795 unit tests pass. Not built (see the roadmap): installing from the chatbot page with an install check, a "questions it couldn't answer" feed, the terminology pass, and grouping the menu by job.
+
+**Install check, "couldn't answer" feed, and a usage/quota audit (2026-09-28).**
+- **Install check** (migration `a9d7c2e4f1b3`): `chat_widgets.last_seen_*` / `last_refused_*`, written by `StartWidgetSession` (best effort, own UoW, throttled to one write per 5 min per origin; junk and >255-char origins skipped). The AI Chatbot page now has an **On your website** card (`features/chatbot/website-install.tsx`): status (Installed / Not seen recently / Not installed / Turned off), a one-click "Allow <origin>" for a refused address, the embed code, "Copy instructions for your web developer", and hide/show. The dashboard checklist step is done only when a real page has loaded the widget, and a refused origin raises an attention item.
+- **Unanswered feed** (migration `b4e8d1a6c2f5`): `conversation_messages.answer_status` (`grounded` / `uncited` / `no_sources`), decided by the pipeline from what was cited, never from wording. `GET /v1/tenants/{id}/unanswered-questions` (gated `tenant.conversations.view`, small talk filtered) feeds a dashboard card.
+- **Audit fixes, all mutation-tested (8 in `test_widget_daily_limit.py`):**
+  - **Refused reservations stayed counted.** Both daily counters INCR'd even on refusal, so 10 answered + 40 refused read "50 of 10", the ledger couldn't rebuild it, and raising a limit mid-day didn't unblock. A refusal now hands its increment back. Proven live: 50 concurrent reservations at limit 10 → exactly 10 allowed, counter 10.
+  - **Widget cap above the plan** (every widget was created at 500 on a plan of 100): `guard_widget_daily_limit` refuses a *new* cap above `max_messages_per_day` (400); an unchanged legacy value is accepted, so origin-only edits keep working. Console defaults now clamp to the ceiling, and the card shows the effective (lower) cap.
+  - **Widget counter reset at UTC midnight** while the tenant counter used the tenant's zone. It is now keyed on the tenant's quota day.
+  - **Monthly exhaustion told visitors "try again tomorrow"** and the 429 body leaked the plan's token allowance and usage to anonymous visitors. `AskWidget` rewords `TokenBudgetExceededError` visitor-safely; the widget's 429 text is now correct for every limit.
+  - **One 80/90/95/100% rule**: `usage_alert_level()` in `domain/tenancy/entitlements.py`, exposed as `token_alert_level` / `message_alert_level` on both the tenant plan and the platform overview. Both dashboards warn in tiers; the platform table shows a chip.
+  - **Input/output split** (`input_tokens` / `output_tokens`) on the platform overview's tenant rows and drill-down. Rows from before the adapter fix carry a total only, and they're shown as "recorded before the split was tracked", not hidden. Input includes the question's embedding.
+  - The tenant plan now refetches every 60 s.
+  - **BFF proxy refresh race (security/availability).** Concurrent 401s each refreshed with the same rotating refresh token; the second tripped reuse detection and revoked the family, so admins were signed out at random (9 `refresh_token_reuse_detected` events, in pairs ~100 ms apart). `refreshOnce()` in the proxy single-flights per token for 10 s. Reproduced then fixed live: 6 concurrent requests went from 6×401 with a dead session to 6×200 with one rotation. **Per process only:** multiple console instances still need a backend reuse-grace window.
+  - **Frozen timestamp defaults** (migration `c7f2a9e3d815`): 11 columns from Phase 6's `c1178e6fb886` used `server_default='now()'`, so every role grant recorded the DB build time (a platform role "granted" before the account existed). Defaults fixed and models switched to `func.now()`. Existing values are left as-is (unrecoverable). Guarded by `tests/unit/test_no_frozen_timestamp_defaults.py`, which had to import every model module itself: the package `__init__` imports none, and the first version passed while scanning 0 tables.
+- **Found, not fixed (decisions):**
+  - ~~No cost anywhere~~ — estimated cost built (`e7a3c1f9d2b4`, see below); prices must be entered on Platform → AI prices.
+  - ~~Ingestion embeddings are unmetered~~ — metered since `d9e4b7a1c6f2`; the retrieval tester since `f4b8d2c6e1a9`.
+  - Assigned model configurations are read by no answer path (per-model counters are 0 forever), and `claude-opus-5` is filed under provider `openai`.
+  - The token check reads-before and records-after, so N concurrent answers can overshoot by N×~6.5k.
+  - A per-widget reservation is not returned when the tenant cap refuses.
+  - Alerts are in-app only (no email/push provider).
+  - "Questions" counts visitor turns, including "speak to a person".
+  - Active users per tenant aren't shown.
+- **Verified:** all KPIs recomputed in SQL; 90% and 100% daily blocking and monthly exhaustion driven live against Falgoon's real counters and restored exactly (2 / 39,445 / 2); screenshots taken via Playwright as a throwaway audit account (password generated and never shown; access revoked and the account deactivated after). Three probe accounts (`*-probe-*@example.com`) remain deactivated in the dev DB. 846 unit tests pass (+8 stale-wording).
+
+**Ingestion embeddings metered (2026-09-28, migration `d9e4b7a1c6f2`).**
+- **What's metered:** every document upload, crawled page, retry and re-sync now writes one `ai_usage_events` row with `channel='ingestion'`, one per indexed document.
+  - The meter is passed through `index_blocks(usage=...)` to `embed_batch`, and the row is written by `record_ingestion_usage` **after** the job's transaction (`finally`), so a document that fails after embedding is still billed.
+  - Recording is fail-open; the document's outcome never depends on it.
+- **Kept out of the chat allowance on purpose.** `ANSWER_CHANNELS` / `INGESTION_CHANNEL` live in `ports.py`. The Redis seeds (`tokens_since`, `answers_since`) and the activity chart's token series read answer channels only; otherwise a Redis rebuild would charge crawls to the chatbot and count pages as messages.
+  - Proven live: counters wiped and rebuilt to exactly 39,445 / 26,036 / 264 / 2, with ingestion rows present.
+- **Shown:** `ingestion_tokens` on the platform overview (tenant rows, total, and a "Reading documents (embeddings)" spend card) and `ingestion_tokens_this_month` on tenant activity (a line on "What your chatbot knows").
+- **No backfill.** Chunk `token_count` approximates past spend but isn't a record of billing, so metering starts at this revision.
+- **Two defects the live run found, neither visible to unit tests:**
+  - `SqlUsageLedger.record` used an ORM flush, which must resolve the FK to `tenants`, a model the worker never imports. Every ingestion row failed with `NoReferencedTableError`, was swallowed by the fail-open handler, and documents indexed as if nothing were wrong. It's now a Core `INSERT`, guarded by a test.
+  - **Retry on a crawled page could never succeed.** The upload parser identifies text by extension, and a crawled page is named after its title, so every retry was refused as "contents do not match a supported format". Crawled pages (`source_url` set) now re-index from their stored markdown exactly as the crawler does.
+- **Verified:** real OpenAI reported 6,994 tokens for a document whose chunks store `token_count` 6,994. The document stayed `ready` with 10 chunks and 10 Qdrant points. 10 mutations were caught. A local run of the upload job wrongly marked one real document `failed` (the pre-fix Retry bug) and it was restored.
+- **Retrieval tester:** metered since `f4b8d2c6e1a9` (channel `search`).
+
+**Estimated AI cost (2026-09-28, migration `e7a3c1f9d2b4`).**
+- **Facts first.** Ledger rows now record:
+  - `chat_model` and `embedding_model`, written by the OpenAI adapters with the model actually sent. The platform default is a setting, so nothing upstream knew it.
+  - `embedding_tokens`, the part of `input_tokens` that was embedding. `input_tokens` keeps its meaning, so every earlier figure is unchanged.
+  - The only backfill is `embedding_tokens = input_tokens` on ingestion rows, which is true by construction. Older rows' models are unknown and stay **unpriced**.
+- **Prices are entered, never assumed.** `ai_model_prices` holds effective-dated USD per million tokens (input and output).
+  - It's append-only in practice: `app_platform` may INSERT and DELETE but not UPDATE, and `app_tenant` has no privilege on it.
+  - Screen: Platform → **AI prices** (`/platform/model-prices`). It lists the models used this month with their current price, plus the history. A first price defaults to the start of the month so already-recorded usage gets priced.
+  - Adds and deletes are audited with their values. A duplicate `(model, effective_from)` returns 409; a negative, sub-micro-dollar or above-$10,000 price returns 400 as a typo guard.
+- **Cost is computed at read time, per row, in SQL** (`SqlPlatformActivityReader.usage_cost_lines`).
+  - Each row is priced at its own model's entry in force **when it occurred** (`LEFT JOIN LATERAL ... ORDER BY effective_from DESC LIMIT 1`), in two parts: chat (input minus embedding, plus output) and embedding (at the embedding model's input price).
+  - No price means **unpriced tokens**, never $0. Pure totals are in `cost_summary.py` (split out to avoid an import cycle); use cases are in `usage_costs.py`.
+- **Shown to the platform only:** an "≈ $X estimated (partly priced)" line on the tokens KPI, an "Estimated cost this month" card with a per-model table, and an "Est. cost" column in tenant usage. Money travels as decimal strings; `usd()` never renders a real amount as $0.
+- **Verified live:** test prices of $1 / $10 per million for `gpt-5.5` and $0.10 for `text-embedding-3-large` reproduced a hand calculation exactly ($0.0084192; 13,596 priced and 53,433 unpriced tokens). A later $100 price left an earlier row at $1. Over HTTP through the console proxy: 201 / 409 / 400 / 204. Test prices were deleted afterwards and **the price table is empty for you to fill**. 15 mutations were caught.
+- **Not modelled:** cached-input discounts, batch pricing, taxes and credits, which is why the console says "estimate". Rerank (Cohere search units) is not costed.
+
+**Retrieval tester metered (2026-09-28, migration `f4b8d2c6e1a9`).**
+- **What's recorded:** the console's knowledge-base search box (`QueryKnowledgeBase`) records one `channel='search'` ledger row per test, holding the query embedding's tokens and model. It's costed like any embedding.
+- **Kept out of the chat allowance and the daily message count,** like ingestion: `ANSWER_CHANNELS` is unchanged.
+- **Written in `finally`, fail-open:** a search whose vector store fails after embedding is still billed, while a refused search (no permission, invisible knowledge base) reaches no provider and records nothing.
+- **Unmetered callers are unchanged:** without a ledger the search client is called exactly as before, with no `usage` keyword.
+- **One recorder:** `application/ai_resources/usage_recording.py::record_embedding_usage` now serves ingestion as well, and the worker's `record_ingestion_usage` delegates to it.
+- **Fixed on the way:** the in-memory vector client's `search_chunks` lacked the port's `usage` parameter.
+- **Caught by mypy, not tests:** the use case referenced `TokenUsage` / `SEARCH_CHANNEL` without importing them. The existing tests built it without a ledger, so the metered path never ran.
+- **Verified live** through the console proxy: a real search returned the right pages, wrote 8 tokens on `text-embedding-3-large`, a 404 search wrote nothing, and the Redis allowance was unchanged. 8 mutations were caught.
+- **With this, every provider call the platform makes is metered:** answers, ingestion and search tests. Cohere rerank is billed in search units and isn't tracked.
+
+**Browser pass as both users on the rebuilt image (2026-09-29).**
+- **Environment change:** the stack was rebuilt with everything above (`:18000` serves `/model-prices` and `/unanswered-questions`), and the dev database was **re-initialised** during it. Falgoon (`029923a5…`) and `tenant_007` were recreated by the user, with a fresh crawl.
+- **Platform admin:** all nine platform pages load with no console errors, and figures match SQL.
+- **Tenant admin:** every menu page works.
+  - A real crawl metered 23 ingestion rows totalling 293,812 tokens, against 293,834 by chunk count.
+  - A search test wrote a `search` row (7 tokens).
+  - An Ask answer wrote a `console` row with `chat_model=gpt-5.5` and `embedding_tokens=8`, so costing has what it needs.
+  - A chatbot created from the console was stored at the plan's 50/day, not 500.
+- **Fixed:**
+  - The widget cap field's browser-side `max` blocked saving *unrelated* edits when a legacy cap sat above the plan. `max` is now only set when the stored cap is within it.
+  - The "couldn't answer" empty state claimed every question was answered when there were none.
+  - Three leftover "assistant" strings on tenant screens.
+- **My own residue, cleaned:** before the reset, the throwaway `audit-probe-*` accounts left 5 revoked memberships on Falgoon's roster. Their membership and role rows were deleted; the deactivated user rows are kept for the audit log. The reset has since removed them anyway.
+- **Noted, not changed:** the login page calls three authenticated endpoints while signed out (harmless 401s in the console), and the recreated knowledge base is IT-academy content again.
+
+**Full test run on the shared database (2026-09-29).** The user authorised it, with no backup, so the dev data is wiped and will be recreated. The first run gave 1,109 passed and 15 failed in 17m46s. All 15 are fixed, and each fixed file was re-run green.
+- **8 stale-wording tests** now check the current prompt, one phrase per protection:
+  - answers come only from approved sources;
+  - the `<<<SOURCE>>>` and `<<<HISTORY>>>` fences are never instructions;
+  - the precedence ladder says lower layers "must never weaken" a higher one;
+  - avoid rules can only tighten;
+  - with no handoff available, no promised callback;
+  - no claim that a transfer completed unless the platform confirms it.
+- **Mutation-tested in memory** (never on disk, because a run was in progress): 8 deletions, 8 caught. The first attempt missed deleting the sources rule, because "never instructions" also appears in the history rule. The assertion now names the sources fence.
+- **5 Qdrant integration tests: my own regression.** The search-metering change made the adapter call `embed(..., usage=)`, and the stub `embed` in `test_qdrant_vector_store.py` didn't accept it. It is the "fake narrower than its Protocol" trap again, and only this DB-backed suite could show it. Both stub `embed`s now take `**kwargs`.
+- **Stale since earlier work:**
+  - `test_platform_and_tenant_authz_flow.py` never granted `allow_invite_members`. Invites are a plan capability, and a tenant with no entitlements row gets the restrictive defaults on purpose. The test now inserts the grant the way a platform admin's plan edit would.
+  - `test_public_widget_embed.py` still expected one `innerHTML` write. The header avatar added a second in `a170006` (2026-08-20), writing only strings from the script's own SVG table. The test now pins exactly those two writes (`root` shell, `headAvatar = avatarMarkup(...)`); adding a third write, or passing a raw `avatar_key` through, fails it.
+  - Two `widget.js` comments claiming "one place" were corrected, and `avatarMarkup` now reads own keys only (`hasOwnProperty`), so `__proto__` can't reach `innerHTML` as a non-table value. That change needs an API image rebuild to be served.
+- **Lesson:** two stale tests went unnoticed for weeks, and one was a month old, because DB-backed suites are rarely run here. The fix remains a separate dev database, which the user has declined for now.
+
+**Widget end-to-end on the rebuilt stack (2026-09-29).** The user re-created `admin@lait.co.uk`, `tenant_007` and Falgoon's crawl (25 pages). A widget was created from the console for `http://localhost:3010` at the plan's 50/day, and `tests/index.html` now embeds its key (`wk_DYWd…`).
+- **Checked on both consoles:** all ten platform pages and all nine tenant pages load.
+- **Every figure reconciled** after 5 answers, 1 handoff and 2 ratings. Ledger, stored turns, Redis, the tenant dashboard and the platform overview agree:
+  - 33,670 tokens (32,976 in / 694 out), and each turn's `token_count` equals its ledger row;
+  - messages 5, widget quota 5;
+  - by model: chat 33,623, embeddings 320,873 (320,826 ingestion + 47 from questions); `unattributed` 33,670.
+- **Cost arithmetic:** test prices produced $0.08981474, matching a hand calculation to the digit. The prices were deleted afterwards.
+- **Rebuild:** Redis counters were deleted and rebuilt to exactly 5 / 33,670.
+- **Other behaviour:** memory resolved "it" across turns; a disallowed origin got 403 and raised the dashboard's "hidden on http://evil.example" item.
+- **Fixed: BFF proxy stale keep-alive 500.** uvicorn closes idle connections after 5 s. When Node's event loop is stalled (dev compiles take 10–30 s; heavy load in production), undici reuses a socket the backend already closed, and the unhandled `fetch failed` became a 500. Changes:
+  - GET/HEAD and the token refresh retry once on `UND_ERR_SOCKET`/`ECONNRESET`. Refresh is safe to repeat, and an unretried failure there cleared the session.
+  - Writes are never retried.
+  - A remaining network failure returns a 502 `{detail}`; other exceptions stay 500.
+  - The 502 was proven by stopping the API. The retry path is reviewed but was not reproduced on demand.
+- **Found, then fixed in the next pass (below):**
+  1. **The model answered "What is the capital city of Australia?" with "Canberra"**, uncited and from general knowledge, despite the prompt. Retrieval always returns the nearest pages, so "no passages, no generation" never triggers for off-topic questions. It is stored `uncited` and does appear in the "couldn't answer" feed, but the visitor still received it. Suppressing uncited non-small-talk answers is the obvious fix and needs a product decision.
+  2. **An answer saying "the sources don't say… contact us [2]" counts as `grounded`,** because it cited something, so it never reaches the "couldn't answer" feed. This follows the classify-by-citation rule; it is a coverage gap, not a miscount.
+  3. **Handoff to a team with no members** tells the visitor "Someone will pick this up". Only holders of `view_all` (the owner) see it in the Inbox, and no push reaches anyone. The dashboard does warn the admin.
+
+**The three widget findings, fixed (2026-09-29, migration `a3c6e9f2b7d4`).**
+- **Uncited answers are held back** (`application/ai_resources/answer_gate.py`).
+  - `_stream_and_track` releases nothing until the answer cites a passage that was really offered; after that it streams as before.
+  - An answer that ends with no citation is replaced by `WITHHELD_REPLY` and stored as `withheld`.
+  - Measured live, the whole reply arrives within ~0.5 s of the first token, so holding costs almost nothing.
+  - **Exemptions fail toward showing the answer:**
+    - small talk;
+    - a request for a person;
+    - a nursery risk signal (`classify_nursery_risk`) on the question *or* the reply;
+    - a reply routing to safeguarding or emergency help (`_SAFETY_ROUTING`: 999/111/112, the DSL, police, NSPCC, ...);
+    - a short clarifying question.
+  - The reply-side check exists because the unit test caught that "I think a child at the nursery is being hurt" matches none of the narrow question patterns. Without it, safeguarding guidance would have been replaced with a generic apology.
+- **`[NO_ANSWER]` marker.** The prompt tells the model to open with it when the sources don't answer the question.
+  - It is stripped before display, including when split across stream chunks (`HeldText` holds back a trailing `[`), and stored as `not_in_sources`.
+  - "The sources don't say… contact us [2]" now reaches the "couldn't answer" feed.
+  - The feed covers `uncited`, `no_sources`, `not_in_sources` and `withheld`. Its `no_sources` flag (label "Not covered by your sources") is true for all but `uncited`.
+- **Handoff offers only staffed teams.**
+  - `TenantTeamRepository.staffed_team_ids` returns teams with at least one *active* membership.
+  - `OfferWidgetHandoff` filters on it, so with every team empty the visitor gets the existing "I'm not able to transfer you".
+  - `SelectHandoffTeam` also refuses an unstaffed team, for a stale button or a crafted id.
+  - The refusal message was the team's raw uuid, which the widget showed to the visitor. It is now a readable sentence, still a 404.
+  - The dashboard and Inbox copy changed to "visitors aren't offered it".
+- **BFF proxy, two more causes of random sign-outs** (`frontend/src/app/api/backend/[...path]/route.ts`):
+  1. **A failed refresh fetch cleared the session.** `refreshOnce` mapped every error to `null`, and `null` clears cookies. Proven live: a session whose refresh token was never presented to the backend lost its cookies. Now only a 4xx from `/refresh` ends a session; a network error or 5xx is a 502 (`UpstreamUnavailableError`), and a failed refresh is dropped from the share map.
+  2. **The 10 s share window was too short.** Seen live: the old token was re-presented 28 s and 61 s after rotation while the dev server was slow, which revoked a session (likely the user's own browser). It is now 120 s.
+     - Proven with `curl` and hand-set cookies: a rotated token replayed after 15 s now gets 200 with no reuse event.
+     - The mutation back to 10 s reproduced the bug: 401, a new `refresh_reuse_detected` event, and the whole session revoked.
+- **Tests:** 919 unit tests pass. `test_answer_gate.py` (17) and `test_handoff_staffed_teams.py` (4) are new. Mutation testing caught 12/12 in the answer path and handoff, plus the refresh window live.
+- **Live:**
+  - The Canberra question now gets "I cannot confirm … from the supplied sources" (`not_in_sources`, no marker visible).
+  - The pet-dog question is `not_in_sources`; an ordinary question is still `grounded` and streams.
+  - "Speak to a person" with Support empty gets the honest refusal; with a member added, Support is offered. The temporary member was removed.
+  - Ledger, Redis and each turn's `token_count` reconcile at 8 answers / 53,525 tokens.
+  - The `withheld` path was not triggered live, because with the marker instruction the model declines on its own. Unit tests cover it.
+- **The tenant's chatbot configuration now reaches the model** (the user approved it; see next section).
+
+**Tenant chatbot configuration wired into every answer (2026-09-29).**
+- **What changed.** `prompt_layers.build_system_prompt` has existed since `a170006` with no caller, so everything on the AI Chatbot page was stored and never sent: role, avoid rules, personality, response length, company context and handoff guidance. `AnswerQuestion._with_tenant_layers` now builds it inside `answer_from_namespace`, which both the widget and the console's Ask panel go through. It runs only when the model will actually be called.
+- **One small read per answer:** the settings row, the tenant's own `display_name` (new `TenantChatbotSettingsRepository.tenant_display_name`; RLS admits only the tenant's own `tenants` row), active teams and `staffed_team_ids`.
+- **Fails open to the platform policy alone**, which is what every answer used before, and logs a warning.
+- **Handoff guidance now matches what the widget offers.**
+  - A transfer is described as available only when the tenant allows it *and* an active team has an active member.
+  - `PromptLayers.from_settings` also stopped treating "no settings row" as "handoff off", which disagreed with the widget, whose default is allowed.
+- **Questions about the assistant itself** ("who are you?", "what can you help with?", "are you a bot?") are answered from the configured role:
+  - The `[NO_ANSWER]` instruction now says not to use the marker for them.
+  - `is_about_the_assistant` exempts them from the answer gate and hides them from the "couldn't answer" feed.
+  - The matcher is anchored so factual look-alikes ("what are you offering for schools?", "how can you help me with funding?") stay subject to the gate.
+  - The live run showed why: before the exemption, a self-introduction got through only because it happened to mention "safeguarding".
+- **Cost:** the layers add about 6,000 characters. Measured live, input tokens rose from about 6,100–6,700 to about 7,600–7,900 per answer.
+- **Shipped defaults:** the default company description no longer calls every tenant "a London-based day nursery"; it claims no location (test: `"London" not in` the default). The name comes from the tenant's own display name. `DEFAULT_COMPANY_NAME` is still "Falgoon Little Star", but `tenants.display_name` is NOT NULL, so it can only apply when no tenant is known.
+- **`[RESTRICTED]` marker (migration `b5d2f8a4c1e7`).** A decline caused by the tenant's own avoid rules opens with it instead of `[NO_ANSWER]`. It is stripped (split chunks included), never withheld, stored as `restricted` (which outranks `not_in_sources`), and left out of the "couldn't answer" feed: the sources may cover it, and a document cannot undo a chosen restriction. Verified live: with a discounts avoid rule, "Do you have any special offers on the Python course?" got a clean redirect to admissions, stored as `restricted`, absent from the feed. My earlier test's discount row (recorded before the fix) was relabelled `restricted`, and the test avoid rule was deleted. Mutation-tested (4).
+- **Verified live on the widget:**
+  - "Who are you?" answers "I'm the Falgoon Little Star AI Assistant — the nursery's digital front-desk assistant…" from the default role, with no "cannot confirm" preface and kept out of the feed.
+  - A temporary avoid rule ("never discuss discounts…") set through the console's behaviour endpoint turned the earlier detailed "up to 20%" answer into "Pricing questions, including discounts, are handled by the admissions team."
+  - Afterwards the settings row was deleted, so Falgoon is back to having no saved settings, and the Support team to empty.
+  - Ledger, Redis and each turn reconcile at 12 answers / 84,764 tokens.
+- **Tests:** 939 unit tests pass. `test_tenant_prompt_is_sent.py` (8) is new, plus matcher and feed tests. Mutation-caught: layers never applied (the original bug, 7 of 8 tests fail), handoff always available, inactive teams counted, display name dropped, no-settings read as handoff off, and both about-the-assistant exemptions.
+
+**Live ingestion progress in the knowledge-base console (2026-09-29).**
+- **Why Redis, not the `documents` row.** The upload job runs in one transaction from start to finish, so progress written to its row would be invisible until the end. Progress is also transient. So `IngestionProgressStore` (`application/ai_resources/ports.py`) is implemented by `infrastructure/cache/ingestion_progress.py`:
+  - one JSON value per document, keyed `ingest-progress:{tenant}:{document}`;
+  - 1-hour TTL;
+  - fails open on both sides.
+  - The row stays authoritative for ready/failed and the reason.
+- **Worker reports each stage:** `extracting` 5 → `chunking` 30 → `embedding` 35–85 → `indexing` 90. A reporter is created only after the job context is re-validated.
+  - **Embedding is sliced only when someone listens.** It runs in 64-passage requests (`EMBED_SLICE`) so the percentage really advances, e.g. "64 of 114 passages".
+  - Without a reporter (the crawl path) it stays one request, exactly as before.
+  - A failing store can never fail an ingestion.
+  - The worker container gained a Redis client, closed on shutdown.
+- **API.** `ListDocuments` reads progress only for `processing`/`failed` documents the caller was just authorized to list, for the caller's own tenant. `DocumentResponse` gains `stage`, `progress_percent` and `stage_detail`, all optional, so older consoles still work.
+- **Console** (`features/ai-resources/ingestion.tsx`, the knowledge-bases page):
+  - **Uploads:** files join the list the moment they're dropped and upload at once, two at a time, via `XMLHttpRequest` for byte-level progress (fetch has no upload-progress event). Files can be cancelled while sending; failed uploads can be retried or dismissed.
+  - **One 0–100% bar per file:** the upload takes 20% and the server pipeline 80%, so the bar never moves backwards at hand-over. A stage stepper reads Upload › Extract › Chunk › Embed › Index › Done.
+  - **Overall bar** for the batch: uploads, plus every document seen in flight while the dialog is open (including retries).
+  - **Failures** show "Failed while extracting content" with the exact reason and a Retry button.
+  - The list sits directly under the upload area; polling is every 1.5 s while anything is in flight.
+  - "New knowledge base" now says "Create and add documents" and opens the new knowledge base's documents dialog straight away.
+- **Verified live:**
+  - A 342 KB file went Queued 20% → Chunking 44% → Embedding "0 of 114" 48% → "64 of 114" 70% → Indexing 92% → Ready (114 passages), with the overall bar reaching "All 2 files ready".
+  - A fake `.pdf` failed at Extract with its reason, and retrying it was tracked in the summary.
+  - The test files were deleted afterwards: 25 documents, 0 test chunks. Their embeddings (159,031 tokens) remain in the ledger, as real spend.
+  - **The create-and-continue flow was verified afterwards.** The platform admin raised Falgoon's knowledge-base limit from 1 to 2 via Tenant entitlements (audited `platform.tenant_entitlements.updated`). `tenant_007` then created "Create flow test", its documents dialog opened by itself, and a dropped file went Uploading → Queued → Chunking → Embedding → Ready.
+  - That test knowledge base was later removed with the new knowledge-base delete (next section).
+  - Fixed on the way: the Visibility select showed the raw value "tenant" (the Base UI render-prop quirk again); "All 1 file ready" now reads "Your file is ready…"; a long knowledge-base description no longer stretches the list table sideways.
+- **Tests:** `test_ingestion_progress.py` (11). Mutation-caught (7): the embedding stage silent, always slicing, reporting errors propagating, extracting never reported, ready documents read, failed documents losing their stage, and a key without the tenant. 953 unit tests pass; `tsc`, `eslint` and `npm run build` are clean.
+
+**Knowledge bases can be deleted (2026-09-29, migration `c8e1f4a7b2d9`).**
+- **A soft delete, on purpose.** `knowledge_bases` is referenced by `documents` (soft-deleted, rows kept), `data_sources`, `chat_widgets` and `answer_feedback` (append-only history). A hard delete would be refused by those keys or destroy records kept deliberately.
+  - So there is a new `deleted_at` column, and `SqlKnowledgeBaseRepository.get_by_id`/`list_by_tenant` treat a deleted row as not existing.
+  - That single filter makes every authorized path (ask, search, upload, re-sync, widget creation) answer 404.
+  - The plan's knowledge-base count ignores deleted rows, so the slot is freed.
+- **`DeleteKnowledgeBase`** (`application/ai_resources/delete_knowledge_base.py`, `DELETE /v1/tenants/{id}/knowledge-bases/{kb}` → 204):
+  - Authorized like modifying the knowledge base: its owner or `tenant.knowledge_bases.manage`. An invisible one is 404, never 403.
+  - Every document goes through `purge_document`, now shared with `DeleteDocument` so the two cannot drift: vectors, then passages, then bytes (best-effort), then soft-delete.
+  - Audited as `ai_resources.knowledge_base_deleted` with the counts removed.
+- **Refused with 409 (`KnowledgeBaseInUseError`), touching nothing,** while a chatbot still answers from it (the message names the chatbot) or while a document is processing or a crawl is syncing.
+- **Console:** a delete icon on each knowledge-base row opens a confirmation showing exactly what goes ("25 documents and 470 searchable passages") and what stays (ratings, audit trail).
+  - You must type the name to confirm; the server's refusal is shown inside the dialog.
+  - The list and the plan notice refresh on success.
+- **Verified live:**
+  - Deleting `Falgoon_Data_Source` was refused ("used by your chatbot 'Website chatbot'"), and its 25 documents, 470 passages and 470 Qdrant points were untouched.
+  - Deleting "Create flow test" set `deleted_at`, left 0 live documents, 0 passages and 0 Qdrant points, and was audited.
+  - Afterwards its documents, search and delete all return 404, and the plan reads 1 of 2.
+- **Tests:** `test_delete_knowledge_base.py` (9). Mutation-caught (7): the chatbot check, the in-flight check, any member deleting, documents left behind, never marked deleted, not audited, and `purge_document` skipping vectors. 962 unit tests pass; `tsc`/`eslint` are clean.
+
+**Production readiness and DEPLOYMENT.md review (2026-09-29).**
+- **The launch plan** is in [docs/25-production-launch-plan.md](docs/25-production-launch-plan.md): 7 must-do items before a pilot, what was accepted for the pilot, and the enterprise gaps for afterwards. The user will ask for items one at a time.
+- **DEPLOYMENT.md was checked against the real files, and 30 corrections were made.** The production-breaking ones:
+  - Nginx had no `client_max_body_size`, so every upload over 1 MB would fail with 413.
+  - Part B Step 4b's JWT-key script was a Python syntax error.
+  - `https://yourdomain.com/docs` and `/readyz` were used as "live" and "deploy worked" checks, but Nginx routes them to the console, so both 404.
+  - `X-Forwarded-For` was appended rather than overwritten. With uvicorn's `forwarded_allow_ips="*"`, that lets a client pick the IP the rate limiter sees.
+- **Also corrected:**
+  - Rebuilds were promised in about a minute; they take 5–15 minutes because of the Dockerfile layer order.
+  - The zero-downtime deploy claim.
+  - The production admin permission list.
+  - A non-existent `DATABASE__PLATFORM_PASSWORD`/"Step 4e" in Troubleshooting.
+  - `down -v` removes 4 volumes, not 3.
+  - Qdrant was added to backups.
+  - Added: the one-console-process rule, optional VAPID keys, and a dev warning never to set `DATABASE__NAME=iam_platform_test`.
+- **The development part was otherwise accurate:** ports 15432/56379/56333/18000, and the test suite forced onto `iam_platform_test` by `tests/conftest.py`.
+- **New code issue found (launch item 4):** the console BFF doesn't forward the client IP, so all console users share one per-IP rate-limit bucket (300/min).
+
+**Launch item 4 done: each console user gets their own rate limit (2026-09-29).**
+- **Problem.** The API rate-limits per client IP (300/min). Signed-in traffic reaches it from the console's server process, which forwarded no IP, so every console user shared one bucket. Separately, uvicorn trusted `X-Forwarded-For` from anyone (`forwarded_allow_ips="*"`), so a caller could choose its own bucket.
+- **Fix, console side.** The BFF proxy's `clientIp()` forwards exactly one IP:
+  - the **last** `X-Forwarded-For` entry, which is the one the nearest proxy wrote, so a forged leading entry is ignored whether Nginx overwrites or appends;
+  - only if `isIP()` accepts it, with `::ffff:a.b.c.d` unwrapped to IPv4;
+  - on token refreshes too.
+  - Next.js itself sets the header from the socket when none arrives, so each browser gets its own bucket even without Nginx.
+- **Fix, API side.** A new setting, `FORWARDED_ALLOW_IPS` (default: loopback plus private networks), is passed to uvicorn by `asgi.server_config()`. By design, anything on the server's private network (Nginx and the console through the Docker bridge) is trusted.
+- **Tests:** `test_forwarded_client_ip.py` (6) runs uvicorn's own `ProxyHeadersMiddleware`. Mutations caught (3): trusting everyone again, not trusting the Docker bridge, and the server ignoring the setting.
+- **Verified live on the rebuilt API:**
+  - Visitor A: 300 × 401, then 429 and still 429.
+  - Visitor B, afterwards: 401 (unaffected), with its own count of 1.
+  - The forged `1.2.3.4` got no bucket.
+  - The real browser dashboard counted against `::1`.
+- **Frontend still has no test runner,** so the BFF half is guarded by the live proof only. 968 unit tests pass.
+
+**Open, and not decided:**
+- `PostAgentMessage` accepts *any* conversation id in the tenant — including a member's private Ask thread. The leak through the AI is closed, but whether agents should be able to write there at all is still a product decision.
+- Per-answer cost is ~6k tokens even for "hi": ~4.1k is system prompt plus tenant layers, and up to ~3.5k is five passages. Skipping retrieval for greetings, and prompt caching, have both been proposed but not built.
+
+**Enterprise chat upgrade (2026-09-27, uncommitted at time of writing).** Both AI chat surfaces now render markdown, with source cards, copy, regenerate, saved feedback and an auto-growing composer (Enter sends, Shift+Enter adds a new line, and it's IME-safe).
+- **Console:** the Ask dialog now uses `frontend/src/features/ai-resources/chat/` (`react-markdown` + `remark-gfm`, the only new dependencies). It shows the session as a thread, but **each question is still answered independently**: the tenant Ask endpoint is stateless, and the UI says so.
+- **Widget:** `widget.js` has its own **DOM-building** markdown renderer. Model text only ever goes through `textContent`/`createTextNode`, and `innerHTML` is still written in just the two static places. The widget previously listed *every* retrieved source while its comment said "cited only", because it never read the `done` frame's `cited` list. It now shows cited sources only.
+- **Feedback:** new `answer_feedback` table (migration `c4a91e7d2f36`), with `POST …/knowledge-bases/{id}/answer-feedback` for the console and `POST /v1/public/chat/feedback` for the widget. It's append-only (UPDATE and DELETE revoked from `app_tenant`), with RLS on both `USING` and `WITH CHECK`, composite FKs, an exactly-one-author CHECK, and a cap of 50 ratings per visitor session. Each door authorizes exactly as asking through it does. Reviewing bad answers is SQL-only for now; there's no review screen yet.
+- **Rendering rules worth keeping:** no raw HTML, links limited to `http(s)`/`mailto` and opened with `noopener noreferrer`, and **images are never loaded**. An image URL is the one markdown element a browser fetches without a click, which makes it the classic prompt-injection exfiltration channel.
+- **Deploy notes:** `widget.js` is read once at API startup and cached by browsers for an hour (`max-age=3600`), so visitors pick up changes within an hour of a deploy.
+
+**Browser verification pass (2026-09-27).** Both chats and every tenant and platform screen were driven in a real browser, against the rebuilt dev container. Fixed along the way:
+- **The AI Chatbot page asked for a knowledge base the tenant already had.** It showed "go to Knowledge bases, choose one" whenever no *widget* existed. It now lists the tenant's knowledge bases, preselects a single one, and creates the chatbot on an explicit click; the only input it needs is the website address. There's deliberately no silent auto-creation: a widget needs an allowed origin to work anywhere. The button disables while saving, and a double-click was tested to create exactly one widget.
+- **Login ignored the permission-based routing on `/`.** It pushed everyone to `/select-tenant`, so a platform admin landed on "No tenants yet". Login and the OAuth callback now go to `/`.
+- **Open redirect in `?next=`.** It was used unchecked; now only same-site paths are accepted (`//host` and `/\host` are refused).
+- **Widget session race.** Opening the panel and typing immediately minted two sessions, which could split one visitor across two conversations. The in-flight mint is now shared. The greeting is also skipped if the visitor has already asked something.
+- **Stale seed data.** `bootstrap_tenant_catalog.py` still seeded the four `tenant.assistants.*` permissions that migration `f1c94a70b2d8` deleted. Re-running it (as the upgrade docs recommend) put them back.
+- **Loading shown as empty.** Inbox showed "No teams yet" and Members showed "No roles" while their queries were still loading.
+- **Conversations empty state** pointed at "a published assistant", which tenants no longer have. It now points to *All conversations*. "Only mine" stays the default: viewing everything is an explicit, audited step.
+- **Rendering.** Stored AI answers in the thread viewers now use the chat's safe markdown renderer; people's messages stay plain text. When a finished answer cited nothing, its retrieved pages are folded away instead of being labelled "Sources".
+- **Base UI warnings.** Three `<Button render={<Link/>}>` usages were missing `nativeButton={false}`.
+
+**Sources and feedback review (2026-09-27).**
+- **One source per document.** Retrieval returns passages, and five passages of one page used to show as five cards. The answer path now attaches each document's title and URL through one best-effort lookup (`AnswerQuestion._with_titles` → `DocumentRepository.describe_many`); a failed lookup means no titles, never a failed answer. The console groups by `document_id`. The public stream sends an opaque per-answer `doc` ordinal (`_public_citations`), never an id. Inline citations are renumbered to their card, and a repeated `[1][2]` from one page collapses to a single chip.
+- **Titles on the public widget are for web pages only.** A crawled page's title is public; an uploaded file's name can disclose internal material, so uploads still show as "Document · page 5".
+- **Source display.** A compact "N web pages" pill expands into cards showing title, domain and type. The full URL appears only as the tooltip, and links open in a new tab with `noopener noreferrer`. Letter badges are used instead of favicons, because fetching a favicon would tell an outside host which sources were read.
+- **Feedback review.**
+  - Tenant: `GET /v1/tenants/{id}/answer-feedback`, gated on `tenant.conversations.view` (ratings carry visitors' questions), with the query always filtered by the tenant's own id.
+  - Platform: `GET /v1/platform/answer-feedback`, gated on `platform.model_configurations.manage`, with every read **audited** as `platform.answer_feedback.viewed`.
+  - Screens: `/tenant/[id]/feedback` and `/platform/feedback`. Both show headline counts, rating/channel filters and a detail dialog; the platform one adds a per-tenant table sorted worst-first. A tenant session cannot read `users`, so a console rating shows there as "Team member" and only the platform view shows the email.
+
+**Two operational facts.**
+- **Every code change rebuilds Chromium.** The runtime stage's `COPY --from=builder /opt/venv` sits before `playwright install --with-deps chromium`, so any source change reruns that layer, and a dev rebuild took about 45 minutes. Moving the app-code copy after the heavy layers would fix it; that hasn't been done.
+- **The dev API container's root filesystem is read-only.** `docker cp` hot-patching is refused, so a code change needs a rebuild.
+
+**⚠ Local data hazard, which already caused data loss.** `.env` sets `DATABASE__NAME=iam_platform_test`, and the dev API container uses the same database that pytest's conftest `TRUNCATE`s. On 2026-09-27 a `pytest tests/unit tests/security` run wiped every local user, tenant, knowledge base, widget and conversation. **Only `tests/unit` is safe to run without first asking the user.** The fix, not yet made, is a separate dev database.
+
+**Status:** migration head `c8e1f4a7b2d9`. The API and worker images were rebuilt on 2026-09-29 with everything above, including the `widget.js` avatar hardening. Full suite on 2026-09-29: 1,124 tests, all green after the fixes in "Full test run on the shared database"; `tests/unit` is 898. `mypy src/iam_platform`: 10 pre-existing errors, none in files changed here. Next.js and `eslint-config-next` were upgraded from 16.3.0 to 16.3.6 (pinned) on 2026-09-29, fixing a **critical** unauthenticated RCE on Windows-hosted servers. `npm audit fix` (non-forced) cleared 7 transitive advisories, and `npm audit` now reports 0. `tsc`, `eslint src` and `npm run build` pass; the login page and BFF proxy were checked in the browser.
+
+**Recurring traps in this pass**, each hit more than once:
+- **A fake narrower than the Protocol it replaces** fails every caller with a `TypeError` whenever a port grows a parameter. It happened three times; give shared fakes `**kwargs`.
+- **A test that exercises a helper directly passes a mutation that deletes the helper's call site.** Drive the real entry point (`execute`), then mutate.
+- **Time-dependent assertions** — a test comparing a zone against UTC only on days the dates happened to differ passed with the feature deleted.
+
 **Phases 10–14 — Knowledge Base Ingestion & RAG Query Pipeline.** Full spec, phase boundaries, and per-phase implementation notes: [docs/24-knowledge-base-ingestion-and-rag.md](docs/24-knowledge-base-ingestion-and-rag.md). Turns the Phase 7 AI-resource ports into a real pipeline using Qdrant (self-hosted), Cloudflare R2/local filesystem for storage, OpenAI (`text-embedding-3-large` + a configured chat model), Cohere for reranking, and `crawl4ai`/`docling`/`langgraph` for crawling/parsing/orchestration — culminating in an embeddable public widget with its own session-token auth surface (distinct from the platform/tenant JWT model). **Phases 10–14 are done** — the pipeline is complete, from an uploaded file or crawled site through to an embeddable widget answering a stranger's question on a third-party page.
 
 ## Phase 10 — what's built

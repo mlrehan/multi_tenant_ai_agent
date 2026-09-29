@@ -251,3 +251,61 @@ class TestAcceptInvitation:
                     token=raw_token,
                 )
             )
+
+
+class TestAddMemberDirectlyHonoursThePlan:
+    """"Add member" is the no-email shortcut beside invitations. It copied the
+    permission check but not the plan check, so a tenant whose plan withholds
+    adding members could add them anyway through this door."""
+
+    def _plan(self, uow: FakeTenantUnitOfWork, tenant_id, *, allow: bool) -> None:
+        from iam_platform.domain.tenancy.entitlements import TenantEntitlements
+
+        uow.entitlements.stored[tenant_id] = TenantEntitlements(
+            id=uuid4(), tenant_id=tenant_id, allow_invite_members=allow,
+            created_at=NOW, updated_at=NOW,
+        )
+
+    async def test_refused_when_the_plan_withholds_adding_members(self) -> None:
+        from iam_platform.application.ai_resources.exceptions import (
+            FeatureNotEntitledError as _NotEntitled,
+        )
+        from iam_platform.application.tenancy.invite_member import (
+            AddMemberDirectly,
+            AddMemberDirectlyCommand,
+        )
+
+        uow = FakeTenantUnitOfWork()
+        tenant_id = uuid4()
+        actor_id = _seed_inviter(uow, tenant_id, {"tenant.users.invite"})
+        self._plan(uow, tenant_id, allow=False)
+        before = len(uow.tenant_memberships.by_id)
+
+        with pytest.raises(_NotEntitled):
+            await AddMemberDirectly(uow, FixedClock(NOW)).execute(
+                AddMemberDirectlyCommand(
+                    actor_user_id=str(actor_id), tenant_id=str(tenant_id),
+                    target_user_id=str(uuid4()), role_codes=[],
+                )
+            )
+        assert len(uow.tenant_memberships.by_id) == before
+
+    async def test_allowed_when_the_plan_permits_it(self) -> None:
+        from iam_platform.application.tenancy.invite_member import (
+            AddMemberDirectly,
+            AddMemberDirectlyCommand,
+        )
+
+        uow = FakeTenantUnitOfWork()
+        tenant_id = uuid4()
+        actor_id = _seed_inviter(uow, tenant_id, {"tenant.users.invite"})
+        self._plan(uow, tenant_id, allow=True)
+        target = uuid4()
+
+        await AddMemberDirectly(uow, FixedClock(NOW)).execute(
+            AddMemberDirectlyCommand(
+                actor_user_id=str(actor_id), tenant_id=str(tenant_id),
+                target_user_id=str(target), role_codes=[],
+            )
+        )
+        assert any(m.user_id == target for m in uow.tenant_memberships.by_id.values())

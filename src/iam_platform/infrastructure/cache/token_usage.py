@@ -35,6 +35,8 @@ from uuid import UUID
 
 from redis.asyncio import Redis
 
+from iam_platform.application.ai_resources.ports import UsageLedger
+
 logger = logging.getLogger("iam_platform.infrastructure.cache.token_usage")
 
 #: Two months, so a key written on the last day of a month is still readable
@@ -44,9 +46,11 @@ _KEY_TTL_SECONDS = 62 * 24 * 60 * 60
 
 
 def _key(tenant_id: UUID, model_configuration_id: UUID) -> str:
-    return (
-        f"token-usage:{tenant_id}:{model_configuration_id}:{datetime.now(UTC):%Y-%m}"
-    )
+    return _key_at(tenant_id, model_configuration_id, datetime.now(UTC))
+
+
+def _key_at(tenant_id: UUID, model_configuration_id: UUID, now: datetime) -> str:
+    return f"token-usage:{tenant_id}:{model_configuration_id}:{now:%Y-%m}"
 
 
 class BudgetUnavailableError(Exception):
@@ -59,12 +63,29 @@ class BudgetUnavailableError(Exception):
 
 
 class RedisTokenUsageStore:
-    def __init__(self, redis: Redis) -> None:
+    def __init__(self, redis: Redis, *, ledger: UsageLedger | None = None) -> None:
         self._redis = redis
+        # Seeds a missing key from Postgres -- the same rule, and the same
+        # reasons, as `tenant_quota.RedisTenantQuotaStore`.
+        self._ledger = ledger
+
+    async def _seeded_key(self, tenant_id: UUID, model_configuration_id: UUID) -> str:
+        now = datetime.now(UTC)
+        key = _key_at(tenant_id, model_configuration_id, now)
+        if self._ledger is not None and not await self._redis.exists(key):
+            spent = await self._ledger.configuration_tokens_since(
+                tenant_id=tenant_id,
+                model_configuration_id=model_configuration_id,
+                since=datetime(now.year, now.month, 1, tzinfo=UTC),
+            )
+            await self._redis.set(key, spent, nx=True, ex=_KEY_TTL_SECONDS)
+        return key
 
     async def read(self, *, tenant_id: UUID, model_configuration_id: UUID) -> int:
         try:
-            raw = await self._redis.get(_key(tenant_id, model_configuration_id))
+            raw = await self._redis.get(
+                await self._seeded_key(tenant_id, model_configuration_id)
+            )
         except Exception as exc:
             logger.exception(
                 "token budget could not be read for tenant %s / configuration %s",
@@ -79,8 +100,10 @@ class RedisTokenUsageStore:
     ) -> None:
         if tokens <= 0:
             return
-        key = _key(tenant_id, model_configuration_id)
         try:
+            # Seeded first; a seeding failure skips the increment rather than
+            # creating a key that hides the month's history.
+            key = await self._seeded_key(tenant_id, model_configuration_id)
             pipe = self._redis.pipeline()
             pipe.incrby(key, tokens)
             # `nx=True` so the TTL is set once, by the first answer of the

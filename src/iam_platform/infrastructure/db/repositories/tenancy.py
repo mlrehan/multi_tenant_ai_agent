@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from iam_platform.application.tenancy.ports import MemberContact
 from iam_platform.domain.shared.value_objects import Email
 from iam_platform.domain.tenancy.entities import (
     InvitationStatus,
@@ -271,3 +272,38 @@ class SqlTenantFeatureRepository:
             )
         )
         await self._session.flush()
+
+
+class SqlTenantMemberDirectory:
+    """`TenantMemberDirectory` over the tenant's own session.
+
+    The `m.tenant_id = :tenant_id` filter is load-bearing, not redundant: the
+    membership RLS policy also shows the *caller's own* memberships in other
+    tenants, and `users` has no RLS at all. Without it, a person belonging to
+    two tenants would see their own row from the other one -- and a future
+    edit that dropped the join would expose every user on the platform.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def contacts(self, tenant_id: UUID) -> dict[UUID, MemberContact]:
+        rows = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT m.id,
+                           CASE WHEN u.deleted_at IS NULL THEN u.email END,
+                           p.display_name
+                    FROM tenant_memberships m
+                    JOIN users u ON u.id = m.user_id
+                    LEFT JOIN user_profiles p ON p.user_id = u.id
+                    WHERE m.tenant_id = :tenant_id
+                    """
+                ),
+                {"tenant_id": tenant_id},
+            )
+        ).all()
+        return {
+            UUID(str(r[0])): MemberContact(email=r[1], display_name=r[2]) for r in rows
+        }

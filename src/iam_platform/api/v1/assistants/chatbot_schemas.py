@@ -15,7 +15,7 @@ then have to truncate silently.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -80,12 +80,12 @@ class UpdateChatbotSettingsRequest(BaseModel):
     allow_ai_for_unassigned_conversations: bool = True
     daily_message_limit: int | None = Field(default=None, ge=0)
     share_visitor_location: bool = True
-    conversation_retention_days: int = 30
-    #: Bounded to match the column. Not validated against a zone list here --
-    #: the IANA database changes, and the application checks against the
-    #: zoneinfo actually installed, degrading an unknown name to UTC rather
-    #: than refusing to answer.
-    quota_timezone: str = Field(default="UTC", max_length=64)
+    #: Omitted (null) keeps the stored value -- see UpdateChatbotSettingsCommand.
+    conversation_retention_days: int | None = None
+    #: Omitted (null) keeps the stored value. Bounded to match the column; the
+    #: application refuses a *change* to a zone the installed zoneinfo does not
+    #: know, and tolerates a stored zone that has since gone stale.
+    quota_timezone: str | None = Field(default=None, max_length=64)
 
 
 class TenantPlanResponse(BaseModel):
@@ -107,6 +107,10 @@ class TenantPlanResponse(BaseModel):
     messages_used_today: int | None
     tokens_used_this_month: int | None
     effective_daily_message_limit: int | None
+    #: 80 / 90 / 95 / 100 once usage reaches that percentage of the allowance,
+    #: else null. The same rule the platform overview applies, server-side.
+    token_alert_level: int | None = None
+    message_alert_level: int | None = None
 
 
 class TeamResponse(BaseModel):
@@ -251,3 +255,63 @@ class SetConversationAiModeRequest(BaseModel):
 
 class AgentTypingRequest(BaseModel):
     typing: bool
+
+
+class TenantDailyActivityResponse(BaseModel):
+    day: date
+    conversations_started: int
+    questions: int
+    answers: int
+    handoffs: int
+
+
+class TenantPeriodResponse(BaseModel):
+    current: int
+    previous: int
+
+
+class KnowledgeSummaryResponse(BaseModel):
+    ready: int
+    processing: int
+    failed: int
+    web_pages: int
+    files: int
+    last_added_at: datetime | None
+
+
+class TenantActivityResponse(BaseModel):
+    """The tenant dashboard's activity. Counts only; comparisons are the
+    server's so the tenant and the platform operator compute a week alike."""
+
+    generated_at: datetime
+    #: Oldest first, UTC days, zero-filled.
+    daily: list[TenantDailyActivityResponse]
+    trend_days: int
+    questions: TenantPeriodResponse
+    conversations: TenantPeriodResponse
+    handoffs: TenantPeriodResponse
+    satisfaction_days: int
+    helpful: TenantPeriodResponse
+    not_helpful: TenantPeriodResponse
+    waiting_handoffs: int
+    handled_handoffs: int
+    oldest_waiting_at: datetime | None
+    documents_stuck: int
+    knowledge: KnowledgeSummaryResponse
+    #: Embedding tokens spent reading documents this UTC month. Not part of
+    #: the monthly AI allowance.
+    ingestion_tokens_this_month: int = 0
+
+
+class UnansweredQuestionResponse(BaseModel):
+    question: str
+    times_asked: int
+    last_asked_at: datetime
+    #: True when nothing at all was found for it; false when passages were
+    #: found but the answer cited none of them.
+    no_sources: bool
+
+
+class UnansweredQuestionsResponse(BaseModel):
+    days: int
+    questions: list[UnansweredQuestionResponse]

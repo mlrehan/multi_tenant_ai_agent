@@ -126,11 +126,20 @@ export interface TenantMembership {
   tenant_id: string;
   status: MembershipStatus;
   is_default: boolean;
+  /** Null for a revoked membership (the former member is not told the
+   *  tenant's current name), and absent from an older API -- callers fall
+   *  back to the id via `tenantLabel`. */
+  tenant_slug?: string | null;
+  tenant_display_name?: string | null;
 }
 
 export interface TenantMember {
   membership_id: string;
   user_id: string;
+  /** From a projection scoped to this tenant's own members. Null for a
+   *  deleted account; absent from an older API. */
+  email?: string | null;
+  display_name?: string | null;
   status: MembershipStatus;
   is_default: boolean;
   department_id: string | null;
@@ -208,7 +217,17 @@ export interface KnowledgeBaseDocument {
    *  pipeline finished but found nothing to index. */
   chunk_count: number;
   created_at: string;
+  /** Live pipeline stage while `processing` (and the stage reached when it
+   *  `failed`). Absent while waiting for a worker, or when an older API or an
+   *  unavailable progress store gives none -- show plain status then. */
+  stage?: IngestionStage | null;
+  /** 0-100 across the whole server-side pipeline. */
+  progress_percent?: number | null;
+  /** e.g. "120 of 466 passages". */
+  stage_detail?: string | null;
 }
+
+export type IngestionStage = "extracting" | "chunking" | "embedding" | "indexing";
 
 export interface DocumentChunk {
   id: string;
@@ -262,6 +281,24 @@ export interface ChatWidget {
   /** Built server-side, because only the server knows this API's public
    *  origin -- see the note in the widget card. */
   embed_snippet: string;
+  /** The install check. Written when a page loads the chatbot (`seen`) or is
+   *  refused because its address isn't listed (`refused`); throttled to one
+   *  write per five minutes per origin. Optional because an older API does
+   *  not send them -- absent means "unknown", never "never seen". */
+  last_seen_at?: string | null;
+  last_seen_origin?: string | null;
+  last_refused_at?: string | null;
+  last_refused_origin?: string | null;
+}
+
+/** One question the chatbot could not answer from the tenant's sources. */
+export interface UnansweredQuestion {
+  question: string;
+  times_asked: number;
+  last_asked_at: string;
+  /** True when retrieval found nothing at all; false when it answered
+   *  without citing anything. */
+  no_sources: boolean;
 }
 
 /** One model the current tenant is allowed to assign. The server returns only
@@ -315,6 +352,8 @@ export interface Conversation {
   status: ConversationStatus;
   created_at: string;
   last_message_at: string | null;
+  /** Who replies next. Optional: an API from before this field omits it. */
+  state?: ConversationState | null;
 }
 
 /** Mirrors `MessageRole` in domain/ai_resources/entities.py. `user`/`assistant`
@@ -363,6 +402,10 @@ export interface AnswerCitation {
   document_id: string;
   source_location: string | null;
   relevance: number;
+  /** The document's title and, for a crawled page, its URL. Optional: an
+   *  older API omits them, and a failed lookup sends `null`. */
+  title?: string | null;
+  source_url?: string | null;
 }
 
 export interface KnowledgeBaseQueryHit {
@@ -416,6 +459,10 @@ export interface ChatbotSettings {
    *  admin sees their 5,000 applied as 1,000 rather than meeting it as a 429. */
   effective_daily_message_limit: number | null;
   share_visitor_location: boolean;
+  /** IANA name the daily message limit resets by ("Europe/London"). */
+  quota_timezone: string;
+  /** How long conversations are kept before automatic deletion, in days. */
+  conversation_retention_days: number;
   /** The tenant's own brief, raw ("" when never written) so the form can show
    *  `default_role`/`default_avoid` as the starting point rather than claiming
    *  the tenant typed them. Saved through a separate behaviour endpoint. */
@@ -441,7 +488,14 @@ export interface TenantPlan {
   messages_used_today: number | null;
   tokens_used_this_month: number | null;
   effective_daily_message_limit: number | null;
+  /** 80 / 90 / 95 / 100 once usage reaches that percentage, else null.
+   *  Computed server-side with the rule the platform overview uses. Optional
+   *  because an older API does not send it. */
+  token_alert_level?: AlertLevel;
+  message_alert_level?: AlertLevel;
 }
+
+export type AlertLevel = 80 | 90 | 95 | 100 | null;
 
 export interface TenantEntitlements {
   tenant_id: string;
@@ -540,9 +594,26 @@ export interface TenantSpend {
   used_tokens: number | null;
   remaining_tokens: number | null;
   running_low: boolean;
+  /** The platform's ceiling for this tenant. */
   max_messages_per_day: number | null;
+  /** What is actually enforced today: the ceiling lowered by the tenant's own
+   *  setting. Show this as the allowance; the ceiling is context. */
+  effective_messages_per_day?: number | null;
   used_messages_today: number | null;
   remaining_messages_today: number | null;
+  token_alert_level?: AlertLevel;
+  message_alert_level?: AlertLevel;
+  /** This month's tokens by direction; input includes the question's
+   *  embedding. May sum to less than `used_tokens` (answers recorded before
+   *  the split existed). Optional: an older API does not send them. */
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  /** Embedding tokens for this tenant's documents this month; not in
+   *  `used_tokens` (the allowance). */
+  ingestion_tokens?: number;
+  /** Estimated cost this month, decimal string; see `CostSummary`. */
+  cost_usd?: string;
+  unpriced_tokens?: number;
   models: TenantModelSpend[];
 }
 
@@ -559,4 +630,131 @@ export interface PlatformOverview {
   /** The threshold the flags were computed with, so the UI can explain why a
    *  row is highlighted instead of restating a number that could drift. */
   low_remaining_fraction: number;
+  /** Every tenant's embedding tokens for reading documents this UTC month.
+   *  Not included in any tenant's allowance. Optional: an older API omits it. */
+  ingestion_tokens?: number;
+  /** This month's estimated cost. Optional: an older API omits it. */
+  costs?: CostSummary | null;
+}
+
+/** Money arrives as a decimal **string** -- a per-million price times a few
+ *  thousand tokens is fractions of a cent, and a JSON float would round it. */
+export interface ModelCost {
+  model: string | null;
+  kind: "chat" | "embedding";
+  tokens: number;
+  /** Tokens with no price in force (or no recorded model). Never costed at 0. */
+  unpriced_tokens: number;
+  cost_usd: string;
+}
+
+export interface CostSummary {
+  currency: string;
+  total_usd: string;
+  priced_tokens: number;
+  unpriced_tokens: number;
+  by_model: ModelCost[];
+}
+
+export interface ModelPrice {
+  id: string;
+  model_name: string;
+  input_usd_per_million: string;
+  output_usd_per_million: string;
+  effective_from: string;
+  created_at: string;
+}
+
+export interface ModelInUse {
+  model: string;
+  kind: "chat" | "embedding";
+  tokens_this_month: number;
+  current: ModelPrice | null;
+}
+
+export interface ModelPriceCatalogue {
+  prices: ModelPrice[];
+  models_in_use: ModelInUse[];
+}
+
+export interface DailyActivity {
+  /** A UTC calendar day, `YYYY-MM-DD`. */
+  day: string;
+  conversations_started: number;
+  questions: number;
+  answers: number;
+  handoffs: number;
+  tokens: number;
+}
+
+export interface PeriodComparison {
+  current: number;
+  previous: number;
+}
+
+export interface TenantAttention {
+  tenant_id: string;
+  display_name: string;
+  slug: string;
+  waiting_handoffs: number;
+  oldest_waiting_at: string | null;
+  stuck_documents: number;
+  failed_documents: number;
+}
+
+export interface KnowledgeSummary {
+  ready: number;
+  processing: number;
+  failed: number;
+  web_pages: number;
+  files: number;
+  last_added_at: string | null;
+}
+
+/** GET /v1/tenants/{id}/activity -- the tenant dashboard's counts. */
+export interface TenantActivity {
+  generated_at: string;
+  daily: Omit<DailyActivity, "tokens">[];
+  trend_days: number;
+  questions: PeriodComparison;
+  conversations: PeriodComparison;
+  handoffs: PeriodComparison;
+  satisfaction_days: number;
+  helpful: PeriodComparison;
+  not_helpful: PeriodComparison;
+  waiting_handoffs: number;
+  handled_handoffs: number;
+  oldest_waiting_at: string | null;
+  documents_stuck: number;
+  knowledge: KnowledgeSummary;
+  /** Embedding tokens spent reading this tenant's documents this month. Not
+   *  counted against the monthly AI allowance. Optional for an older API. */
+  ingestion_tokens_this_month?: number;
+}
+
+/** GET /v1/platform/activity. Counts only; the comparisons are the server's,
+ *  so every client makes the same claim about the same week. */
+export interface PlatformActivity {
+  generated_at: string;
+  /** Oldest first, UTC days, zero-filled. */
+  daily: DailyActivity[];
+  trend_days: number;
+  questions: PeriodComparison;
+  conversations: PeriodComparison;
+  handoffs: PeriodComparison;
+  satisfaction_days: number;
+  helpful: PeriodComparison;
+  not_helpful: PeriodComparison;
+  active_tenants: number;
+  waiting_handoffs: number;
+  handled_handoffs: number;
+  oldest_waiting_at: string | null;
+  documents_processing: number;
+  documents_stuck: number;
+  documents_failed: number;
+  stuck_after_minutes: number;
+  attention: TenantAttention[];
+  /** Token history begins here; null until the first answer is recorded. */
+  usage_recorded_since: string | null;
+  health: { name: string; healthy: boolean }[];
 }

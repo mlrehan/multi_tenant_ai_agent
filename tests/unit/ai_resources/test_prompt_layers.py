@@ -37,8 +37,8 @@ class TestOrdering:
             prompt.index("ABC Nursery"),
             prompt.index("ROLE-MARKER"),
             prompt.index("AVOID-MARKER"),
-            prompt.index("Tone and length"),
-            prompt.index("Transferring to a colleague"),
+            prompt.index("Tenant-configured communication style"),
+            prompt.index("Human handoff configuration"),
         ]
         assert positions == sorted(positions), "layers are out of order"
 
@@ -76,7 +76,8 @@ class TestStandingIsStatedNotImplied:
         """A tenant may tighten what the bot will discuss and must never be
         able to loosen a platform restriction through the same field."""
         prompt = build_system_prompt(BASE, PromptLayers(avoid="No fees discussion."))
-        assert "can never remove one imposed above" in prompt
+        assert "may make the assistant more restrictive" in prompt
+        assert "can never remove, weaken, reinterpret, or override" in prompt
 
 
 class TestTenantTextCannotEscapeItsFence:
@@ -103,14 +104,15 @@ class TestHandoffGuidance:
         having configured no teams produces an offer that dead-ends -- the
         visitor is told a human is coming and nobody is."""
         prompt = build_system_prompt(BASE, PromptLayers(handoff_available=False))
-        assert "not available" in prompt
-        assert "Do not promise a callback" in prompt
+        assert "transfer is not available" in prompt
+        assert "Do not invent contact details, promise a callback" in prompt
 
     def test_the_model_is_told_it_does_not_perform_the_transfer_itself(self) -> None:
         """The failure this guards: the AI says "I'm transferring you" while
         the row never moves, so the visitor waits for a human nobody told."""
         prompt = build_system_prompt(BASE, PromptLayers(handoff_available=True))
-        assert "the system performs the transfer, not you" in prompt
+        assert "Never claim the transfer" in prompt
+        assert "unless the platform explicitly confirms it" in prompt
 
 
 class TestStyleSelection:

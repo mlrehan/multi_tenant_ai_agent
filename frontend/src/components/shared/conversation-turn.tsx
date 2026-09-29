@@ -2,6 +2,7 @@
 
 import { MessageSquareText } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Markdown } from "@/features/ai-resources/chat/markdown";
 import type { ConversationMessage, MessageRole } from "@/lib/types";
 
 /**
@@ -69,14 +70,30 @@ export function ConversationTurn({
       >
         {label}
       </Badge>
-      {/* No markdown renderer, deliberately: this is model output built from
-          tenant-uploaded documents plus free text written by strangers, and
-          treating it as markup is how a poisoned document becomes script
-          execution in an admin's browser. React escapes by default.
+      {/* AI answers are rendered as markdown -- they are written in it, and
+          shown raw the asterisks, pipes and `[1]` markers made every reopened
+          answer look broken next to the same answer in the live chat.
 
-          `break-words` because answers routinely carry long unbroken tokens
+          The reason this used to be plain text still stands: this is model
+          output built from tenant-uploaded documents, and a renderer that
+          turned markup into HTML would let a poisoned document run script in
+          an admin's browser. `Markdown` is the chat's own renderer and meets
+          that: raw HTML is dropped, links are `http(s)`/`mailto` only, and
+          images are never fetched. Everything *people* wrote -- visitors,
+          agents, internal notes -- stays plain text, exactly as typed.
+
+          `break-words` because messages routinely carry long unbroken tokens
           (URLs, ids) that `whitespace-pre-wrap` alone will not break. */}
-      <p className="mt-1 text-sm whitespace-pre-wrap break-words">{content}</p>
+      {role === "assistant" ? (
+        <div className="mt-1">
+          <Markdown
+            text={content}
+            citationNumbers={new Map(message.citations.map((c) => [c.label, c.label]))}
+          />
+        </div>
+      ) : (
+        <p className="mt-1 text-sm whitespace-pre-wrap break-words">{content}</p>
+      )}
       {message.citations.length > 0 && (
         <p className="mt-1 text-xs text-muted-foreground">
           Sources:{" "}

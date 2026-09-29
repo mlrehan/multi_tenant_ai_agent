@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from iam_platform.application.ai_resources.ports import (
     AiAssistantRepository,
+    AnswerFeedbackRepository,
     AssistantMemberRepository,
     ChatWidgetRepository,
     ConversationHandoffRepository,
@@ -28,6 +29,8 @@ from iam_platform.application.ai_resources.ports import (
     DocumentRepository,
     KnowledgeBaseRepository,
     ModelConfigurationRepository,
+    ModelPriceRepository,
+    PlatformActivityReader,
     ProviderCredentialRepository,
     PushSubscriptionRepository,
     TenantChatbotSettingsRepository,
@@ -60,6 +63,7 @@ from iam_platform.application.platform_authz.ports import (
 from iam_platform.application.tenancy.ports import (
     TenantFeatureRepository,
     TenantInvitationRepository,
+    TenantMemberDirectory,
     TenantMembershipRepository,
     TenantRepository,
 )
@@ -72,6 +76,7 @@ from iam_platform.application.tenant_authz.ports import (
 )
 from iam_platform.infrastructure.db.repositories.ai_resources import (
     SqlAiAssistantRepository,
+    SqlAnswerFeedbackRepository,
     SqlAssistantMemberRepository,
     SqlChatWidgetRepository,
     SqlConversationMessageRepository,
@@ -108,6 +113,10 @@ from iam_platform.infrastructure.db.repositories.identity import (
     SqlSessionRepository,
     SqlUserRepository,
 )
+from iam_platform.infrastructure.db.repositories.model_prices import SqlModelPriceRepository
+from iam_platform.infrastructure.db.repositories.platform_activity import (
+    SqlPlatformActivityReader,
+)
 from iam_platform.infrastructure.db.repositories.platform_authz import (
     SqlImpersonationSessionRepository,
     SqlPlatformPermissionRepository,
@@ -117,6 +126,7 @@ from iam_platform.infrastructure.db.repositories.platform_authz import (
 from iam_platform.infrastructure.db.repositories.tenancy import (
     SqlTenantFeatureRepository,
     SqlTenantInvitationRepository,
+    SqlTenantMemberDirectory,
     SqlTenantMembershipRepository,
     SqlTenantRepository,
 )
@@ -200,6 +210,8 @@ class SqlTenantUnitOfWork:
     ``application/tenancy/list_memberships.py``.
     """
 
+    tenants: TenantRepository
+    member_directory: TenantMemberDirectory
     tenant_memberships: TenantMembershipRepository
     tenant_invitations: TenantInvitationRepository
     tenant_features: TenantFeatureRepository
@@ -243,6 +255,8 @@ class SqlTenantUnitOfWork:
                 {"tid": str(self._tenant_id)},
             )
 
+        self.tenants = SqlTenantRepository(session)
+        self.member_directory = SqlTenantMemberDirectory(session)
         self.tenant_memberships = SqlTenantMembershipRepository(session)
         self.tenant_invitations = SqlTenantInvitationRepository(session)
         self.tenant_features = SqlTenantFeatureRepository(session)
@@ -297,6 +311,8 @@ class SqlAiResourceUnitOfWork:
     teams: TenantTeamRepository
     handoff: ConversationHandoffRepository
     push_subscriptions: PushSubscriptionRepository
+    answer_feedback: AnswerFeedbackRepository
+    activity: PlatformActivityReader
     audit: AuditWriter
     security_events: SecurityEventWriter
 
@@ -339,6 +355,10 @@ class SqlAiResourceUnitOfWork:
         self.teams = SqlTenantTeamRepository(session)
         self.handoff = SqlConversationHandoffRepository(session)
         self.push_subscriptions = SqlPushSubscriptionRepository(session)
+        self.answer_feedback = SqlAnswerFeedbackRepository(session)
+        # Scoped to this tenant at construction: every query also filters
+        # by tenant_id, behind RLS rather than instead of it.
+        self.activity = SqlPlatformActivityReader(session, tenant_id=self._tenant_id)
         self.audit = SqlAuditWriter(session)
         self.security_events = SqlSecurityEventWriter(session)
 
@@ -384,6 +404,9 @@ class SqlPlatformUnitOfWork:
     tenant_model_access: TenantModelAccessRepository
     tenant_entitlements: TenantEntitlementRepository
     chatbot_settings: TenantChatbotSettingsRepository
+    answer_feedback: AnswerFeedbackRepository
+    activity: PlatformActivityReader
+    model_prices: ModelPriceRepository
     audit: AuditWriter
     security_events: SecurityEventWriter
 
@@ -410,6 +433,9 @@ class SqlPlatformUnitOfWork:
         self.tenant_model_access = SqlTenantModelAccessRepository(session)
         self.tenant_entitlements = SqlTenantEntitlementRepository(session)
         self.chatbot_settings = SqlTenantChatbotSettingsRepository(session)
+        self.answer_feedback = SqlAnswerFeedbackRepository(session)
+        self.activity = SqlPlatformActivityReader(session)
+        self.model_prices = SqlModelPriceRepository(session)
         self.users = SqlUserRepository(session)
         self.identities = SqlAuthIdentityRepository(session)
         self.credentials = SqlCredentialRepository(session)

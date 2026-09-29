@@ -187,6 +187,7 @@ Extends the table in [06-authorization-model.md](06-authorization-model.md) with
 | Failure | Behaviour | Operator action |
 |---|---|---|
 | Redis down | `/readyz` fails → pod removed from LB. Rate limiter fails closed (503) | Restore Redis. Cache is derived; no data loss. |
+| Redis restarted or its data lost | AOF (`redis-data` volume, `appendfsync everysec`) restores everything but the last ~1s. AI usage counters that are still missing rebuild themselves from `ai_usage_events` on first read or write, so dashboards and quotas carry on from the true figures. | None. Before 2026-09-27 persistence was off and a restart zeroed every tenant's token and message counters, handing each quota back in full. Answers given while the ledger was unreachable are the only thing a rebuild can miss. |
 | Postgres primary down | `/readyz` fails on both DB probes → all pods pulled | Failover to replica; app reconnects via pool. No stale-cache serving. |
 | Migration fails mid-deploy | Migrate job exits non-zero; app pods never start | Old pods keep serving. Fix forward — see rollback note below. |
 | Secret manager unreachable at startup | Pod fails to start (resolution raises) | Existing pods unaffected. Restore access before scaling. |

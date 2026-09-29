@@ -1,6 +1,6 @@
 "use client";
 
-import { use as usePromise, useState } from "react";
+import { use as usePromise, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Bot,
@@ -43,8 +43,13 @@ import {
   useUpdateWidgetPresentation,
   useWidgetPresentation,
 } from "@/features/chatbot/hooks";
-import { useChatWidgets } from "@/features/ai-resources/hooks";
+import {
+  useChatWidgets,
+  useCreateChatWidget,
+  useKnowledgeBases,
+} from "@/features/ai-resources/hooks";
 import { useHasTenantPermission } from "@/features/rbac/hooks";
+import { WebsiteInstallSection } from "@/features/chatbot/website-install";
 import { isApiError } from "@/lib/api-client";
 import { AVATAR_KEYS, type AvatarKey, type Personality, type ResponseLength } from "@/lib/types";
 
@@ -99,6 +104,8 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
   const [aiSummary, setAiSummary] = useState(false);
   const [aiForUnassigned, setAiForUnassigned] = useState(true);
   const [dailyLimit, setDailyLimit] = useState("");
+  const [timeZone, setTimeZone] = useState("UTC");
+  const [retentionDays, setRetentionDays] = useState(30);
   const [shareLocation, setShareLocation] = useState(true);
 
   const [chatbotName, setChatbotName] = useState("");
@@ -130,6 +137,8 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
     setAiSummary(s.add_ai_summary_as_internal_comment);
     setAiForUnassigned(s.allow_ai_for_unassigned_conversations);
     setDailyLimit(s.daily_message_limit?.toString() ?? "");
+    setTimeZone(s.quota_timezone || "UTC");
+    setRetentionDays(s.conversation_retention_days || 30);
     setShareLocation(s.share_visitor_location);
     // The brief arrives with the settings row now, not from an assistant.
     // Empty means "never written": show the shipped default so Save stores
@@ -191,6 +200,10 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
         allow_ai_for_unassigned_conversations: aiForUnassigned,
         daily_message_limit: dailyLimit.trim() === "" ? null : Number(dailyLimit),
         share_visitor_location: shareLocation,
+        // Always sent. They used to be left out, and the server's defaults
+        // then reset both on every save of any other setting.
+        quota_timezone: timeZone,
+        conversation_retention_days: retentionDays,
       });
       toast.success("Chatbot settings saved.");
     } catch (err) {
@@ -279,6 +292,8 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
             </CardContent>
           </Card>
 
+          <WebsiteInstallSection tenantId={tenantId} canManage={canManage} />
+
           <Tabs defaultValue="identity">
             <TabsList className="mb-4 flex-wrap">
               <TabsTrigger value="identity">
@@ -317,18 +332,7 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                     <Skeleton className="h-24 w-full" />
                   )}
                   {!selectedWidgetId && !widgets.isLoading && (
-                    <div className="space-y-3">
-                      <p className="text-sm text-muted-foreground">
-                        You haven&rsquo;t created your chatbot yet. Go to{" "}
-                        <strong>Knowledge bases</strong>, choose the knowledge base it
-                        should answer from, and select <strong>Embed</strong> — that
-                        creates it and gives you the code for your website. Come back
-                        here afterwards to set its name, avatar and greeting.
-                      </p>
-                      <Button render={<Link href={`/tenant/${tenantId}/knowledge-bases`} />}>
-                        Go to Knowledge bases
-                      </Button>
-                    </div>
+                    <CreateChatbotPanel tenantId={tenantId} canManage={canManage} />
                   )}
                   {selectedWidgetId && (
                     <>
@@ -697,6 +701,16 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                     )}
                   </div>
 
+                  <TimeZoneField value={timeZone} onChange={setTimeZone} disabled={!canManage} />
+
+                  <Separator />
+
+                  <RetentionField
+                    value={retentionDays}
+                    onChange={setRetentionDays}
+                    disabled={!canManage}
+                  />
+
                   <Button
                     onClick={() => void handleSaveSettings()}
                     disabled={!canManage || saveSettings.isPending}
@@ -840,6 +854,291 @@ function ToggleRow({
         <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>
       </div>
       <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
+    </div>
+  );
+}
+
+
+/** Shown when the tenant has no chatbot (widget) yet.
+ *
+ * **Detects the knowledge bases the tenant already has** instead of sending
+ * them off to find one. It used to say "go to Knowledge bases, choose the
+ * knowledge base it should answer from" even when exactly one existed --
+ * which read as though the existing knowledge base had not been recognised.
+ * With one it is preselected; with several the tenant picks; only with none
+ * does it point at the Knowledge bases screen.
+ *
+ * **Created on an explicit click, never automatically.** A widget answers
+ * only on the websites it lists, so one created silently would have no
+ * website and could not be embedded anywhere -- and silent creation is the
+ * "widgets appearing on their own" behaviour this console must not have.
+ * The button disables while the request is in flight, so a double-click
+ * cannot create two.
+ *
+ * Uses the same endpoint as Knowledge bases → Embed, so the plan's widget
+ * limit, the permission check and the address validation all still apply on
+ * the server, and a refusal is shown as the server words it.
+ */
+function CreateChatbotPanel({
+  tenantId,
+  canManage,
+}: {
+  tenantId: string;
+  canManage: boolean | undefined;
+}) {
+  const knowledgeBases = useKnowledgeBases(tenantId);
+  const create = useCreateChatWidget(tenantId);
+  // The widget cap may not exceed the plan's daily ceiling (the server
+  // refuses it), and every widget answer spends from that same allowance.
+  const plan = useTenantPlan(tenantId);
+  const ceiling = plan.data?.max_messages_per_day ?? null;
+  const list = knowledgeBases.data?.knowledge_bases ?? [];
+  const [picked, setPicked] = useState<string | null>(null);
+  const knowledgeBaseId = picked ?? list[0]?.id ?? null;
+  const [name, setName] = useState("Website chatbot");
+  const [website, setWebsite] = useState("");
+
+  if (knowledgeBases.isLoading) return <Skeleton className="h-24 w-full" />;
+  if (knowledgeBases.error) {
+    return <ErrorState error={knowledgeBases.error} resource="knowledge bases" />;
+  }
+
+  if (list.length === 0) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Your chatbot answers from a knowledge base, and this organisation doesn&rsquo;t have
+          one yet. Create one and add your documents, then come back here to create the
+          chatbot.
+        </p>
+        <Button nativeButton={false} render={<Link href={`/tenant/${tenantId}/knowledge-bases`} />}>
+          Go to Knowledge bases
+        </Button>
+      </div>
+    );
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!knowledgeBaseId || create.isPending) return;
+    let origin: string;
+    try {
+      const url = new URL(website.trim());
+      if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error();
+      // The origin is what a browser sends and what the widget is matched on;
+      // a pasted page URL is reduced to it here, exactly as the server does.
+      origin = url.origin;
+    } catch {
+      toast.error("Enter your website address including https://, e.g. https://www.yournursery.co.uk");
+      return;
+    }
+    try {
+      await create.mutateAsync({
+        knowledge_base_id: knowledgeBaseId,
+        name: name.trim() || "Website chatbot",
+        allowed_origins: [origin],
+        daily_question_limit: ceiling === null ? 500 : Math.min(500, ceiling),
+      });
+      toast.success("Chatbot created. Set its name, avatar and greeting below.");
+    } catch (error) {
+      toast.error(isApiError(error) ? error.message : "Could not create the chatbot.");
+    }
+  }
+
+  const single = list.length === 1 ? list[0] : null;
+
+  return (
+    <form className="space-y-4" onSubmit={submit}>
+      <p className="text-sm text-muted-foreground">
+        You haven&rsquo;t created your chatbot yet. It will answer only from the documents in
+        your knowledge base.
+      </p>
+
+      {single ? (
+        <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+          Answers from <strong>{single.name}</strong>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <Label htmlFor="new-chatbot-kb">Knowledge base</Label>
+          <Select value={knowledgeBaseId ?? ""} onValueChange={(v) => v && setPicked(v)}>
+            <SelectTrigger id="new-chatbot-kb">
+              <SelectValue>
+                {(v: string) => list.find((kb) => kb.id === v)?.name ?? "Choose a knowledge base"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {list.map((kb) => (
+                <SelectItem key={kb.id} value={kb.id}>
+                  {kb.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      <div className="space-y-1.5">
+        <Label htmlFor="new-chatbot-name">Name</Label>
+        <Input
+          id="new-chatbot-name"
+          value={name}
+          maxLength={200}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="new-chatbot-site">Your website address</Label>
+        <Input
+          id="new-chatbot-site"
+          type="url"
+          inputMode="url"
+          placeholder="https://www.yournursery.co.uk"
+          value={website}
+          onChange={(e) => setWebsite(e.target.value)}
+          required
+        />
+        <p className="text-xs text-muted-foreground">
+          The chatbot only works on the websites you list. Once it&rsquo;s created, the code to
+          add to your site appears at the top of this page, under <strong>On your website</strong>,
+          where you can also add more addresses.
+        </p>
+      </div>
+
+      {canManage === false && (
+        <p className="text-xs text-muted-foreground">
+          You don&rsquo;t have permission to create the chatbot. Ask a tenant administrator.
+        </p>
+      )}
+
+      <Button type="submit" disabled={canManage === false || !website.trim() || create.isPending}>
+        {create.isPending ? "Creating…" : "Create chatbot"}
+      </Button>
+    </form>
+  );
+}
+
+
+/** Every zone the browser knows, falling back to a short list on a browser
+ *  without `Intl.supportedValuesOf`. The server re-checks the choice. */
+function allTimeZones(): string[] {
+  const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
+  const zones = intl.supportedValuesOf?.("timeZone") ?? [
+    "Europe/London",
+    "Europe/Dublin",
+    "Asia/Dhaka",
+    "America/New_York",
+    "Australia/Sydney",
+  ];
+  return zones.includes("UTC") ? zones : ["UTC", ...zones];
+}
+
+/** "Europe/London" -> "London (Europe)", which is how people recognise it. */
+function zoneLabel(zone: string): string {
+  if (zone === "UTC") return "UTC (no daylight saving)";
+  const [region, ...rest] = zone.split("/");
+  return rest.length ? `${rest.join(" / ").replace(/_/g, " ")} (${region})` : zone;
+}
+
+/**
+ * When "today" starts for the daily message limit.
+ *
+ * Defaults to UTC, which for a UK nursery means the allowance resets at 01:00
+ * all summer -- so the admin's own browser zone is offered as a one-click
+ * suggestion, the way scheduling tools do, rather than making them find it.
+ */
+function TimeZoneField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (zone: string) => void;
+  disabled: boolean;
+}) {
+  const zones = useMemo(() => allTimeZones(), []);
+  const mine = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
+  const options = zones.includes(value) ? zones : [value, ...zones];
+  return (
+    <div>
+      <Label htmlFor="quota-timezone">Your day starts at midnight in</Label>
+      <p className="mb-1.5 text-xs text-muted-foreground">
+        The daily message limit resets at midnight in this time zone.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          id="quota-timezone"
+          className="h-9 max-w-[320px] rounded-md border border-input bg-background px-2 text-sm"
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {options.map((zone) => (
+            <option key={zone} value={zone}>
+              {zoneLabel(zone)}
+            </option>
+          ))}
+        </select>
+        {mine && mine !== value && !disabled && (
+          <Button type="button" size="sm" variant="outline" onClick={() => onChange(mine)}>
+            Use my time zone ({zoneLabel(mine)})
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const RETENTION_PRESETS: { days: number; label: string }[] = [
+  { days: 30, label: "30 days" },
+  { days: 90, label: "90 days" },
+  { days: 180, label: "6 months" },
+  { days: 365, label: "1 year" },
+  { days: 730, label: "2 years" },
+];
+
+/**
+ * How long conversation history is kept.
+ *
+ * Presets rather than a number box: "how many days?" is a question most
+ * administrators have no basis to answer, while "90 days or a year?" is one
+ * they can. A value set some other way is still shown and kept.
+ */
+function RetentionField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: number;
+  onChange: (days: number) => void;
+  disabled: boolean;
+}) {
+  const presets = RETENTION_PRESETS.some((p) => p.days === value)
+    ? RETENTION_PRESETS
+    : [...RETENTION_PRESETS, { days: value, label: `${value} days (current)` }].sort(
+        (a, b) => a.days - b.days,
+      );
+  return (
+    <div>
+      <Label htmlFor="retention">Keep conversation history for</Label>
+      <p className="mb-1.5 text-xs text-muted-foreground">
+        Conversations older than this — including what visitors wrote — are deleted
+        automatically. Keep it as short as your records policy allows.
+      </p>
+      <select
+        id="retention"
+        className="h-9 max-w-[200px] rounded-md border border-input bg-background px-2 text-sm"
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+      >
+        {presets.map((p) => (
+          <option key={p.days} value={p.days}>
+            {p.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

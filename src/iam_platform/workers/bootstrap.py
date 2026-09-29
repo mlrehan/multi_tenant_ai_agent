@@ -25,6 +25,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from iam_platform.application.ai_resources.ports import (
@@ -34,6 +35,7 @@ from iam_platform.application.ai_resources.ports import (
 )
 from iam_platform.core.clock import Clock, SystemClock
 from iam_platform.core.config import Settings
+from iam_platform.infrastructure.cache.redis_client import build_redis_client
 from iam_platform.infrastructure.db.session import build_engine, build_session_factory
 from iam_platform.infrastructure.factories import (
     build_object_storage_client,
@@ -57,6 +59,9 @@ class WorkerContainer:
     vector_search: VectorSearchClient
     embedding_client: EmbeddingClient | None
     clock: Clock
+    #: Only for live ingestion progress. The Celery broker has its own
+    #: connection; this one is the application's, like the API's.
+    redis: Redis
 
     async def shutdown(self) -> None:
         """Disposes the connection pool.
@@ -70,6 +75,10 @@ class WorkerContainer:
             await self.engine.dispose()
         except Exception:
             logger.exception("failed to dispose worker engine during shutdown")
+        try:
+            await self.redis.aclose()
+        except Exception:
+            logger.exception("failed to close worker redis client during shutdown")
 
 
 async def build_worker_container(settings: Settings | None = None) -> WorkerContainer:
@@ -103,4 +112,5 @@ async def build_worker_container(settings: Settings | None = None) -> WorkerCont
         vector_search=vector_search,
         embedding_client=embedding_client,
         clock=SystemClock(),
+        redis=build_redis_client(resolved.redis),
     )

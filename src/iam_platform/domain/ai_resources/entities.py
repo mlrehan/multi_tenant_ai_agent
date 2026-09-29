@@ -150,6 +150,18 @@ class KnowledgeBase(Entity):
     vector_namespace: str
     created_at: datetime
     updated_at: datetime
+    #: Soft delete. The row is kept because answer feedback, audit entries and
+    #: soft-deleted documents still reference it; once set, the repository
+    #: treats the knowledge base as not existing.
+    deleted_at: datetime | None = None
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
+
+    def soft_delete(self, *, now: datetime) -> None:
+        self.deleted_at = now
+        self.updated_at = now
 
 
 class DocumentStatus(StrEnum):
@@ -397,6 +409,14 @@ class ChatWidget(Entity):
     show_quick_reply_suggestions: bool = True
     created_at: datetime
     updated_at: datetime
+    #: Install check. Written from the public session endpoint, read by the
+    #: console to answer "is my chatbot actually on my website?".
+    last_seen_at: datetime | None = None
+    last_seen_origin: str | None = None
+    #: A page on a website *not* in `allowed_origins` tried to load it. From an
+    #: unauthenticated request, so informational only -- never trusted.
+    last_refused_at: datetime | None = None
+    last_refused_origin: str | None = None
 
     @property
     def is_active(self) -> bool:
@@ -541,6 +561,10 @@ class ConversationMessage(Entity):
     citations: list[dict[str, Any]] = field(default_factory=list)
     token_count: int = 0
     created_at: datetime
+    #: Assistant turns only: `grounded` (cited a source), `uncited` (answered
+    #: without one) or `no_sources` (retrieval found nothing). Feeds "questions
+    #: your chatbot couldn't answer". None for every other role.
+    answer_status: str | None = None
 
 
 @dataclass(kw_only=True)

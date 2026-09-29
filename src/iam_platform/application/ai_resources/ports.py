@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, tzinfo
+from datetime import date, datetime, tzinfo
+from decimal import Decimal
 from enum import StrEnum
 from types import TracebackType
 from typing import Any, Protocol
@@ -34,6 +35,8 @@ from iam_platform.domain.ai_resources.entities import (
     ModelConfiguration,
     ProviderCredential,
 )
+from iam_platform.domain.ai_resources.feedback import AnswerFeedback
+from iam_platform.domain.ai_resources.pricing import ModelPrice
 from iam_platform.domain.ai_resources.push import PushMessage, PushSubscription
 from iam_platform.domain.tenancy.entitlements import TenantEntitlements
 from iam_platform.domain.tenancy.teams import TenantTeam
@@ -91,6 +94,16 @@ class StoredChunk:
 
 class DocumentRepository(Protocol):
     async def get_by_id(self, document_id: UUID) -> Document | None: ...
+    async def describe_many(
+        self, document_ids: list[UUID]
+    ) -> dict[UUID, tuple[str, str | None]]:
+        """`{id: (title, source_url)}` for live documents among `document_ids`.
+
+        For source cards: one query per answer rather than one per passage.
+        Missing and deleted documents are simply absent from the result.
+        """
+        ...
+
     async def list_by_knowledge_base(self, knowledge_base_id: UUID) -> list[Document]:
         """Excludes soft-deleted rows."""
         ...
@@ -161,6 +174,18 @@ class ChatWidgetRepository(Protocol):
 
     async def update(self, widget: ChatWidget) -> None: ...
 
+    async def record_seen(
+        self, *, tenant_id: UUID, widget_id: UUID, origin: str, at: datetime
+    ) -> None:
+        """A visitor's browser opened a session from `origin` (allowed)."""
+        ...
+
+    async def record_refused(
+        self, *, tenant_id: UUID, widget_id: UUID, origin: str, at: datetime
+    ) -> None:
+        """A page on `origin` (not allowed) tried to load this widget."""
+        ...
+
     async def count_conversations(self, *, tenant_id: UUID, widget_id: UUID) -> int:
         """How many conversations this widget has produced.
 
@@ -208,7 +233,9 @@ class WidgetQuotaStore(Protocol):
     platform's bill (docs/06-authorization-model.md).
     """
 
-    async def consume(self, *, widget_id: UUID, limit: int) -> bool:
+    async def consume(
+        self, *, widget_id: UUID, limit: int, zone: tzinfo | None = None
+    ) -> bool:
         """Records one question and returns whether it was within the limit."""
         ...
 
@@ -316,11 +343,30 @@ class ConversationRepository(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class UnansweredQuestion:
+    """One question the chatbot could not answer from the tenant's sources."""
+
+    question: str
+    times_asked: int
+    last_asked_at: datetime
+    #: True when retrieval found nothing at all for at least one asking; false
+    #: when passages were found but the answer cited none of them.
+    no_sources: bool
+
+
 class ConversationMessageRepository(Protocol):
     """Turns within a conversation. Append-only by design -- there is no
     `save`, and the table revokes UPDATE from the application role."""
 
     async def add_many(self, messages: list[ConversationMessage]) -> None: ...
+
+    async def unanswered_questions(
+        self, *, tenant_id: UUID, since: datetime, limit: int
+    ) -> list[UnansweredQuestion]:
+        """This tenant's questions whose answer was `uncited` or `no_sources`,
+        grouped by text, most-asked first."""
+        ...
 
     async def next_seq(self, conversation_id: UUID) -> int:
         """The ordinal the next message takes. 1 for an empty thread."""
@@ -579,10 +625,15 @@ class EmbeddingClient(Protocol):
         """
         ...
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch(
+        self, texts: list[str], *, usage: TokenUsage | None = None
+    ) -> list[list[float]]:
         """Returns one vector per input, **in input order**. Callers zip the
         result against their chunks, so a reordered response would silently
-        attach every embedding to the wrong text."""
+        attach every embedding to the wrong text.
+
+        `usage` accumulates the cost across every request the batch needs,
+        exactly as for `embed`; ingestion meters through it."""
         ...
 
 
@@ -646,11 +697,19 @@ class VectorSearchClient(Protocol):
         ...
 
     async def query(
-        self, *, namespace: str, query_text: str, top_k: int
+        self,
+        *,
+        namespace: str,
+        query_text: str,
+        top_k: int,
+        usage: TokenUsage | None = None,
     ) -> list[tuple[UUID, float]]:
         """Returns ``(document_id, score)`` pairs. ``namespace`` is always
         supplied by the caller from the knowledge base's stored value -- the
-        client has no way to search across namespaces."""
+        client has no way to search across namespaces.
+
+        ``usage`` accumulates the query embedding's cost, as for
+        ``search_chunks``."""
         ...
 
     async def search_chunks(
@@ -750,6 +809,9 @@ class AiResourceUnitOfWork(Protocol):
     teams: TenantTeamRepository
     handoff: ConversationHandoffRepository
     push_subscriptions: PushSubscriptionRepository
+    answer_feedback: AnswerFeedbackRepository
+    #: Counts-only activity, scoped to this unit of work's own tenant.
+    activity: PlatformActivityReader
     audit: AuditWriter
     security_events: SecurityEventWriter
 
@@ -949,6 +1011,15 @@ class TokenUsage:
     total: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    #: The part of `input_tokens` that was embedding, priced at the embedding
+    #: model's rate rather than the chat model's. Filled by the embedding
+    #: adapter; `input_tokens` still includes it, so existing figures hold.
+    embedding_tokens: int = 0
+    #: The models actually sent to the provider, recorded by each adapter --
+    #: the only code that knows, since the platform default is a setting and
+    #: not a configuration row. What a cost is priced against.
+    chat_model: str | None = None
+    embedding_model: str | None = None
 
     @property
     def billable(self) -> int:
@@ -1068,8 +1139,67 @@ class TenantEntitlementRepository(Protocol):
     async def count_assistants(self, tenant_id: UUID) -> int: ...
 
 
+class IngestionStage(StrEnum):
+    """Where a document is in the ingestion pipeline, while it is in it.
+
+    Only the in-flight stages. Whether a document *finished* -- ready or
+    failed, with a reason -- is recorded on its `documents` row, which is the
+    authority; these are live detail on top of it.
+    """
+
+    EXTRACTING = "extracting"
+    CHUNKING = "chunking"
+    EMBEDDING = "embedding"
+    INDEXING = "indexing"
+
+
+@dataclass(frozen=True, slots=True)
+class IngestionProgress:
+    stage: IngestionStage
+    #: 0-100 across the whole pipeline, not within the stage, so a console can
+    #: draw one bar per file without knowing how the stages are weighted.
+    percent: int
+    #: A human-readable specific, e.g. "120 of 466 passages".
+    detail: str | None = None
+
+
+class IngestionProgressStore(Protocol):
+    """Live progress for documents being ingested.
+
+    Written by the worker as each stage starts, read by the documents list.
+    **Transient by design:** a lost entry costs the console its live detail
+    (it falls back to "processing"), never a document -- the outcome is on the
+    `documents` row. So both sides fail open.
+    """
+
+    async def report(
+        self,
+        *,
+        tenant_id: UUID,
+        document_id: UUID,
+        stage: IngestionStage,
+        percent: int,
+        detail: str | None = None,
+    ) -> None: ...
+
+    async def read_many(
+        self, *, tenant_id: UUID, document_ids: Sequence[UUID]
+    ) -> dict[UUID, IngestionProgress]:
+        """Only documents with a live entry appear in the result. Keyed by
+        tenant as well as document, so a caller can only ever read progress
+        for its own tenant's documents -- and the caller passes ids it has
+        already been authorized to list."""
+        ...
+
+
 class TenantChatbotSettingsRepository(Protocol):
     async def get_for_tenant(self, tenant_id: UUID) -> TenantChatbotSettings | None: ...
+
+    async def tenant_display_name(self, tenant_id: UUID) -> str | None:
+        """The tenant's own display name, which the chatbot introduces itself
+        with when no company name has been set. Read under the tenant's RLS
+        scope, which admits exactly its own `tenants` row."""
+        ...
 
     async def upsert(self, settings: TenantChatbotSettings) -> None: ...
 
@@ -1091,6 +1221,12 @@ class TenantTeamRepository(Protocol):
 
     async def list_members(self, *, tenant_id: UUID, team_id: UUID) -> list[UUID]:
         """Membership ids staffing this team."""
+        ...
+
+    async def staffed_team_ids(self, *, tenant_id: UUID) -> set[UUID]:
+        """Teams with at least one *active* member -- the ones a visitor can
+        actually be handed to. An empty team is kept and still listed for the
+        console; it is only withheld from visitors."""
         ...
 
     async def list_memberships_with_permission(
@@ -1171,6 +1307,274 @@ class TenantQuotaStore(Protocol):
     async def token_breakdown(self, *, tenant_id: UUID) -> TokenUsage: ...
 
     async def record_tokens(self, *, tenant_id: UUID, usage: TokenUsage) -> None: ...
+
+
+#: Ledger channels that are *answers*: what the chat allowance and the daily
+#: message count are made of, and so the only rows a Redis counter may be
+#: rebuilt from. Kept beside `INGESTION_CHANNEL` so the two cannot drift.
+ANSWER_CHANNELS: tuple[str, ...] = ("console", "widget")
+
+#: Embedding a document or crawled page for a knowledge base. Metered and
+#: shown, but **not** part of the chat allowance or the daily message count:
+#: a large crawl must not silence the chatbot, and one indexed document is not
+#: a question anyone asked.
+INGESTION_CHANNEL = "ingestion"
+
+#: A tenant member testing retrieval on a knowledge base (the console's search
+#: box): one query embedding per test. Metered and costed like ingestion, and
+#: like ingestion kept out of the chat allowance and the daily message count --
+#: a search test is not a question anyone was answered.
+SEARCH_CHANNEL = "search"
+
+
+@dataclass(frozen=True, slots=True)
+class UsageEvent:
+    """One answered question's cost, as the durable ledger records it.
+
+    One row per answer that reached the retrieval step, *including* one
+    refused for lack of passages: that question still consumed a daily
+    message and an embedding call, and a ledger that skipped it could not
+    rebuild either counter. Counts only -- the question and answer live in
+    `conversation_messages`, which retention deletes; this must survive that.
+    """
+
+    tenant_id: UUID
+    #: "console" (the Ask panel), "widget" (the public chatbot), or
+    #: "ingestion" (embedding a document; one row per indexed document).
+    channel: str
+    #: The configuration the answer resolved; None is the platform default.
+    model_configuration_id: UUID | None
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    occurred_at: datetime
+    #: See `TokenUsage`. Defaults keep every existing construction valid; an
+    #: event without them is recorded, but its cost cannot be estimated.
+    embedding_tokens: int = 0
+    chat_model: str | None = None
+    embedding_model: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UsageCostLine:
+    """One (tenant, kind, model) group of usage, priced in the database.
+
+    Each ledger row is priced at the price in force *when it occurred*, which
+    only the database can do efficiently across a month. `unpriced_tokens` is
+    the part with no price in force (or no recorded model): reported, never
+    silently costed at zero.
+    """
+
+    tenant_id: UUID
+    #: "chat" (prompt + completion at the chat model's price) or "embedding".
+    kind: str
+    model: str | None
+    tokens: int
+    unpriced_tokens: int
+    cost_usd: Decimal
+
+
+class ModelPriceRepository(Protocol):
+    """The platform's price list. Add and delete only; never update."""
+
+    async def list_all(self) -> list[ModelPrice]: ...
+    async def get(self, price_id: UUID) -> ModelPrice | None: ...
+    async def exists(self, *, model_name: str, effective_from: datetime) -> bool: ...
+    async def add(self, price: ModelPrice) -> None: ...
+    async def delete(self, price_id: UUID) -> None: ...
+
+
+class UsageLedger(Protocol):
+    """The durable record behind the Redis counters.
+
+    Redis stays the counter the answer path reads and increments -- atomic,
+    and fast enough to sit in front of every question. But it is a cache, and
+    a cache that loses its contents must not hand every tenant a fresh
+    allowance. So each counter, on finding its key missing, is rebuilt from
+    here before it is read or incremented.
+
+    Every read takes the window's start rather than deciding the window
+    itself: the counter's key *is* the window, so the code that builds the key
+    is the only place that may say where it begins.
+    """
+
+    async def record(self, event: UsageEvent) -> None:
+        """Appends one row. May raise; callers fail open -- see answer_question."""
+        ...
+
+    async def tokens_since(self, *, tenant_id: UUID, since: datetime) -> TokenUsage: ...
+
+    async def configuration_tokens_since(
+        self, *, tenant_id: UUID, model_configuration_id: UUID, since: datetime
+    ) -> int: ...
+
+    async def answers_since(self, *, tenant_id: UUID, since: datetime) -> int:
+        """Answered questions -- what the daily message counter counts."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class DailyActivityCounts:
+    """One UTC day of platform-wide activity. Days with nothing are absent;
+    the use case fills the gaps, so a quiet day reads 0 rather than vanishing."""
+
+    day: date
+    conversations_started: int
+    questions: int
+    answers: int
+    handoffs: int
+    tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class TenantAttentionCounts:
+    """One tenant's open problems -- only returned when at least one is non-zero."""
+
+    tenant_id: UUID
+    display_name: str
+    slug: str
+    waiting_handoffs: int
+    oldest_waiting_at: datetime | None
+    stuck_documents: int
+    failed_documents: int
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSummary:
+    """What a knowledge base holds, for a non-technical dashboard: how many
+    sources are usable, still being read, or broken -- and when one was last
+    added, which is how "is my chatbot up to date?" gets answered."""
+
+    ready: int
+    processing: int
+    failed: int
+    web_pages: int
+    files: int
+    last_added_at: datetime | None
+
+
+class PlatformActivityReader(Protocol):
+    """Cross-tenant aggregates for the operator dashboard.
+
+    **Counts only, never content.** Every method returns numbers and tenant
+    names -- no question text, no document names, no visitor identifiers --
+    so this read needs no audit record, unlike the feedback review that shows
+    what people typed. Runs on the platform (BYPASSRLS) session by necessity:
+    it is a sum *across* tenants.
+    """
+
+    async def daily_counts(self, *, since: datetime) -> list[DailyActivityCounts]: ...
+
+    async def feedback_counts(self, *, since: datetime, until: datetime) -> tuple[int, int]:
+        """(helpful, not helpful) ratings given in [since, until)."""
+        ...
+
+    async def active_tenants(self, *, since: datetime) -> int:
+        """Tenants with at least one question asked since `since`."""
+        ...
+
+    async def handoff_queue(self) -> tuple[int, int, datetime | None]:
+        """(waiting for a human, being handled, when the oldest waiter asked)."""
+        ...
+
+    async def document_health(self, *, stuck_before: datetime) -> tuple[int, int, int]:
+        """(processing, processing since before `stuck_before`, failed)."""
+        ...
+
+    async def attention(self, *, stuck_before: datetime) -> list[TenantAttentionCounts]: ...
+
+    async def usage_recorded_since(self) -> datetime | None:
+        """The first ledger row -- token history does not reach back further."""
+        ...
+
+    async def knowledge_summary(self) -> KnowledgeSummary: ...
+
+    async def ingestion_tokens_since(self, *, since: datetime) -> dict[UUID, int]:
+        """Embedding tokens spent indexing documents, per tenant, since `since`.
+
+        A scoped reader returns at most its own tenant."""
+        ...
+
+    async def usage_cost_lines(self, *, since: datetime) -> list[UsageCostLine]:
+        """Usage since `since`, priced per row. Platform connection only --
+        tenants hold no privilege on the price table."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerFeedbackRecord:
+    """One rating, as an administrator reviews it.
+
+    `tenant_name` and `author_email` are filled only on the platform's view:
+    a tenant already knows its own name, and a tenant session cannot read the
+    global `users` table (by design), so a console rating shows there as "a
+    team member" rather than an address.
+    """
+
+    id: UUID
+    tenant_id: UUID
+    rating: str
+    question: str
+    answer: str
+    comment: str | None
+    #: "website" (an anonymous visitor in the widget) or "console" (a member
+    #: in the Ask panel).
+    channel: str
+    knowledge_base_name: str | None
+    created_at: datetime
+    tenant_name: str | None = None
+    author_email: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerFeedbackSummary:
+    tenant_id: UUID
+    total: int
+    helpful: int
+    not_helpful: int
+    tenant_name: str | None = None
+
+
+class AnswerFeedbackRepository(Protocol):
+    """Ratings of individual answers. Append-only: see `domain.ai_resources.feedback`."""
+
+    async def add(self, feedback: AnswerFeedback) -> None: ...
+
+    async def list_page(
+        self,
+        *,
+        tenant_id: UUID | None,
+        rating: str | None,
+        channel: str | None,
+        limit: int,
+        offset: int,
+        with_identity: bool = False,
+    ) -> tuple[list[AnswerFeedbackRecord], int]:
+        """Newest first, plus the total matching the filters.
+
+        `tenant_id=None` means every tenant and is only meaningful on the
+        platform's BYPASSRLS session -- under a tenant session RLS would
+        confine it anyway, but the tenant path always passes its own id so it
+        never rests on that alone.
+        """
+        ...
+
+    async def summarize(
+        self, *, tenant_id: UUID | None, with_identity: bool = False
+    ) -> list[AnswerFeedbackSummary]:
+        """Helpful / not-helpful counts, one row per tenant."""
+        ...
+
+    async def count_for_visitor_session(
+        self, *, tenant_id: UUID, visitor_session_id: UUID
+    ) -> int:
+        """How many ratings one anonymous session has left.
+
+        The per-session cap is what stops a stranger on a public page using
+        feedback as free storage; per-IP rate limiting bounds the rate, this
+        bounds the total a single session can accumulate.
+        """
+        ...
 
 
 class PushSubscriptionRepository(Protocol):

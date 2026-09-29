@@ -49,6 +49,7 @@ from iam_platform.application.ai_resources.entitlements import (
 from iam_platform.application.ai_resources.exceptions import (
     QuestionBlockedError,
     QuestionTooLongError,
+    TokenBudgetExceededError,
     WidgetOriginNotAllowedError,
     WidgetQuotaExceededError,
     WidgetUnavailableError,
@@ -73,6 +74,7 @@ from iam_platform.domain.ai_resources.entities import (
     ChatWidget,
     ConversationMessage,
     MessageRole,
+    normalise_origin,
 )
 from iam_platform.domain.ai_resources.guardrails import (
     MAX_QUESTION_CHARS,
@@ -148,10 +150,16 @@ class StartWidgetSession:
             raise WidgetUnavailableError("this chat widget is not available")
 
         if not widget.permits_origin(command.origin):
+            # Recorded in its own unit of work that has *closed* before the
+            # refusal is raised -- raising inside it would roll the record back
+            # (docs/18's pitfall). This is the install mistake a tenant admin
+            # can't otherwise see: visitors get no chatbot and nothing says why.
+            await self._record(widget, command.origin, refused=True)
             raise WidgetOriginNotAllowedError(
                 "this chat widget is not permitted on this site"
             )
 
+        await self._record(widget, command.origin, refused=False)
         return ResolvedWidget(
             widget_id=widget.id,
             tenant_id=widget.tenant_id,
@@ -166,6 +174,30 @@ class StartWidgetSession:
             show_quick_reply_suggestions=widget.show_quick_reply_suggestions,
             quick_replies=await self._quick_replies(widget),
         )
+
+    async def _record(self, widget: ChatWidget, origin: str | None, *, refused: bool) -> None:
+        """The install check: where this widget was last seen, or refused.
+
+        **Best effort.** It runs on the visitor's session path, and a failure
+        here must never cost them their chatbot -- so every error is swallowed
+        and logged. Only a well-formed origin is stored (bounded, normalised):
+        the refused one comes from an unauthenticated request and is displayed
+        as information, never used to decide anything.
+        """
+        normalised = normalise_origin(origin or "")
+        if not normalised or len(normalised) > 255:
+            return
+        try:
+            async with self._uow_factory(_ANONYMOUS, widget.tenant_id) as uow:
+                record = uow.chat_widgets.record_refused if refused else uow.chat_widgets.record_seen
+                await record(
+                    tenant_id=widget.tenant_id,
+                    widget_id=widget.id,
+                    origin=normalised,
+                    at=datetime.now(UTC),
+                )
+        except Exception:
+            logger.warning("could not record the install check for widget %s", widget.id)
 
     async def _quick_replies(self, widget: ChatWidget) -> tuple[str, ...]:
         """The pills this widget opens with, handoff pill included only if real.
@@ -292,10 +324,18 @@ class AskWidget:
                 "assistant will not provide"
             )
 
+        # The tenant's daily cap and quota timezone, read once and used for
+        # both reservations below, so this widget's day and the tenant's day
+        # are the same day.
+        limit: int | None = None
+        reserved_zone: tzinfo | None = None
+        if self._tenant_quota is not None:
+            limit, reserved_zone = await self._daily_limit_and_zone(widget.tenant_id)
+
         # Quota before generation, not after: the point is to not spend the
         # money, and checking afterwards would only record that it was spent.
         within_limit = await self._quota.consume(
-            widget_id=widget.id, limit=widget.daily_question_limit
+            widget_id=widget.id, limit=widget.daily_question_limit, zone=reserved_zone
         )
         if not within_limit:
             raise WidgetQuotaExceededError(
@@ -312,12 +352,10 @@ class AskWidget:
         # **closed**: an unreadable counter refuses rather than becoming
         # unlimited spending, which is the one failure that is invisible until
         # the invoice.
-        reserved_zone: tzinfo | None = None
         if self._tenant_quota is not None:
-            # Limit and zone resolved together, and the zone kept, so the
-            # release below decrements the very key this reserved. Resolving it
-            # again would be a second chance to get a different day.
-            limit, reserved_zone = await self._daily_limit_and_zone(widget.tenant_id)
+            # The zone resolved above is kept, so the release below decrements
+            # the very key this reserved. Resolving it again would be a second
+            # chance to get a different day.
             allowed = await self._tenant_quota.consume_message(
                 tenant_id=widget.tenant_id, limit=limit, zone=reserved_zone
             )
@@ -347,7 +385,7 @@ class AskWidget:
         # token limit would burn a message on every rejected attempt.
         try:
             return await self._answer(command, widget, verdict)
-        except Exception:
+        except Exception as exc:
             if self._tenant_quota is not None:
                 # Fails open, and deliberately so: an unreturned reservation
                 # over-counts by one, which is the safe direction. Raising here
@@ -355,6 +393,15 @@ class AskWidget:
                 await self._tenant_quota.release_message(
                     tenant_id=widget.tenant_id, zone=reserved_zone
                 )
+            if isinstance(exc, TokenBudgetExceededError):
+                # **Reworded for a stranger.** The tenant-facing message names
+                # the plan's token allowance and how much of it is used --
+                # business information an anonymous visitor has no business
+                # reading from a response body. Still a 429, so the widget
+                # tells the visitor to try later rather than that it broke.
+                raise WidgetQuotaExceededError(
+                    "this chat can't answer questions right now"
+                ) from exc
             raise
 
     async def _answer(
@@ -380,6 +427,7 @@ class AskWidget:
                 # uses the platform default and resolves none, so the spend
                 # lands on the tenant-wide counter only.
                 tenant_id=widget.tenant_id,
+                channel="widget",
             )
         else:
             recent = await self._memory.recent(command.session_id)
@@ -388,6 +436,7 @@ class AskWidget:
                 namespace=_namespace_for(widget),
                 memory=_as_memory(recent),
                 tenant_id=widget.tenant_id,
+                channel="widget",
             )
 
         if self._memory is None and self._uow_factory is None:
@@ -402,12 +451,12 @@ class AskWidget:
             command.session_id,
             verdict.text,
             stream.tokens,
-            persist=self._persister(widget, command.session_id),
+            persist=self._persister(widget, command.session_id, stream),
         )
         return stream
 
     def _persister(
-        self, widget: ChatWidget, session_id: UUID
+        self, widget: ChatWidget, session_id: UUID, stream: AnswerStream | None = None
     ) -> Callable[[str, str], Awaitable[None]] | None:
         """Writes the exchange to `conversations` / `conversation_messages`.
 
@@ -441,6 +490,14 @@ class AskWidget:
                         question=question,
                         answer=answer,
                         now=now,
+                        # Read at persist time, after the answer's stream has
+                        # finished and the adapter has filled the meter in.
+                        token_count=(
+                            stream.usage.billable
+                            if stream is not None and stream.usage is not None
+                            else 0
+                        ),
+                        answer_status=stream.outcome if stream is not None else None,
                     )
             except Exception:
                 logger.exception(

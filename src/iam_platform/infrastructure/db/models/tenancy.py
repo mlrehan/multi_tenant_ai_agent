@@ -19,6 +19,7 @@ from sqlalchemy import (
     Index,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, CITEXT, JSONB
@@ -134,7 +135,7 @@ class TenantInvitationModel(Base):
     accepted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id")
     )
-    created_at: Mapped[datetime] = mapped_column(server_default="now()")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class TenantFeatureModel(Base):
@@ -154,7 +155,7 @@ class TenantFeatureModel(Base):
     granted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id")
     )
-    created_at: Mapped[datetime] = mapped_column(server_default="now()")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class TenantEntitlementModel(TimestampMixin, Base):

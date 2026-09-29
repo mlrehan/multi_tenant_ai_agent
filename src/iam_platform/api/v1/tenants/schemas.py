@@ -8,14 +8,21 @@ class TenantMembershipResponse(BaseModel):
     tenant_id: str
     status: str
     is_default: bool
+    #: For the tenant switcher. Null for a revoked membership, whose tenant's
+    #: current name the former member is not told.
+    tenant_slug: str | None = None
+    tenant_display_name: str | None = None
 
 
 class TenantMemberResponse(BaseModel):
-    """A roster row -- deliberately carries `user_id`, not an email; see
-    `application/tenancy/list_tenant_members.py` for why."""
+    """A roster row. `email`/`display_name` come from a two-field projection
+    scoped to this tenant's own members -- see `TenantMemberDirectory`."""
 
     membership_id: str
     user_id: str
+    #: None for a deleted account (its row is kept for the audit trail).
+    email: str | None = None
+    display_name: str | None = None
     status: str
     is_default: bool
     department_id: str | None

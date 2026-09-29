@@ -103,22 +103,34 @@ class _Audit:
         self.records.append(kwargs)
 
 
+class _Entitlements:
+    """No stored row by default, so the documented defaults govern."""
+
+    def __init__(self, stored: object | None = None) -> None:
+        self._stored = stored
+
+    async def get_for_tenant(self, tenant_id: UUID) -> object | None:
+        del tenant_id
+        return self._stored
+
+
 class _Uow:
-    def __init__(self, widgets: _Widgets) -> None:
+    def __init__(self, widgets: _Widgets, entitlements: object | None = None) -> None:
         self.chat_widgets = widgets
         self.audit = _Audit()
+        self.entitlements = _Entitlements(entitlements)
 
-    async def __aenter__(self) -> "_Uow":
+    async def __aenter__(self) -> _Uow:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
         return None
 
 
-def _factory(widgets: _Widgets):
+def _factory(widgets: _Widgets, entitlements: object | None = None):
     def make(actor_id: UUID, tenant_id: UUID) -> _Uow:
         del actor_id, tenant_id
-        return _Uow(widgets)
+        return _Uow(widgets, entitlements)
 
     return make
 

@@ -106,10 +106,13 @@ DEFAULT_COMPANY_NAME = "Falgoon Little Star"
 #: be worse than no default at all.
 COMPANY_PLACEHOLDER = "{company}"
 
+#: Says nothing a given nursery might not be true of -- no town, size or
+#: ownership. It stands in for every tenant that has not written its own,
+#: and it used to call all of them "a London-based day nursery".
 _DEFAULT_COMPANY_DESCRIPTION_TEMPLATE = "\n\n".join(
     (
         (
-        "{company} is a London-based day nursery providing early years "
+        "{company} is a day nursery providing early years "
         "childcare, education and family support within a safe, welcoming, "
         "inclusive and nurturing environment."
         ),

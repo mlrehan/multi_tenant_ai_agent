@@ -51,10 +51,10 @@ class _StubEmbeddingClient:
     def dimensions(self) -> int:
         return _DIMENSIONS
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, **kwargs: object) -> list[float]:
         return self.vectors.get(text, [1.0] + [0.0] * (_DIMENSIONS - 1))
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch(self, texts: list[str], **kwargs: object) -> list[list[float]]:
         return [await self.embed(text) for text in texts]
 
 

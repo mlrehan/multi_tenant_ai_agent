@@ -1,6 +1,11 @@
 import { apiFetch } from "@/lib/api-client";
 import type { MembershipRoleAssignment, TenantMember, TenantMembership } from "@/lib/types";
 
+/** The tenant's name when the API supplied one, otherwise a shortened id. */
+export function tenantLabel(m: TenantMembership): string {
+  return m.tenant_display_name ?? `${m.tenant_id.slice(0, 8)}…${m.tenant_id.slice(-4)}`;
+}
+
 export function listMyMemberships() {
   return apiFetch<TenantMembership[]>("v1/tenants/me/memberships");
 }

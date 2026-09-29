@@ -2,6 +2,7 @@
 
 import { use as usePromise, useEffect, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Bell,
   BellOff,
   Inbox,
@@ -13,10 +14,13 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
+import { useTenantMembers } from "@/features/tenancy/hooks";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -295,7 +299,14 @@ export default function InboxPage({ params }: { params: Promise<{ tenantId: stri
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {(teams.data?.teams.length ?? 0) === 0 ? (
+          {/* "Still loading" is not "no teams". Treating an undefined result as
+              zero flashed "No teams yet" on every visit -- a false statement
+              about the tenant's setup, shown to the one person who acts on it. */}
+          {teams.isLoading ? (
+            <Skeleton className="h-16 w-full" />
+          ) : teams.error ? (
+            <p className="text-sm text-destructive">Teams could not be loaded. Refresh to try again.</p>
+          ) : (teams.data?.teams.length ?? 0) === 0 ? (
             <p className="text-sm text-muted-foreground">
               No teams yet. Without one, the assistant tells visitors a transfer
               isn&rsquo;t available rather than offering a menu that goes nowhere.
@@ -317,6 +328,23 @@ export default function InboxPage({ params }: { params: Promise<{ tenantId: stri
                   </div>
                   {t.description && (
                     <p className="mt-1 text-xs text-muted-foreground">{t.description}</p>
+                  )}
+                  {/* An active team nobody staffs is a dead end: visitors are
+                      offered it, choose it, and wait for someone who isn't
+                      there. Said on the card, where it can be fixed. */}
+                  {t.member_ids.length === 0 ? (
+                    <p
+                      className={`mt-2 flex items-center gap-1 text-xs ${
+                        t.is_active ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"
+                      }`}
+                    >
+                      {t.is_active && <AlertTriangle className="size-3" />}
+                      No one in this team yet, so visitors aren’t offered it
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {t.member_ids.length} {t.member_ids.length === 1 ? "person" : "people"}
+                    </p>
                   )}
                 </button>
               ))}
@@ -614,7 +642,13 @@ function TeamDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [active, setActive] = useState(true);
+  const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
   const [seeded, setSeeded] = useState<string | null>(null);
+  // The roster needs `tenant.users.manage`. Someone who may edit teams but
+  // not see the roster gets a clear note, and the team's current members are
+  // saved back untouched -- never silently emptied.
+  const roster = useTenantMembers(team ? tenantId : null);
+  const people = (roster.data ?? []).filter((m) => m.status === "active");
 
   // Seed from the selected team once per open. Keyed on the id so reopening a
   // different team re-seeds, while typing is never overwritten mid-edit.
@@ -624,6 +658,16 @@ function TeamDialog({
     setName(existing?.name ?? "");
     setDescription(existing?.description ?? "");
     setActive(existing?.is_active ?? true);
+    setMemberIds(new Set(existing?.member_ids ?? []));
+  }
+
+  function toggleMember(id: string) {
+    setMemberIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   async function handleSave() {
@@ -633,7 +677,9 @@ function TeamDialog({
         name,
         description: description.trim() || null,
         isActive: active,
-        memberIds: existing?.member_ids ?? [],
+        // Only send a new set when the roster was actually shown; otherwise the
+        // team keeps exactly the members it had.
+        memberIds: roster.data ? [...memberIds] : (existing?.member_ids ?? []),
       });
       toast.success(existing ? "Team updated." : "Team created.");
       setSeeded(null);
@@ -657,7 +703,8 @@ function TeamDialog({
         <DialogHeader>
           <DialogTitle>{existing ? "Edit team" : "New team"}</DialogTitle>
           <DialogDescription>
-            Visitors see this name when the assistant offers a transfer.
+            Visitors see this name when they ask to speak to a person. The people you add
+            here are notified and see these conversations in their Inbox.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -690,6 +737,42 @@ function TeamDialog({
               </div>
             </div>
             <Switch checked={active} onCheckedChange={setActive} />
+          </div>
+          <div>
+            <div className="text-sm font-medium">People in this team</div>
+            <p className="mb-2 text-xs text-muted-foreground">
+              They receive this team&rsquo;s conversations. Owners and administrators see every
+              team&rsquo;s conversations anyway.
+            </p>
+            {roster.isLoading ? (
+              <Skeleton className="h-16 w-full" />
+            ) : roster.error ? (
+              <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                You can&rsquo;t see the member list, so this team keeps its current people. Ask
+                someone who manages members to choose them.
+              </p>
+            ) : people.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No active members to choose from.</p>
+            ) : (
+              <ul className="max-h-48 space-y-1 overflow-y-auto rounded-md border p-2">
+                {people.map((person) => (
+                  <li key={person.membership_id}>
+                    <label className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-accent">
+                      <Checkbox
+                        checked={memberIds.has(person.membership_id)}
+                        onCheckedChange={() => toggleMember(person.membership_id)}
+                      />
+                      <span className="min-w-0 truncate">
+                        {person.display_name || person.email || "Unnamed member"}
+                        {person.display_name && person.email && (
+                          <span className="ml-1 text-xs text-muted-foreground">{person.email}</span>
+                        )}
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
         <DialogFooter>

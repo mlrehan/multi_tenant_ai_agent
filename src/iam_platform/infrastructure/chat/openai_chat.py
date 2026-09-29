@@ -206,7 +206,17 @@ class OpenAIChatModel:
             # exactly where it would otherwise be discarded unnoticed.
             reported = getattr(event, "usage", None)
             if usage is not None and reported is not None:
-                usage.total = int(getattr(reported, "total_tokens", 0) or 0)
+                # **Added, never assigned.** The meter arrives already holding
+                # the question's embedding cost (one meter spans both calls),
+                # and `usage.total = ...` silently overwrote it -- while the
+                # input/output split was never filled at all, so every
+                # breakdown showed "input: the embedding, output: 0".
+                usage.input_tokens += int(getattr(reported, "prompt_tokens", 0) or 0)
+                usage.output_tokens += int(getattr(reported, "completion_tokens", 0) or 0)
+                usage.total += int(getattr(reported, "total_tokens", 0) or 0)
+                # The model this request actually named -- a per-call override
+                # or the platform default -- which is what a cost is priced on.
+                usage.chat_model = str(request["model"])
             if not event.choices:
                 continue
             delta = event.choices[0].delta

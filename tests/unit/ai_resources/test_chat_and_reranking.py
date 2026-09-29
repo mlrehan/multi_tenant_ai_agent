@@ -339,3 +339,49 @@ class TestPassthroughReranker:
         # Vector scores carried through unrescaled, so a caller comparing
         # across configurations can see they are a different quantity.
         assert reranked[0].relevance == pytest.approx(0.9)
+
+
+class _Usage:
+    def __init__(self, prompt: int, completion: int, total: int) -> None:
+        self.prompt_tokens = prompt
+        self.completion_tokens = completion
+        self.total_tokens = total
+
+
+class _UsageEvent:
+    """The final streamed chunk: usage, and no choices."""
+
+    def __init__(self, usage: _Usage) -> None:
+        self.choices: list[_Choice] = []
+        self.usage = usage
+
+
+class TestUsageIsAddedToTheMeter:
+    """The meter reaches the chat adapter already holding the question's
+    embedding cost. Assigning the provider's total overwrote it, and the
+    input/output split was never filled -- found in the live ledger, where a
+    row read "input 6, output 0, total 6,562"."""
+
+    async def test_the_split_is_recorded_and_the_embedding_cost_is_kept(self) -> None:
+        from iam_platform.application.ai_resources.ports import TokenUsage
+
+        client = _FakeOpenAI()
+
+        async def stream(**kwargs: Any) -> AsyncIterator[object]:
+            client.completions.requests.append(kwargs)
+
+            async def events() -> AsyncIterator[object]:
+                yield _Event("Hello")
+                yield _UsageEvent(_Usage(prompt=6_000, completion=500, total=6_556))
+
+            return events()
+
+        client.completions.create = stream  # type: ignore[method-assign]
+        meter = TokenUsage(input_tokens=6, total=6)  # the embedding, already counted
+
+        model = OpenAIChatModel(_settings(), client=client)
+        [t async for t in model.stream_answer(
+            question="q", context=_context(), system_prompt="s", usage=meter
+        )]
+
+        assert (meter.input_tokens, meter.output_tokens, meter.total) == (6_006, 500, 6_562)

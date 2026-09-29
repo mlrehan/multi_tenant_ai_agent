@@ -10,15 +10,21 @@ filter, not an isolation one, and has to be expressed in SQL.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from iam_platform.application.ai_resources.ports import StoredChunk
+from iam_platform.application.ai_resources.ports import (
+    AnswerFeedbackRecord,
+    AnswerFeedbackSummary,
+    StoredChunk,
+    UnansweredQuestion,
+)
 from iam_platform.domain.ai_resources.chatbot import Personality, ResponseLength
 from iam_platform.domain.ai_resources.entities import (
     AiAssistant,
@@ -45,8 +51,10 @@ from iam_platform.domain.ai_resources.entities import (
     SyncStatus,
     WidgetStatus,
 )
+from iam_platform.domain.ai_resources.feedback import AnswerFeedback
 from iam_platform.infrastructure.db.models.ai_resources import (
     AiAssistantModel,
+    AnswerFeedbackModel,
     AssistantMemberModel,
     ChatWidgetModel,
     ConversationMessageModel,
@@ -59,6 +67,8 @@ from iam_platform.infrastructure.db.models.ai_resources import (
     ProviderCredentialModel,
     TenantModelConfigurationModel,
 )
+from iam_platform.infrastructure.db.models.identity import UserModel
+from iam_platform.infrastructure.db.models.tenancy import TenantMembershipModel, TenantModel
 
 
 def _assistant_to_domain(m: AiAssistantModel) -> AiAssistant:
@@ -221,6 +231,7 @@ def _knowledge_base_to_domain(m: KnowledgeBaseModel) -> KnowledgeBase:
         vector_namespace=m.vector_namespace,
         created_at=m.created_at,
         updated_at=m.updated_at,
+        deleted_at=m.deleted_at,
     )
 
 
@@ -229,11 +240,22 @@ class SqlKnowledgeBaseRepository:
         self._session = session
 
     async def get_by_id(self, knowledge_base_id: UUID) -> KnowledgeBase | None:
+        # A deleted knowledge base does not exist as far as any caller is
+        # concerned. Filtering here -- the one place every authorized path
+        # loads a knowledge base through -- makes asking, searching,
+        # uploading, re-syncing and widget creation all answer "not found",
+        # rather than each having to remember to check.
         model = await self._session.get(KnowledgeBaseModel, knowledge_base_id)
-        return _knowledge_base_to_domain(model) if model else None
+        if model is None or model.deleted_at is not None:
+            return None
+        return _knowledge_base_to_domain(model)
 
     async def list_by_tenant(self, tenant_id: UUID) -> list[KnowledgeBase]:
-        stmt = select(KnowledgeBaseModel).order_by(KnowledgeBaseModel.created_at)
+        stmt = (
+            select(KnowledgeBaseModel)
+            .where(KnowledgeBaseModel.deleted_at.is_(None))
+            .order_by(KnowledgeBaseModel.created_at)
+        )
         return [_knowledge_base_to_domain(m) for m in (await self._session.execute(stmt)).scalars()]
 
     async def add(self, knowledge_base: KnowledgeBase) -> None:
@@ -262,6 +284,8 @@ class SqlKnowledgeBaseRepository:
                 visibility=knowledge_base.visibility.value,
                 department_id=knowledge_base.department_id,
                 team_id=knowledge_base.team_id,
+                deleted_at=knowledge_base.deleted_at,
+                updated_at=knowledge_base.updated_at,
             )
         )
 
@@ -292,6 +316,19 @@ class SqlDocumentRepository:
     async def get_by_id(self, document_id: UUID) -> Document | None:
         model = await self._session.get(DocumentModel, document_id)
         return _document_to_domain(model) if model else None
+
+    async def describe_many(
+        self, document_ids: list[UUID]
+    ) -> dict[UUID, tuple[str, str | None]]:
+        if not document_ids:
+            return {}
+        rows = await self._session.execute(
+            select(DocumentModel.id, DocumentModel.filename, DocumentModel.source_url).where(
+                DocumentModel.id.in_(document_ids),
+                DocumentModel.deleted_at.is_(None),
+            )
+        )
+        return {row.id: (row.filename, row.source_url) for row in rows}
 
     async def list_by_knowledge_base(self, knowledge_base_id: UUID) -> list[Document]:
         stmt = (
@@ -517,6 +554,7 @@ def _message_to_domain(m: ConversationMessageModel) -> ConversationMessage:
         citations=list(m.citations),
         token_count=m.token_count,
         created_at=m.created_at,
+        answer_status=m.answer_status,
     )
 
 class SqlConversationMessageRepository:
@@ -536,11 +574,59 @@ class SqlConversationMessageRepository:
                     citations=m.citations,
                     token_count=m.token_count,
                     created_at=m.created_at,
+                    answer_status=m.answer_status,
                 )
                 for m in messages
             ]
         )
         await self._session.flush()
+
+    async def unanswered_questions(
+        self, *, tenant_id: UUID, since: datetime, limit: int
+    ) -> list[UnansweredQuestion]:
+        # The question is the user turn immediately before the answer: both
+        # write paths store the pair as consecutive `seq`s. Grouped on the
+        # trimmed, lower-cased text so "Opening hours?" asked five ways by
+        # case and spacing is one row with a count of five.
+        rows = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT lower(btrim(u.content)) AS key,
+                           min(u.content) AS sample,
+                           count(*) AS times,
+                           max(a.created_at) AS last_asked,
+                           -- True when the visitor was told the sources don't
+                           -- cover it (found nothing, said so, or was withheld);
+                           -- false only for an exempt answer shown uncited.
+                           bool_or(a.answer_status <> 'uncited') AS no_sources
+                    FROM conversation_messages a
+                    JOIN conversation_messages u
+                      ON u.conversation_id = a.conversation_id
+                     AND u.tenant_id = a.tenant_id
+                     AND u.seq = a.seq - 1
+                     AND u.role = 'user'
+                    WHERE a.tenant_id = :tenant_id
+                      AND a.role = 'assistant'
+                      AND a.answer_status IN ('uncited', 'no_sources', 'not_in_sources', 'withheld')
+                      AND a.created_at >= :since
+                    GROUP BY 1
+                    ORDER BY times DESC, last_asked DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"tenant_id": tenant_id, "since": since, "limit": limit},
+            )
+        ).all()
+        return [
+            UnansweredQuestion(
+                question=r[1],
+                times_asked=int(r[2]),
+                last_asked_at=r[3],
+                no_sources=bool(r[4]),
+            )
+            for r in rows
+        ]
 
     async def next_seq(self, conversation_id: UUID) -> int:
         stmt = select(func.coalesce(func.max(ConversationMessageModel.seq), 0)).where(
@@ -949,7 +1035,16 @@ def _widget_to_domain(model: ChatWidgetModel) -> ChatWidget:
         show_quick_reply_suggestions=model.show_quick_reply_suggestions,
         created_at=model.created_at,
         updated_at=model.updated_at,
+        last_seen_at=model.last_seen_at,
+        last_seen_origin=model.last_seen_origin,
+        last_refused_at=model.last_refused_at,
+        last_refused_origin=model.last_refused_origin,
     )
+
+
+#: How often the install check may rewrite the same origin. Every session
+#: start would otherwise be a write on the busiest public path there is.
+_SEEN_THROTTLE = timedelta(minutes=5)
 
 
 class SqlChatWidgetRepository:
@@ -1013,6 +1108,42 @@ class SqlChatWidgetRepository:
             )
         )
         await self._session.execute(stmt)
+
+    async def record_seen(
+        self, *, tenant_id: UUID, widget_id: UUID, origin: str, at: datetime
+    ) -> None:
+        # Conditional, so a steady stream of visitors from one site costs one
+        # write per five minutes -- and a change of site is recorded at once.
+        await self._session.execute(
+            update(ChatWidgetModel)
+            .where(
+                ChatWidgetModel.tenant_id == tenant_id,
+                ChatWidgetModel.id == widget_id,
+                or_(
+                    ChatWidgetModel.last_seen_at.is_(None),
+                    ChatWidgetModel.last_seen_at < at - _SEEN_THROTTLE,
+                    ChatWidgetModel.last_seen_origin.is_distinct_from(origin),
+                ),
+            )
+            .values(last_seen_at=at, last_seen_origin=origin)
+        )
+
+    async def record_refused(
+        self, *, tenant_id: UUID, widget_id: UUID, origin: str, at: datetime
+    ) -> None:
+        await self._session.execute(
+            update(ChatWidgetModel)
+            .where(
+                ChatWidgetModel.tenant_id == tenant_id,
+                ChatWidgetModel.id == widget_id,
+                or_(
+                    ChatWidgetModel.last_refused_at.is_(None),
+                    ChatWidgetModel.last_refused_at < at - _SEEN_THROTTLE,
+                    ChatWidgetModel.last_refused_origin.is_distinct_from(origin),
+                ),
+            )
+            .values(last_refused_at=at, last_refused_origin=origin)
+        )
 
     async def count_conversations(self, *, tenant_id: UUID, widget_id: UUID) -> int:
         return int(
@@ -1183,3 +1314,157 @@ class SqlTenantModelAccessRepository:
             )
         )
         return 0
+
+
+class SqlAnswerFeedbackRepository:
+    """Insert and count only -- the table is append-only for the app role."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, feedback: AnswerFeedback) -> None:
+        self._session.add(
+            AnswerFeedbackModel(
+                id=feedback.id,
+                tenant_id=feedback.tenant_id,
+                knowledge_base_id=feedback.knowledge_base_id,
+                membership_id=feedback.membership_id,
+                widget_id=feedback.widget_id,
+                visitor_session_id=feedback.visitor_session_id,
+                rating=feedback.rating.value,
+                question=feedback.question,
+                answer=feedback.answer,
+                comment=feedback.comment,
+                created_at=feedback.created_at,
+            )
+        )
+        await self._session.flush()
+
+    async def count_for_visitor_session(
+        self, *, tenant_id: UUID, visitor_session_id: UUID
+    ) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count())
+                .select_from(AnswerFeedbackModel)
+                .where(
+                    AnswerFeedbackModel.tenant_id == tenant_id,
+                    AnswerFeedbackModel.visitor_session_id == visitor_session_id,
+                )
+            )
+            or 0
+        )
+
+    def _filters(
+        self, tenant_id: UUID | None, rating: str | None, channel: str | None
+    ) -> list[Any]:
+        conditions: list[Any] = []
+        if tenant_id is not None:
+            conditions.append(AnswerFeedbackModel.tenant_id == tenant_id)
+        if rating is not None:
+            conditions.append(AnswerFeedbackModel.rating == rating)
+        if channel == "website":
+            conditions.append(AnswerFeedbackModel.widget_id.is_not(None))
+        elif channel == "console":
+            conditions.append(AnswerFeedbackModel.membership_id.is_not(None))
+        return conditions
+
+    async def list_page(
+        self,
+        *,
+        tenant_id: UUID | None,
+        rating: str | None,
+        channel: str | None,
+        limit: int,
+        offset: int,
+        with_identity: bool = False,
+    ) -> tuple[list[AnswerFeedbackRecord], int]:
+        conditions = self._filters(tenant_id, rating, channel)
+        total = int(
+            await self._session.scalar(
+                select(func.count()).select_from(AnswerFeedbackModel).where(*conditions)
+            )
+            or 0
+        )
+
+        columns: list[Any] = [AnswerFeedbackModel, KnowledgeBaseModel.name]
+        joined: Any = AnswerFeedbackModel.__table__.outerjoin(
+            KnowledgeBaseModel.__table__,
+            (KnowledgeBaseModel.tenant_id == AnswerFeedbackModel.tenant_id)
+            & (KnowledgeBaseModel.id == AnswerFeedbackModel.knowledge_base_id),
+        )
+        if with_identity:
+            # Platform session only: `users` is global identity data that a
+            # tenant session has no business reading.
+            columns += [TenantModel.display_name, UserModel.email]
+            joined = (
+                joined.outerjoin(
+                    TenantModel.__table__, TenantModel.id == AnswerFeedbackModel.tenant_id
+                )
+                .outerjoin(
+                    TenantMembershipModel.__table__,
+                    TenantMembershipModel.id == AnswerFeedbackModel.membership_id,
+                )
+                .outerjoin(UserModel.__table__, UserModel.id == TenantMembershipModel.user_id)
+            )
+
+        rows = await self._session.execute(
+            select(*columns)
+            .select_from(joined)
+            .where(*conditions)
+            .order_by(AnswerFeedbackModel.created_at.desc(), AnswerFeedbackModel.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        records: list[AnswerFeedbackRecord] = []
+        for row in rows:
+            model = row[0]
+            records.append(
+                AnswerFeedbackRecord(
+                    id=model.id,
+                    tenant_id=model.tenant_id,
+                    rating=model.rating,
+                    question=model.question,
+                    answer=model.answer,
+                    comment=model.comment,
+                    channel="website" if model.widget_id is not None else "console",
+                    knowledge_base_name=row[1],
+                    created_at=model.created_at,
+                    tenant_name=row[2] if with_identity else None,
+                    author_email=row[3] if with_identity else None,
+                )
+            )
+        return records, total
+
+    async def summarize(
+        self, *, tenant_id: UUID | None, with_identity: bool = False
+    ) -> list[AnswerFeedbackSummary]:
+        helpful = func.count().filter(AnswerFeedbackModel.rating == "up")
+        not_helpful = func.count().filter(AnswerFeedbackModel.rating == "down")
+        conditions = self._filters(tenant_id, None, None)
+        name_column: Any = TenantModel.display_name if with_identity else None
+        stmt: Any = select(
+            AnswerFeedbackModel.tenant_id,
+            func.count(),
+            helpful,
+            not_helpful,
+            *( [name_column] if with_identity else [] ),
+        ).where(*conditions)
+        if with_identity:
+            stmt = stmt.outerjoin(
+                TenantModel, TenantModel.id == AnswerFeedbackModel.tenant_id
+            ).group_by(AnswerFeedbackModel.tenant_id, TenantModel.display_name)
+        else:
+            stmt = stmt.group_by(AnswerFeedbackModel.tenant_id)
+        out: list[AnswerFeedbackSummary] = []
+        for row in await self._session.execute(stmt):
+            out.append(
+                AnswerFeedbackSummary(
+                    tenant_id=row[0],
+                    total=int(row[1]),
+                    helpful=int(row[2]),
+                    not_helpful=int(row[3]),
+                    tenant_name=row[4] if with_identity else None,
+                )
+            )
+        return out

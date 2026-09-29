@@ -1,6 +1,6 @@
 "use client";
 
-import { use as usePromise, useRef, useState } from "react";
+import { use as usePromise, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -14,7 +14,6 @@ import {
   RefreshCw,
   Search,
   Trash2,
-  Upload,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -70,7 +69,6 @@ import {
   useKnowledgeBaseDocuments,
   useKnowledgeBases,
   useQueryKnowledgeBase,
-  useUploadDocument,
   useCreateDataSource,
   useDataSources,
   useChatWidgets,
@@ -80,13 +78,25 @@ import {
   useUpdateChatWidget,
   useRetryDocument,
   useDeleteDocument,
+  useDeleteKnowledgeBase,
   useDocumentDetail,
   useResyncDataSource,
 } from "@/features/ai-resources/hooks";
 import { isApiError } from "@/lib/api-client";
-import { streamAnswer } from "@/features/ai-resources/api";
+import { AskChat } from "@/features/ai-resources/chat/ask-chat";
+import {
+  Dropzone,
+  IngestionOverview,
+  ProgressBar,
+  StageStepper,
+  StatusIcon,
+  documentProgress,
+  formatBytes,
+  uploadProgress,
+  useUploadQueue,
+  type LocalUpload,
+} from "@/features/ai-resources/ingestion";
 import type {
-  AnswerCitation,
   ChatWidget,
   CrawlMode,
   DataSource,
@@ -160,19 +170,12 @@ function extensionOf(name: string): string {
   return dot === -1 ? "" : name.slice(dot).toLowerCase();
 }
 
-type StagedFile = {
-  file: File;
-  /** Identity for de-duplication and React keys. Name alone would reject a
-   * legitimately different file that happens to share a name; name+size+mtime
-   * is what a person means by "the same file". */
-  key: string;
-  status: "ready" | "uploading" | "done" | "error";
-  error?: string;
+const VISIBILITY_LABELS: Record<Visibility, string> = {
+  tenant: "Tenant — everyone",
+  department: "Department",
+  team: "Team",
+  restricted: "Restricted",
 };
-
-function stagedKey(file: File): string {
-  return `${file.name}:${file.size}:${file.lastModified}`;
-}
 
 const createSchema = z.object({
   name: z.string().min(1, "Enter a name.").max(200),
@@ -189,6 +192,9 @@ export default function KnowledgeBasesPage({
   const { data, isLoading, error } = useKnowledgeBases(tenantId);
   const plan = useTenantPlan(tenantId);
   const [open, setOpen] = useState(false);
+  // The knowledge base just created, whose documents dialog opens by itself:
+  // a new knowledge base is empty, and adding sources is the obvious next step.
+  const [justCreated, setJustCreated] = useState<string | null>(null);
 
   const knowledgeBases = data?.knowledge_bases;
 
@@ -213,7 +219,7 @@ export default function KnowledgeBasesPage({
     <div>
       <PageHeader
         title="Knowledge bases"
-        description="Document collections that assistants can search. Each one gets its own isolated vector namespace."
+        description="The documents and web pages your chatbot answers from. Each knowledge base is searched in isolation, never mixed with another tenant's content."
         actions={
           <div className="flex items-center gap-3">
             {atKbLimit && (
@@ -227,7 +233,13 @@ export default function KnowledgeBasesPage({
                 <Plus />
                 New knowledge base
               </DialogTrigger>
-              <CreateKnowledgeBaseDialog tenantId={tenantId} onDone={() => setOpen(false)} />
+              <CreateKnowledgeBaseDialog
+                tenantId={tenantId}
+                onDone={(id) => {
+                  setOpen(false);
+                  setJustCreated(id);
+                }}
+              />
             </Dialog>
           </div>
         }
@@ -240,7 +252,7 @@ export default function KnowledgeBasesPage({
         <EmptyState
           icon={Database}
           title="No knowledge bases yet"
-          description="Create one to give your assistants source material to draw on."
+          description="Create one to give your chatbot something to answer from."
           action={
             <Button size="sm" disabled={atKbLimit} onClick={() => setOpen(true)}>
               <Plus />
@@ -264,7 +276,12 @@ export default function KnowledgeBasesPage({
               </TableHeader>
               <TableBody>
                 {knowledgeBases.map((kb) => (
-                  <KnowledgeBaseRow key={kb.id} tenantId={tenantId} knowledgeBase={kb} />
+                  <KnowledgeBaseRow
+                    key={kb.id}
+                    tenantId={tenantId}
+                    knowledgeBase={kb}
+                    openDocumentsOnMount={kb.id === justCreated}
+                  />
                 ))}
               </TableBody>
             </Table>
@@ -278,18 +295,25 @@ export default function KnowledgeBasesPage({
 function KnowledgeBaseRow({
   tenantId,
   knowledgeBase,
+  openDocumentsOnMount = false,
 }: {
   tenantId: string;
   knowledgeBase: KnowledgeBase;
+  openDocumentsOnMount?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [documentsOpen, setDocumentsOpen] = useState(false);
+  // A row mounts for the first time when its knowledge base has just been
+  // created, which is exactly when this should start open.
+  const [documentsOpen, setDocumentsOpen] = useState(openDocumentsOnMount);
   const [askOpen, setAskOpen] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   return (
     <TableRow>
-      <TableCell>
+      {/* `whitespace-normal`: TableCell sets nowrap, so a long description
+          stretched the table sideways and pushed the actions out of view. */}
+      <TableCell className="max-w-md whitespace-normal">
         <div className="font-medium">{knowledgeBase.name}</div>
         {knowledgeBase.description && (
           <p className="mt-0.5 text-xs text-muted-foreground">{knowledgeBase.description}</p>
@@ -340,16 +364,130 @@ function KnowledgeBaseRow({
             </DialogTrigger>
             <QueryDialog tenantId={tenantId} knowledgeBase={knowledgeBase} />
           </Dialog>
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={`Delete ${knowledgeBase.name}`}
+            className="text-muted-foreground hover:text-destructive"
+            onClick={() => setDeleteOpen(true)}
+          >
+            <Trash2 />
+          </Button>
+          <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+            {/* Mounted only while open: it reads the document list to say
+                exactly what will be removed. */}
+            {deleteOpen && (
+              <DeleteKnowledgeBaseDialog
+                tenantId={tenantId}
+                knowledgeBase={knowledgeBase}
+                onDone={() => setDeleteOpen(false)}
+              />
+            )}
+          </AlertDialog>
         </div>
       </TableCell>
     </TableRow>
   );
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+/** Deleting a knowledge base: what goes, what stays, and a typed confirmation.
+ *
+ * Typing the name is deliberate friction -- this removes every document and
+ * passage in it at once, and cannot be undone. A refusal from the server (a
+ * chatbot still answers from it, or something is still processing) is shown
+ * here, in the dialog, because that is where the person is looking. */
+function DeleteKnowledgeBaseDialog({
+  tenantId,
+  knowledgeBase,
+  onDone,
+}: {
+  tenantId: string;
+  knowledgeBase: KnowledgeBase;
+  onDone: () => void;
+}) {
+  const remove = useDeleteKnowledgeBase(tenantId);
+  const { data } = useKnowledgeBaseDocuments(tenantId, knowledgeBase.id);
+  const [typed, setTyped] = useState("");
+  const [refusal, setRefusal] = useState<string | null>(null);
+
+  const documents = data?.documents;
+  const passages = documents?.reduce((total, d) => total + d.chunk_count, 0);
+  const confirmed = typed.trim() === knowledgeBase.name;
+
+  async function handleDelete() {
+    setRefusal(null);
+    try {
+      await remove.mutateAsync(knowledgeBase.id);
+      toast.success(`${knowledgeBase.name} deleted.`);
+      onDone();
+    } catch (err) {
+      setRefusal(isApiError(err) ? err.message : "Couldn't delete the knowledge base.");
+    }
+  }
+
+  return (
+    <AlertDialogContent>
+      <AlertDialogHeader>
+        <AlertDialogTitle>Delete “{knowledgeBase.name}”?</AlertDialogTitle>
+        <AlertDialogDescription>
+          This permanently removes the knowledge base and everything your chatbot could
+          find in it. It cannot be undone.
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+
+      <ul className="space-y-1.5 rounded-md border border-border bg-muted/30 p-3 text-sm">
+        <li>
+          {documents === undefined ? (
+            "Counting documents…"
+          ) : (
+            <>
+              <span className="font-medium">
+                {documents.length} document{documents.length === 1 ? "" : "s"}
+              </span>{" "}
+              and <span className="font-medium">{passages} searchable passage{passages === 1 ? "" : "s"}</span>{" "}
+              will be removed from search, and the stored files deleted.
+            </>
+          )}
+        </li>
+        <li className="text-muted-foreground">
+          Web sources added to it stop syncing. Answer ratings and the audit trail are kept.
+        </li>
+      </ul>
+
+      <div>
+        <Label htmlFor={`confirm-${knowledgeBase.id}`}>
+          Type <span className="font-semibold">{knowledgeBase.name}</span> to confirm
+        </Label>
+        <Input
+          id={`confirm-${knowledgeBase.id}`}
+          className="mt-1.5"
+          autoComplete="off"
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && confirmed && !remove.isPending && void handleDelete()}
+        />
+      </div>
+
+      {refusal && (
+        <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {refusal}
+        </p>
+      )}
+
+      <AlertDialogFooter>
+        <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={!confirmed || remove.isPending}
+          onClick={() => void handleDelete()}
+        >
+          {remove.isPending && <Loader2 className="animate-spin" />}
+          Delete knowledge base
+        </Button>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  );
 }
 
 function DocumentStatusBadge({ document }: { document: KnowledgeBaseDocument }) {
@@ -377,9 +515,17 @@ function DocumentStatusBadge({ document }: { document: KnowledgeBaseDocument }) 
   );
 }
 
-/** Upload and ingestion status. Ingestion runs on a Celery worker, so a
- * document lands here as `processing` and settles to `ready` or `failed`
- * later -- the list polls itself until nothing is in flight. */
+/** Upload and ingestion, live.
+ *
+ * Files join the list the moment they are picked and start uploading at once
+ * (two at a time), each with its own byte-level progress. Once the server has
+ * them, the same row carries on through the worker's stages -- extracting,
+ * chunking, embedding, indexing -- from the documents list, which polls every
+ * 1.5 s while anything is in flight. An overall bar sums up the batch.
+ *
+ * Validation stays here, not in the queue: a `.zip` is refused identically
+ * whether it was browsed or dropped, because the `accept` attribute only
+ * filters the browse dialog and a drop bypasses it. */
 function DocumentsDialog({
   tenantId,
   knowledgeBase,
@@ -388,35 +534,31 @@ function DocumentsDialog({
   knowledgeBase: KnowledgeBase;
 }) {
   const { data, isLoading, error } = useKnowledgeBaseDocuments(tenantId, knowledgeBase.id);
-  const upload = useUploadDocument(tenantId, knowledgeBase.id);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
-  const [staged, setStaged] = useState<StagedFile[]>([]);
-  const [sending, setSending] = useState(false);
-
+  const queue = useUploadQueue(tenantId, knowledgeBase.id);
   const documents = data?.documents;
 
-  /** The single entry point for both browse and drag-and-drop.
-   *
-   * Files are *staged*, not sent. Uploading on drop gives no chance to notice
-   * the wrong file was picked, and no way to undo it once a background job has
-   * started parsing it. Validation happens here too, so a `.zip` is refused
-   * identically whichever way it arrived — the `accept` attribute only filters
-   * the browse dialog and a drop bypasses it entirely.
-   */
+  // Every document seen in flight while this dialog is open -- including one
+  // started with Retry, or already processing when it opened -- so the batch
+  // summary keeps counting it after it finishes. Updated during render (the
+  // documented pattern for deriving state from changing props), only when a
+  // new id appears.
+  const [tracked, setTracked] = useState<string[]>([]);
+  const newlyInFlight = (documents ?? [])
+    .filter((d) => d.status === "processing" && !tracked.includes(d.id))
+    .map((d) => d.id);
+  if (newlyInFlight.length > 0) setTracked([...tracked, ...newlyInFlight]);
+
   function addFiles(incoming: FileList | File[]) {
-    // Validation runs here, not inside the `setStaged` updater. React defers
-    // an updater to the render phase, so anything it collects is still empty
-    // when the code after `setStaged` runs -- an earlier version gathered the
-    // rejections in there and every "unsupported file type" toast silently
-    // never fired. Keeping the updater pure also means StrictMode's
-    // double-invoke can't double a toast.
+    // Validation runs here, not inside a state updater. React defers an
+    // updater to the render phase, so rejections collected in there were still
+    // empty when the toasts ran and every "unsupported file type" message was
+    // silently dropped once before.
     const rejected: string[] = [];
-    const accepted: StagedFile[] = [];
-    const seen = new Set(staged.map((s) => s.key));
+    const accepted: { file: File; key: string }[] = [];
+    const seen = new Set(queue.uploads.map((u) => u.key));
 
     for (const file of Array.from(incoming)) {
-      const key = stagedKey(file);
+      const key = uploadKey(file);
       if (seen.has(key)) {
         rejected.push(`${file.name} is already in the list`);
         continue;
@@ -434,223 +576,172 @@ function DocumentsDialog({
         continue;
       }
       seen.add(key);
-      accepted.push({ file, key, status: "ready" });
+      accepted.push({ file, key });
     }
 
-    if (accepted.length) {
-      setStaged((current) => {
-        // `seen` came from a snapshot of `staged`; two drops in quick
-        // succession can both read the same one, so dedupe once more against
-        // what is actually in state.
-        const present = new Set(current.map((s) => s.key));
-        const fresh = accepted.filter((a) => !present.has(a.key));
-        return fresh.length ? [...current, ...fresh] : current;
-      });
-    }
-
+    if (accepted.length) queue.add(accepted);
     for (const message of rejected) toast.error(message);
   }
 
-  function removeStaged(key: string) {
-    setStaged((current) => current.filter((s) => s.key !== key));
-  }
+  // A local upload is shown until the server's list contains the document it
+  // became; from then on the document row carries the file.
+  const listedIds = new Set(documents?.map((d) => d.id));
+  const localRows = queue.uploads.filter((u) => !(u.documentId && listedIds.has(u.documentId)));
+  const sessionIds = new Set(queue.uploads.flatMap((u) => (u.documentId ? [u.documentId] : [])));
 
-  /** Sends everything staged, one at a time, keeping per-file status.
-   *
-   * Sequential rather than parallel: each upload triggers a background parse,
-   * and ten at once is how a single tenant saturates the worker queue for
-   * everyone else. Successful files leave the list; failures stay, with their
-   * reason, so they can be retried without re-picking them.
-   */
-  async function uploadStaged() {
-    setSending(true);
-    try {
-      for (const item of staged.filter((s) => s.status !== "done")) {
-        setStaged((c) =>
-          c.map((s) => (s.key === item.key ? { ...s, status: "uploading" } : s)),
-        );
-        try {
-          await upload.mutateAsync(item.file);
-          setStaged((c) => c.filter((s) => s.key !== item.key));
-          toast.success(`${item.file.name} uploaded — indexing now.`);
-        } catch (err) {
-          const message = isApiError(err) ? err.message : "Upload failed.";
-          setStaged((c) =>
-            c.map((s) =>
-              s.key === item.key ? { ...s, status: "error", error: message } : s,
-            ),
-          );
-          toast.error(`${item.file.name}: ${message}`);
-        }
-      }
-    } finally {
-      setSending(false);
-    }
-  }
+  // Newest first, so a file just added is at the top, next to its upload.
+  const sortedDocuments = documents
+    ? [...documents].sort((a, b) => b.created_at.localeCompare(a.created_at))
+    : undefined;
+
+  // The batch: everything uploaded in this dialog, plus everything seen in
+  // flight while it has been open.
+  const batch = [
+    ...localRows.map(uploadProgress),
+    ...(sortedDocuments ?? [])
+      .filter((d) => sessionIds.has(d.id) || tracked.includes(d.id) || d.status === "processing")
+      .map(documentProgress),
+  ];
+
+  const readyCount = documents?.filter((d) => d.status === "ready").length ?? 0;
 
   return (
-    <DialogContent className="sm:max-w-2xl">
+    <DialogContent className="sm:max-w-3xl">
       <DialogHeader>
         <DialogTitle>{knowledgeBase.name}</DialogTitle>
         <DialogDescription>
-          Uploaded files are parsed, chunked and embedded in the background. They become
-          searchable once indexing finishes.
+          Add files or a website. Each file is uploaded, read, split into passages and
+          indexed for search — you can follow every step below.
         </DialogDescription>
       </DialogHeader>
 
       <div className="space-y-4 py-2">
-        <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragging(false);
-            if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
-          }}
-          className={`flex flex-col items-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors ${
-            dragging ? "border-primary bg-primary/5" : "border-border"
-          }`}
-        >
-          <Upload className="size-5 text-muted-foreground" />
-          <p className="text-sm">
-            Drop files here, or{" "}
-            <button
-              type="button"
-              className="font-medium text-primary underline-offset-4 hover:underline"
-              onClick={() => inputRef.current?.click()}
-            >
-              browse
-            </button>
-          </p>
-          <p className="text-xs text-muted-foreground">
-            PDF, Word, Excel, PowerPoint, CSV, JSON, XML or images — up to 50 MB each.
-          </p>
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            accept={ACCEPTED_FILE_TYPES}
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files?.length) addFiles(e.target.files);
-              // Reset so re-picking the same file fires `change` again.
-              e.target.value = "";
-            }}
-          />
-        </div>
+        <Dropzone
+          onFiles={addFiles}
+          accept={ACCEPTED_FILE_TYPES}
+          hint="PDF, Word, Excel, PowerPoint, HTML, email, CSV, JSON, XML, text or images — up to 50 MB each."
+        />
 
-        {staged.length > 0 && (
-          <div className="space-y-2 rounded-lg border border-border p-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-medium">
-                {staged.length} file{staged.length === 1 ? "" : "s"} ready to upload
-              </p>
-              <div className="flex shrink-0 items-center gap-2">
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  disabled={sending}
-                  onClick={() => setStaged([])}
-                >
-                  Clear
-                </Button>
-                <Button size="xs" disabled={sending} onClick={() => void uploadStaged()}>
-                  {sending && <Loader2 className="animate-spin" />}
-                  {sending ? "Uploading…" : "Upload"}
-                </Button>
-              </div>
-            </div>
-            <ul className="space-y-1">
-              {staged.map((item) => (
-                <li
-                  key={item.key}
-                  className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-2.5 py-1.5"
-                >
-                  {/* min-w-0 is what lets `truncate` work inside a flex row —
-                      without it the item refuses to shrink below its content
-                      and a long filename widens the dialog. */}
-                  <div className="min-w-0">
-                    <p className="truncate text-sm">{item.file.name}</p>
-                    {item.error && (
-                      <p className="truncate text-xs text-destructive">{item.error}</p>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {formatBytes(item.file.size)}
-                    </span>
-                    {item.status === "uploading" ? (
-                      <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-                    ) : (
-                      <button
-                        type="button"
-                        aria-label={`Remove ${item.file.name}`}
-                        className="text-muted-foreground hover:text-foreground"
-                        disabled={sending}
-                        onClick={() => removeStaged(item.key)}
-                      >
-                        <X className="size-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </li>
+        <IngestionOverview items={batch} />
+
+        {/* The list comes straight after the upload, so a file is seen the
+            moment it is added; the web source is the secondary way in. */}
+        <div>
+          <div className="mb-2 flex items-baseline justify-between">
+            <h3 className="text-sm font-medium">Documents</h3>
+            {documents && (
+              <span className="text-xs text-muted-foreground">
+                {readyCount} of {documents.length} ready
+              </span>
+            )}
+          </div>
+
+          {isLoading && <TableSkeleton rows={2} columns={3} />}
+          {error && <ErrorState error={error} resource="documents" />}
+
+          {documents && documents.length === 0 && localRows.length === 0 && (
+            <p className="rounded-md border border-dashed border-border py-6 text-center text-sm text-muted-foreground">
+              No documents yet. Drop a file above to get started.
+            </p>
+          )}
+
+          {(localRows.length > 0 || (sortedDocuments && sortedDocuments.length > 0)) && (
+            <ul className="max-h-[26rem] divide-y divide-border overflow-y-auto rounded-md border border-border">
+              {localRows.map((upload) => (
+                <LocalUploadRow
+                  key={upload.key}
+                  upload={upload}
+                  onCancel={() => queue.cancel(upload.key)}
+                  onRetry={() => queue.retry(upload.key)}
+                  onDismiss={() => queue.dismiss(upload.key)}
+                />
+              ))}
+              {sortedDocuments?.map((doc) => (
+                <DocumentRow
+                  key={doc.id}
+                  tenantId={tenantId}
+                  knowledgeBaseId={knowledgeBase.id}
+                  document={doc}
+                />
               ))}
             </ul>
-          </div>
-        )}
+          )}
+        </div>
 
         <CrawlSection tenantId={tenantId} knowledgeBaseId={knowledgeBase.id} />
-
-        {isLoading && <TableSkeleton rows={2} columns={3} />}
-        {error && <ErrorState error={error} resource="documents" />}
-
-        {documents && documents.length === 0 && (
-          <p className="py-4 text-center text-sm text-muted-foreground">
-            No documents yet.
-          </p>
-        )}
-
-        {documents && documents.length > 0 && (
-          <div className="max-h-80 overflow-y-auto rounded-md border border-border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>File</TableHead>
-                  <TableHead className="w-20">Size</TableHead>
-                  <TableHead className="w-20">Chunks</TableHead>
-                  <TableHead className="w-28">Status</TableHead>
-                  <TableHead className="w-28 text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {documents.map((doc) => (
-                  <DocumentRow
-                    key={doc.id}
-                    tenantId={tenantId}
-                    knowledgeBaseId={knowledgeBase.id}
-                    document={doc}
-                  />
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
       </div>
     </DialogContent>
   );
 }
 
-/** One document, with the actions a tenant admin needs when ingestion went
- * wrong: see why, try again, or remove it.
+function uploadKey(file: File): string {
+  // Name alone would refuse a different file that shares a name; name, size
+  // and modification time is what a person means by "the same file".
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+/** A file still in this browser: waiting, sending, or refused by the server. */
+function LocalUploadRow({
+  upload,
+  onCancel,
+  onRetry,
+  onDismiss,
+}: {
+  upload: LocalUpload;
+  onCancel: () => void;
+  onRetry: () => void;
+  onDismiss: () => void;
+}) {
+  const progress = uploadProgress(upload);
+  return (
+    <li className="px-3 py-2.5">
+      <div className="flex items-start gap-3">
+        <StatusIcon tone={progress.tone} className="mt-0.5 shrink-0" />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 truncate text-sm font-medium">{upload.file.name}</p>
+            {progress.tone !== "error" && (
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                {progress.percent}%
+              </span>
+            )}
+          </div>
+          <p className={`text-xs ${progress.tone === "error" ? "text-destructive" : "text-muted-foreground"}`}>
+            {progress.label}
+            {progress.detail && ` · ${progress.detail}`}
+          </p>
+          <StageStepper progress={progress} />
+          {progress.tone !== "error" && (
+            <ProgressBar percent={progress.percent} tone={progress.tone} label={`${upload.file.name} progress`} />
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {upload.phase === "error" ? (
+            <>
+              <Button size="xs" variant="ghost" aria-label={`Retry ${upload.file.name}`} onClick={onRetry}>
+                <RefreshCw />
+              </Button>
+              <Button size="xs" variant="ghost" aria-label={`Dismiss ${upload.file.name}`} onClick={onDismiss}>
+                <X />
+              </Button>
+            </>
+          ) : upload.phase !== "uploaded" ? (
+            <Button size="xs" variant="ghost" aria-label={`Cancel ${upload.file.name}`} onClick={onCancel}>
+              <X />
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/** One document on the server, from queued to ready or failed.
  *
- * Chunk count sits beside status deliberately. `Ready` answers "did the
- * pipeline finish"; the count answers "is there anything to find" -- and a
- * `Ready` row showing 0 chunks is exactly the case that used to look like
- * success and could answer nothing.
- */
+ * In flight it shows its stage, the stage's own detail ("120 of 466
+ * passages") and its bar; once finished it collapses to one line. The chunk
+ * count stays visible when ready, because `Ready` with 0 passages is the case
+ * that used to look like success and could answer nothing. */
 function DocumentRow({
   tenantId,
   knowledgeBaseId,
@@ -665,7 +756,9 @@ function DocumentRow({
   const [confirming, setConfirming] = useState(false);
   const [inspecting, setInspecting] = useState(false);
 
-  const emptyButReady = document.status === "ready" && document.chunk_count === 0;
+  const progress = documentProgress(document);
+  const inFlight = document.status === "processing";
+  const failed = document.status === "failed";
 
   async function handleRetry() {
     try {
@@ -688,62 +781,63 @@ function DocumentRow({
   }
 
   return (
-    <TableRow>
-      {/* max-w-0 with w-full is the table-cell idiom for "take the remaining
-          space but let truncate work" -- a cell sizes to content otherwise,
-          and one long crawled-page title widens the whole dialog. */}
-      <TableCell className="w-full max-w-0 align-top">
-        {/* The filename opens the inspector. A row-level click would fight
-            with the action buttons, and a separate "view" button would be a
-            third icon competing for the same narrow column. */}
-        <button
-          type="button"
-          className="block w-full truncate text-left font-medium underline-offset-4 hover:underline"
-          onClick={() => setInspecting(true)}
-        >
-          {document.filename}
-        </button>
-        {/* `whitespace-normal` is load-bearing: TableCell sets
-            `whitespace-nowrap`, which is right for the short cells but stops
-            these notes wrapping, so they render as one long line straight
-            across the columns to their right. */}
-        {document.status === "failed" && document.failure_reason && (
-          <p className="mt-0.5 text-xs whitespace-normal text-destructive">
-            {document.failure_reason}
+    <li className="px-3 py-2.5">
+      <div className="flex items-start gap-3">
+        <StatusIcon tone={progress.tone} className="mt-0.5 shrink-0" />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex items-center gap-2">
+            {/* The filename opens the inspector: the indexed passages, which
+                is how a tenant sees *what* was read, not only that it was. */}
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate text-left text-sm font-medium underline-offset-4 hover:underline"
+              onClick={() => setInspecting(true)}
+            >
+              {document.filename}
+            </button>
+            {inFlight && (
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                {progress.percent}%
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {formatBytes(document.size_bytes)} ·{" "}
+            <span
+              className={
+                failed
+                  ? "font-medium text-destructive"
+                  : progress.tone === "warning"
+                    ? "text-amber-600 dark:text-amber-500"
+                    : progress.tone === "done"
+                      ? "text-emerald-700 dark:text-emerald-400"
+                      : ""
+              }
+            >
+              {progress.label}
+            </span>
+            {!failed && progress.detail && ` · ${progress.detail}`}
           </p>
-        )}
-        {emptyButReady && (
-          <p className="mt-0.5 text-xs whitespace-normal text-amber-600 dark:text-amber-500">
-            Indexed, but no searchable text was found — this file can&rsquo;t answer
-            questions.
-          </p>
-        )}
-      </TableCell>
-      <TableCell className="align-top text-sm text-muted-foreground tabular-nums">
-        {formatBytes(document.size_bytes)}
-      </TableCell>
-      <TableCell className="align-top text-sm tabular-nums">
-        <span className={emptyButReady ? "text-amber-600 dark:text-amber-500" : ""}>
-          {document.chunk_count}
-        </span>
-      </TableCell>
-      <TableCell className="align-top">
-        <DocumentStatusBadge document={document} />
-      </TableCell>
-      <TableCell className="align-top text-right">
-        <div className="flex items-center justify-end gap-1">
+          {failed && (
+            <p className="rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
+              {progress.detail}
+            </p>
+          )}
+          {(inFlight || failed) && <StageStepper progress={progress} />}
+          {inFlight && (
+            <ProgressBar percent={progress.percent} tone={progress.tone} label={`${document.filename} progress`} />
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
           <Button
             size="xs"
-            variant="ghost"
+            variant={failed ? "outline" : "ghost"}
             aria-label={`Re-ingest ${document.filename}`}
-            disabled={retry.isPending || document.status === "processing"}
+            disabled={retry.isPending || inFlight}
             onClick={() => void handleRetry()}
           >
-            {retry.isPending ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <RefreshCw />
-            )}
+            {retry.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {failed && "Retry"}
           </Button>
           <Button
             size="xs"
@@ -756,44 +850,44 @@ function DocumentRow({
             <Trash2 />
           </Button>
         </div>
+      </div>
 
-        <Dialog open={inspecting} onOpenChange={setInspecting}>
-          <DocumentInspector
-            tenantId={tenantId}
-            knowledgeBaseId={knowledgeBaseId}
-            document={document}
-            open={inspecting}
-          />
-        </Dialog>
+      <Dialog open={inspecting} onOpenChange={setInspecting}>
+        <DocumentInspector
+          tenantId={tenantId}
+          knowledgeBaseId={knowledgeBaseId}
+          document={document}
+          open={inspecting}
+        />
+      </Dialog>
 
-        {/* Destructive and irreversible -- the vectors and the stored file go
-            too -- so it asks first. */}
-        <AlertDialog open={confirming} onOpenChange={setConfirming}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete this document?</AlertDialogTitle>
-              <AlertDialogDescription>
-                <span className="font-medium">{document.filename}</span> and everything
-                indexed from it will be removed, including its searchable chunks and the
-                stored file. Assistants will stop finding it. This cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
-              <Button
-                variant="destructive"
-                size="sm"
-                disabled={remove.isPending}
-                onClick={() => void handleDelete()}
-              >
-                {remove.isPending && <Loader2 className="animate-spin" />}
-                Delete
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </TableCell>
-    </TableRow>
+      {/* Destructive and irreversible -- the vectors and the stored file go
+          too -- so it asks first. */}
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this document?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="font-medium">{document.filename}</span> and everything
+              indexed from it will be removed, including its searchable chunks and the
+              stored file. Your chatbot will stop finding it. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={remove.isPending}
+              onClick={() => void handleDelete()}
+            >
+              {remove.isPending && <Loader2 className="animate-spin" />}
+              Delete
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </li>
   );
 }
 
@@ -825,7 +919,7 @@ function QueryDialog({
       <DialogHeader>
         <DialogTitle>Search {knowledgeBase.name}</DialogTitle>
         <DialogDescription>
-          Check what an assistant would retrieve for a given question.
+          Check which pages your chatbot would draw on for a question.
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-4 py-2">
@@ -871,7 +965,7 @@ function CreateKnowledgeBaseDialog({
   onDone,
 }: {
   tenantId: string;
-  onDone: () => void;
+  onDone: (knowledgeBaseId: string) => void;
 }) {
   const createKb = useCreateKnowledgeBase(tenantId);
   const [visibility, setVisibility] = useState<Visibility>("tenant");
@@ -886,16 +980,16 @@ function CreateKnowledgeBaseDialog({
 
   async function onSubmit(values: CreateForm) {
     try {
-      await createKb.mutateAsync({
+      const created = await createKb.mutateAsync({
         name: values.name,
         description: values.description?.trim() || null,
         visibility,
         departmentId: visibility === "department" ? departmentId.trim() || null : null,
         teamId: visibility === "team" ? teamId.trim() || null : null,
       });
-      toast.success(`Created ${values.name}`);
+      toast.success(`Created ${values.name} — now add documents or a website.`);
       reset();
-      onDone();
+      onDone(created.id);
     } catch (err) {
       toast.error(isApiError(err) ? err.message : "Couldn't create the knowledge base.");
     }
@@ -907,7 +1001,8 @@ function CreateKnowledgeBaseDialog({
         <DialogHeader>
           <DialogTitle>New knowledge base</DialogTitle>
           <DialogDescription>
-            The storage location and vector namespace are assigned automatically.
+            Name it, then add files or a website in the next step. Storage and the search
+            index are set up automatically.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
@@ -924,13 +1019,17 @@ function CreateKnowledgeBaseDialog({
             <Label htmlFor="kb-visibility">Visibility</Label>
             <Select value={visibility} onValueChange={(v) => setVisibility(v as Visibility)}>
               <SelectTrigger id="kb-visibility" className="mt-1.5 w-full">
-                <SelectValue />
+                {/* Render-prop form, as for the crawl mode below: before the
+                    list is first opened no items are mounted, so a bare
+                    <SelectValue /> showed the raw value "tenant". */}
+                <SelectValue>{(value: string) => VISIBILITY_LABELS[value as Visibility] ?? value}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="tenant">Tenant — everyone</SelectItem>
-                <SelectItem value="department">Department</SelectItem>
-                <SelectItem value="team">Team</SelectItem>
-                <SelectItem value="restricted">Restricted</SelectItem>
+                {(Object.keys(VISIBILITY_LABELS) as Visibility[]).map((v) => (
+                  <SelectItem key={v} value={v}>
+                    {VISIBILITY_LABELS[v]}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -959,7 +1058,7 @@ function CreateKnowledgeBaseDialog({
         </div>
         <DialogFooter>
           <Button type="submit" size="sm" disabled={createKb.isPending}>
-            {createKb.isPending ? "Creating…" : "Create knowledge base"}
+            {createKb.isPending ? "Creating…" : "Create and add documents"}
           </Button>
         </DialogFooter>
       </form>
@@ -1044,7 +1143,16 @@ function CrawlSection({
 
       <Select value={mode} onValueChange={(v) => setMode(v as CrawlMode)}>
         <SelectTrigger className="w-full">
-          <SelectValue />
+          {/* Render-prop form: Base UI resolves a label from the mounted items,
+              and before the list is first opened there are none -- so the
+              trigger showed the raw value "url_list". */}
+          <SelectValue>
+            {(value: string) =>
+              value === "site"
+                ? "Entire website — follow links from one page"
+                : "Specific URLs — fetch exactly these pages"
+            }
+          </SelectValue>
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="url_list">Specific URLs — fetch exactly these pages</SelectItem>
@@ -1293,11 +1401,12 @@ function DataSourceRow({
   );
 }
 
-/** Ask the knowledge base a question and watch the answer stream in.
+/** Ask the knowledge base questions and watch each answer stream in.
  *
- * Sources render before the first token: the backend sends them first because
- * they are known before generation begins. A reader can therefore see what the
- * answer is allowed to draw on even if generation fails partway.
+ * The chat itself lives in `features/ai-resources/chat/` -- markdown
+ * rendering, source cards, copy / regenerate / feedback and the composer.
+ * Sources still render before the first token: the backend sends them first,
+ * so a reader sees what an answer may draw on even if generation fails.
  *
  * There is no "answer as" picker: assistant management left the tenant
  * surface, so every question here uses the platform's model with this
@@ -1309,107 +1418,17 @@ function AskDialog({
   tenantId: string;
   knowledgeBase: KnowledgeBase;
 }) {
-  const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [citations, setCitations] = useState<AnswerCitation[]>([]);
-  const [cited, setCited] = useState<string[]>([]);
-  const [streaming, setStreaming] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-
-  async function ask() {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    setAnswer("");
-    setCitations([]);
-    setCited([]);
-    setStreaming(true);
-    try {
-      // Stateless by design: a stored conversation needs an assistant, which
-      // tenants no longer have. Asks here are one-off lookups against the
-      // knowledge base -- the widget is where visitor threads are kept.
-      for await (const frame of streamAnswer(
-        tenantId,
-        knowledgeBase.id,
-        question,
-        controller.signal,
-      )) {
-        if (frame.event === "sources") {
-          setCitations((frame.data.citations as AnswerCitation[]) ?? []);
-        } else if (frame.event === "token") {
-          setAnswer((prev) => prev + (frame.data.text as string));
-        } else if (frame.event === "done") {
-          setCited((frame.data.cited as string[]) ?? []);
-        } else if (frame.event === "error") {
-          toast.error(String(frame.data.detail ?? "The answer could not be completed."));
-        }
-      }
-    } catch (err) {
-      if (!controller.signal.aborted) {
-        toast.error(isApiError(err) ? err.message : "The answer could not be started.");
-      }
-    } finally {
-      setStreaming(false);
-    }
-  }
-
   return (
-    <DialogContent className="sm:max-w-2xl">
-      <DialogHeader>
+    <DialogContent className="flex h-[min(88dvh,820px)] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+      {/* Kept for screen readers -- a dialog must be labelled -- but hidden,
+          because the chat's own header already names the knowledge base. */}
+      <DialogHeader className="sr-only">
         <DialogTitle>Ask {knowledgeBase.name}</DialogTitle>
         <DialogDescription>
-          Answers are generated only from documents in this knowledge base, with citations. If
-          nothing here covers the question, it says so rather than guessing.
+          Answers are generated only from documents in this knowledge base, with citations.
         </DialogDescription>
       </DialogHeader>
-
-      <div className="space-y-4 py-2">
-        <div className="flex gap-2">
-          <Input
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="What is our refund policy?"
-            onKeyDown={(e) => e.key === "Enter" && question.trim() && !streaming && ask()}
-          />
-          <Button size="sm" disabled={!question.trim() || streaming} onClick={ask}>
-            {streaming ? <Loader2 className="size-4 animate-spin" /> : "Ask"}
-          </Button>
-        </div>
-
-        {citations.length > 0 && (
-          <div className="rounded-md border border-border p-3">
-            <p className="mb-2 text-xs font-medium text-muted-foreground">
-              Sources the answer may draw on
-            </p>
-            <ul className="space-y-1">
-              {citations.map((c) => (
-                <li key={c.label} className="flex items-center gap-2 text-xs">
-                  {/* Dimmed unless the answer actually cited it — "offered" and
-                      "used" are different, and conflating them overstates what
-                      the answer rests on. */}
-                  <Badge variant={cited.includes(c.label) ? "secondary" : "outline"}>
-                    [{c.label}]
-                  </Badge>
-                  <span className="truncate text-muted-foreground">
-                    {c.source_location ?? c.document_id}
-                  </span>
-                  <span className="ml-auto font-mono tabular-nums text-muted-foreground">
-                    {c.relevance.toFixed(3)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {answer && (
-          <div className="whitespace-pre-wrap rounded-md bg-muted/40 p-3 text-sm">
-            {answer}
-            {streaming && <span className="ml-0.5 animate-pulse">▌</span>}
-          </div>
-        )}
-      </div>
+      <AskChat tenantId={tenantId} knowledgeBase={knowledgeBase} />
     </DialogContent>
   );
 }
@@ -1438,6 +1457,16 @@ function EmbedDialog({
   const mine = (widgets.data?.chat_widgets ?? []).filter(
     (w) => w.knowledge_base_id === knowledgeBase.id,
   );
+  // The plan caps widgets across the whole tenant, not per knowledge base --
+  // hence every widget is counted, not `mine`. Same "fails toward enabled"
+  // rule as the knowledge-base button: the server's 409 is the real gate.
+  const plan = useTenantPlan(tenantId);
+  const widgetLimit = plan.data?.max_chat_widgets ?? null;
+  const widgetCount = widgets.data?.chat_widgets.length;
+  const atWidgetLimit =
+    widgetLimit !== null && widgetCount !== undefined && widgetCount >= widgetLimit;
+  const tenantDailyLimit = plan.data?.effective_daily_message_limit ?? null;
+  const ceiling = plan.data?.max_messages_per_day ?? null;
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -1454,7 +1483,9 @@ function EmbedDialog({
         knowledge_base_id: knowledgeBase.id,
         name,
         allowed_origins: parsed,
-        daily_question_limit: limit,
+        // Never above the plan's ceiling -- the server refuses that, and the
+        // form's default of 500 is above many plans.
+        daily_question_limit: ceiling === null ? limit : Math.min(limit, ceiling),
       });
       setOrigins("");
       toast.success("Widget created.");
@@ -1469,7 +1500,9 @@ function EmbedDialog({
         <DialogTitle>Embed “{knowledgeBase.name}” on a website</DialogTitle>
         <DialogDescription>
           A widget lets anyone visiting the listed websites ask questions answered
-          from this knowledge base — no sign-in. Only add sites you control.
+          from this knowledge base — no sign-in. Only add sites you control. You can also
+          manage this, and check that it&rsquo;s really on your site, from{" "}
+          <strong>AI Chatbot → On your website</strong>.
         </DialogDescription>
       </DialogHeader>
 
@@ -1495,6 +1528,13 @@ function EmbedDialog({
           </div>
         )}
 
+        {atWidgetLimit ? (
+          <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+            Plan limit reached ({widgetCount}/{widgetLimit} chatbot
+            {widgetLimit === 1 ? "" : "s"}). Ask your platform administrator to raise it, or
+            edit the existing one above.
+          </p>
+        ) : (
         <form onSubmit={submit} className="space-y-3 rounded-lg border p-4">
           <div className="space-y-1.5">
             <Label htmlFor="widget-name">Name</Label>
@@ -1528,13 +1568,17 @@ function EmbedDialog({
               id="widget-limit"
               type="number"
               min={1}
-              max={100000}
-              value={limit}
+              max={ceiling ?? 100000}
+              value={ceiling === null ? limit : Math.min(limit, ceiling)}
               onChange={(e) => setLimit(Number(e.target.value))}
             />
             <p className="text-xs text-muted-foreground">
               Caps what this widget can cost you in a day. Once reached, it stops
               answering until tomorrow.
+              {/* Both caps apply and the lower one wins; saying so stops a
+                  "500" here being read as the real allowance. */}
+              {tenantDailyLimit !== null &&
+                ` Your organisation's overall limit of ${tenantDailyLimit.toLocaleString()} messages a day applies too — whichever is lower is reached first.`}
             </p>
           </div>
           <Button type="submit" size="sm" disabled={createWidget.isPending}>
@@ -1542,6 +1586,7 @@ function EmbedDialog({
             Create widget
           </Button>
         </form>
+        )}
       </div>
     </DialogContent>
   );

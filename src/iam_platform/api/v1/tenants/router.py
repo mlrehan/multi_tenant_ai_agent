@@ -32,13 +32,17 @@ async def list_my_memberships(
     container: AppContainer = Depends(get_container),
 ) -> list[schemas.TenantMembershipResponse]:
     use_case = ListMyTenantMemberships(container.tenant_uow_factory)
-    memberships = await use_case.execute(ListMyTenantMembershipsQuery(user_id=str(claims.user_id)))
+    memberships = await use_case.execute_with_tenant_names(
+        ListMyTenantMembershipsQuery(user_id=str(claims.user_id))
+    )
     return [
         schemas.TenantMembershipResponse(
-            membership_id=str(m.id),
-            tenant_id=str(m.tenant_id),
-            status=m.status.value,
-            is_default=m.is_default,
+            membership_id=str(m.membership.id),
+            tenant_id=str(m.membership.tenant_id),
+            status=m.membership.status.value,
+            is_default=m.membership.is_default,
+            tenant_slug=m.tenant_slug,
+            tenant_display_name=m.tenant_display_name,
         )
         for m in memberships
     ]
@@ -51,13 +55,15 @@ async def list_tenant_members(
     container: AppContainer = Depends(get_container),
 ) -> list[schemas.TenantMemberResponse]:
     use_case = ListTenantMembers(container.tenant_uow_factory, container.clock)
-    members = await use_case.execute(
+    members = await use_case.execute_with_contacts(
         ListTenantMembersQuery(actor_user_id=str(claims.user_id), tenant_id=tenant_id)
     )
     return [
         schemas.TenantMemberResponse(
             membership_id=str(m.id),
             user_id=str(m.user_id),
+            email=contact.email if contact else None,
+            display_name=contact.display_name if contact else None,
             status=m.status.value,
             is_default=m.is_default,
             department_id=str(m.department_id) if m.department_id else None,
@@ -65,7 +71,7 @@ async def list_tenant_members(
             job_title=m.job_title,
             created_at=m.created_at.isoformat(),
         )
-        for m in members
+        for m, contact in members
     ]
 
 

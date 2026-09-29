@@ -104,7 +104,7 @@ class _FakeQuota:
     allow: bool = True
     calls: list[UUID] = field(default_factory=list)
 
-    async def consume(self, *, widget_id: UUID, limit: int) -> bool:
+    async def consume(self, *, widget_id: UUID, limit: int, **kwargs: object) -> bool:
         del limit
         self.calls.append(widget_id)
         return self.allow

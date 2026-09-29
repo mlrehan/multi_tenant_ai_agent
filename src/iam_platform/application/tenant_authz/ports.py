@@ -26,7 +26,9 @@ from iam_platform.application.identity.ports import AuditWriter, SecurityEventWr
 from iam_platform.application.tenancy.ports import (
     TenantFeatureRepository,
     TenantInvitationRepository,
+    TenantMemberDirectory,
     TenantMembershipRepository,
+    TenantRepository,
 )
 from iam_platform.domain.tenant_authz.entities import (
     AuthorizationOverride,
@@ -103,6 +105,12 @@ class TenantUnitOfWork(Protocol):
     ``app.user_id`` so every repository call is subject to the tenant's RLS
     policies. See docs/18-schema-rls-and-migrations.md."""
 
+    #: Read-only in practice: RLS shows only the row whose id is the current
+    #: tenant, and `app_tenant` holds no INSERT/UPDATE/DELETE on `tenants`.
+    tenants: TenantRepository
+    #: Email and display name for this tenant's own members -- the roster's
+    #: one window onto identity data. See `TenantMemberDirectory`.
+    member_directory: TenantMemberDirectory
     tenant_memberships: TenantMembershipRepository
     tenant_invitations: TenantInvitationRepository
     tenant_features: TenantFeatureRepository

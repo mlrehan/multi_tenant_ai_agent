@@ -203,6 +203,14 @@ class AddMemberDirectly:
             if actor_state is None or _INVITE_PERMISSION not in actor_state.permissions:
                 raise PermissionDeniedError(_INVITE_PERMISSION)
 
+            # The same plan gate as `InviteMember`. This path was added as the
+            # "no email provider" shortcut and copied the permission check but
+            # not the plan check -- so a tenant whose plan withholds adding
+            # members could add them anyway through the other door.
+            await _guard_entitlement(
+                uow, tenant_id=tenant_id, capability="allow_invite_members"
+            )
+
             existing = await uow.tenant_memberships.get_by_tenant_and_user(
                 tenant_id, target_user_id
             )

@@ -5,7 +5,9 @@ import type {
   RolePermissionMap,
   Tenant,
   PlatformModelConfiguration,
+  ModelPriceCatalogue,
   PlatformOverview,
+  PlatformActivity,
 } from "@/lib/types";
 
 export function listTenants() {
@@ -97,6 +99,27 @@ export function endImpersonation(impersonationSessionId: string) {
 /** Spend across every provider and tenant. Computed live server-side. */
 export function getPlatformOverview() {
   return apiFetch<PlatformOverview>("v1/platform/overview");
+}
+
+export function getModelPrices() {
+  return apiFetch<ModelPriceCatalogue>("v1/platform/model-prices");
+}
+
+export function setModelPrice(body: {
+  model_name: string;
+  input_usd_per_million: string;
+  output_usd_per_million: string;
+  effective_from?: string | null;
+}) {
+  return apiFetch<{ id: string }>("v1/platform/model-prices", { method: "POST", body });
+}
+
+export function deleteModelPrice(priceId: string) {
+  return apiFetch<void>(`v1/platform/model-prices/${priceId}`, { method: "DELETE" });
+}
+
+export function getPlatformActivity() {
+  return apiFetch<PlatformActivity>("v1/platform/activity");
 }
 
 export function listPlatformModelConfigurations() {

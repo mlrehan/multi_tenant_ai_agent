@@ -32,6 +32,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from iam_platform.api.deps.authn import get_container
 from iam_platform.api.deps.container import AppContainer
 from iam_platform.api.v1.public_chat import schemas
+from iam_platform.application.ai_resources.answer_feedback import (
+    RecordWidgetFeedback,
+    RecordWidgetFeedbackCommand,
+)
 from iam_platform.application.ai_resources.answer_question import AnswerQuestion
 from iam_platform.application.ai_resources.exceptions import WidgetUnavailableError
 from iam_platform.application.ai_resources.handoff import HandoffOffer
@@ -187,6 +191,7 @@ async def ask_widget(
             # without it every widget conversation was invisible to both
             # dashboards.
             tenant_quota=container.tenant_quota,
+            usage_ledger=container.usage_ledger,
         ),
         container.widget_memory,
         # Persists the exchange after it streams, so an ordinary widget chat
@@ -251,15 +256,7 @@ async def ask_widget(
         # A visitor gets citation *locations*, never chunk or document ids.
         # Those are internal identifiers, and handing them to the open internet
         # would leak the shape of a tenant's corpus for no reader benefit.
-        yield _sse(
-            "sources",
-            {
-                "citations": [
-                    {"label": c.label, "source": c.source_location}
-                    for c in result.citations
-                ]
-            },
-        )
+        yield _sse("sources", {"citations": _public_citations(result.citations)})
         try:
             async for token in result.tokens:
                 yield _sse("token", {"text": token})
@@ -277,6 +274,44 @@ async def ask_widget(
     _allow_origin(streamed, claims.origin)
     del request
     return streamed
+
+
+def _public_citations(citations: list[Any]) -> list[dict[str, Any]]:
+    """Sources as a visitor may see them.
+
+    **`doc` groups passages without naming anything.** Five passages from one
+    web page used to arrive as five unrelated sources, and the widget drew the
+    same card five times. It needs to know which passages share a document --
+    but a document id is an internal identifier and never goes to the open
+    internet, so each document gets an ordinal instead (`"1"`, `"2"`, ... in
+    order of first appearance, which is relevance order). It means nothing
+    outside this one answer.
+
+    **A title only for web pages.** A crawled page's title is already public
+    -- it is the title of a page anyone can open. An uploaded file's name is
+    not: "Board minutes - confidential.pdf" would disclose the corpus to a
+    stranger, which is what locations-only was protecting. Uploads show as
+    "Document" with their page location, exactly as before.
+
+    Every field is additive: `label` and `source` are unchanged, so a widget
+    cached from before this still renders what it always did.
+    """
+    ordinals: dict[Any, str] = {}
+    out: list[dict[str, Any]] = []
+    for c in citations:
+        doc = ordinals.setdefault(c.document_id, str(len(ordinals) + 1))
+        web = bool(c.source_url)
+        out.append(
+            {
+                "label": c.label,
+                "source": c.source_location,
+                "doc": doc,
+                "kind": "web" if web else "document",
+                "title": c.title if web else None,
+                "url": c.source_url if web else None,
+            }
+        )
+    return out
 
 
 def _session_claims(container: AppContainer, authorization: str | None) -> Any:
@@ -482,6 +517,36 @@ async def set_visitor_typing(
             session_id=claims.session_id,
             session_origin=claims.origin,
             typing=body.typing,
+        )
+    )
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    _allow_origin(response, claims.origin)
+    return response
+
+
+@router.post("/feedback")
+async def record_widget_feedback(
+    body: schemas.WidgetFeedbackRequest,
+    authorization: str | None = Header(default=None),
+    container: AppContainer = Depends(get_container),
+) -> Response:
+    """A visitor rating an answer. Never reaches the AI or either quota."""
+    claims = _session_claims(container, authorization)
+    await RecordWidgetFeedback(
+        container.public_widget_lookup,
+        container.ai_resource_uow_factory,
+        container.clock,
+    ).execute(
+        RecordWidgetFeedbackCommand(
+            widget_id=claims.widget_id,
+            session_id=claims.session_id,
+            # From the token, never the request -- the same rule every other
+            # route here follows.
+            session_origin=claims.origin,
+            rating=body.rating,
+            question=body.question,
+            answer=body.answer,
+            comment=body.comment,
         )
     )
     response = Response(status_code=status.HTTP_204_NO_CONTENT)

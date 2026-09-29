@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Text, text
+from sqlalchemy import CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Text, func, text
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -52,7 +52,7 @@ class PlatformPermissionModel(Base):
     description: Mapped[str | None] = mapped_column(Text)
     risk_level: Mapped[str] = mapped_column(Text, nullable=False, default="low")
     is_system: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(server_default="now()")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class PlatformRolePermissionModel(Base):
@@ -74,7 +74,7 @@ class PlatformRolePermissionModel(Base):
 
     role_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
     permission_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
-    granted_at: Mapped[datetime] = mapped_column(server_default="now()")
+    granted_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class PlatformUserRoleModel(Base):
@@ -100,7 +100,7 @@ class PlatformUserRoleModel(Base):
     granted_by_user_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
-    granted_at: Mapped[datetime] = mapped_column(server_default="now()")
+    granted_at: Mapped[datetime] = mapped_column(server_default=func.now())
     revoked_at: Mapped[datetime | None]
     revoked_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id")
@@ -133,7 +133,7 @@ class ImpersonationSessionModel(Base):
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id")
     )
-    started_at: Mapped[datetime] = mapped_column(server_default="now()")
+    started_at: Mapped[datetime] = mapped_column(server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(nullable=False)
     ended_at: Mapped[datetime | None]
     ip: Mapped[str | None] = mapped_column(INET)

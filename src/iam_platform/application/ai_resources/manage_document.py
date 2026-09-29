@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from iam_platform.application.ai_resources.authorize import load_visible_knowledge_base
@@ -26,6 +27,7 @@ from iam_platform.application.ai_resources.exceptions import (
     PermissionDeniedError,
 )
 from iam_platform.application.ai_resources.ports import (
+    AiResourceUnitOfWork,
     AiResourceUowFactory,
     DocumentIngestionQueue,
     ObjectStorageClient,
@@ -223,6 +225,42 @@ class RetryDocumentIngestion:
         )
 
 
+async def purge_document(
+    uow: AiResourceUnitOfWork,
+    *,
+    document: Document,
+    namespace: str,
+    object_storage: ObjectStorageClient,
+    vector_search: VectorSearchClient,
+    now: datetime,
+) -> None:
+    """Removes one document from every store, in the order that fails safely.
+
+    Shared by deleting a document and deleting a whole knowledge base, so the
+    two cannot drift: vectors first (the copy a query can still reach), then
+    passages, then the stored bytes (best-effort), then the row is
+    soft-deleted. See `DeleteDocument` for why each step is where it is.
+    """
+    await vector_search.delete_document(namespace=namespace, document_id=document.id)
+    await uow.documents.delete_chunks(document.id)
+
+    # Best-effort: the bytes are already unreachable through the API once the
+    # row is gone, and failing the whole delete because a storage backend
+    # hiccuped would leave the tenant with a document they cannot remove.
+    try:
+        await object_storage.delete(path=document.storage_path)
+    except Exception:
+        logger.exception(
+            "could not delete stored bytes for document %s at %s -- the "
+            "record is removed but the object remains for a sweep",
+            document.id,
+            document.storage_path,
+        )
+
+    document.soft_delete(now=now)
+    await uow.documents.save(document)
+
+
 class DeleteDocument:
     """Removes a document and everything derived from it.
 
@@ -285,31 +323,17 @@ class DeleteDocument:
             ):
                 raise DocumentNotFoundError(command.document_id)
 
-            # Vectors first -- see the class docstring. The namespace comes
-            # from the knowledge-base row the caller was just authorized for,
-            # never from the request, so a crafted id cannot reach another
-            # tenant's collection.
-            await self._vector_search.delete_document(
-                namespace=knowledge_base.vector_namespace, document_id=document_id
+            # The namespace comes from the knowledge-base row the caller was
+            # just authorized for, never from the request, so a crafted id
+            # cannot reach another tenant's collection.
+            await purge_document(
+                uow,
+                document=document,
+                namespace=knowledge_base.vector_namespace,
+                object_storage=self._object_storage,
+                vector_search=self._vector_search,
+                now=self._clock.now(),
             )
-            await uow.documents.delete_chunks(document_id)
-
-            # Best-effort: the bytes are already unreachable through the API
-            # once the row is gone, and failing the whole delete because a
-            # storage backend hiccuped would leave the tenant with a document
-            # they cannot remove.
-            try:
-                await self._object_storage.delete(path=document.storage_path)
-            except Exception:
-                logger.exception(
-                    "could not delete stored bytes for document %s at %s -- the "
-                    "record is removed but the object remains for a sweep",
-                    document_id,
-                    document.storage_path,
-                )
-
-            document.soft_delete(now=self._clock.now())
-            await uow.documents.save(document)
             await uow.audit.record(
                 actor_user_id=actor_id,
                 effective_user_id=actor_id,

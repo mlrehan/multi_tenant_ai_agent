@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import text
@@ -41,7 +42,12 @@ from iam_platform.application.ai_resources.exceptions import (
 from iam_platform.application.ai_resources.ports import (
     DocumentParser,
     EmbeddingClient,
+    IngestionProgressStore,
+    IngestionStage,
     ObjectStorageClient,
+    ParsedBlock,
+    TokenUsage,
+    UsageLedger,
     VectorSearchClient,
 )
 from iam_platform.infrastructure.parsing.chunking import TokenAwareChunker
@@ -50,7 +56,14 @@ from iam_platform.workers.job_context import (
     VerifiedJobContext,
     establish_job_context,
 )
-from iam_platform.workers.jobs.indexing import IndexingTarget, index_blocks
+from iam_platform.workers.jobs.indexing import (
+    PERCENT_EXTRACTING,
+    IndexingTarget,
+    ProgressCallback,
+    index_blocks,
+    record_ingestion_usage,
+    report_progress,
+)
 
 logger = logging.getLogger("iam_platform.workers.jobs.process_document_upload")
 
@@ -62,6 +75,9 @@ class _DocumentRow:
     content_type: str
     storage_path: str
     vector_namespace: str
+    #: Set for a crawled page. Its stored bytes are the markdown the crawler
+    #: produced, not an uploaded file -- see `_ingest`.
+    source_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +94,12 @@ class IngestionDependencies:
     chunker: TokenAwareChunker
     embedding_client: EmbeddingClient
     vector_search: VectorSearchClient
+    #: Live stage/percent for the console. Optional, like the ledger: a job
+    #: built without one ingests exactly as before.
+    progress: IngestionProgressStore | None = None
+    #: Where embedding spend is recorded. Optional so a job built without one
+    #: (the unit tests) indexes exactly as before; the worker always wires it.
+    usage_ledger: UsageLedger | None = None
 
 
 class DocumentIngestionFailed(Exception):
@@ -99,6 +121,9 @@ async def process_document_upload(
     would be wrong (nothing is wrong with it) *and* impossible (the RLS context
     that would let us write the row is exactly what was refused).
     """
+    # Created before the transaction, recorded after it -- see
+    # `record_ingestion_usage` for why the order is the point.
+    meter = TokenUsage()
     try:
         async with session_factory() as session, session.begin():
             context = await establish_job_context(
@@ -111,6 +136,10 @@ async def process_document_upload(
                 context=context,
                 document_id=document_id,
                 document=document,
+                usage=meter,
+                progress=_progress_reporter(
+                    dependencies.progress, tenant_id=tenant_id, document_id=document_id
+                ),
             )
             await _mark_ready(session, document_id=document_id)
         logger.info(
@@ -136,6 +165,13 @@ async def process_document_upload(
             document_id=document_id,
             reason=reason,
         )
+    finally:
+        await record_ingestion_usage(
+            dependencies.usage_ledger,
+            tenant_id=tenant_id,
+            usage=meter,
+            occurred_at=datetime.now(UTC),
+        )
 
 
 def _readable_reason(exc: Exception) -> str:
@@ -158,7 +194,7 @@ async def _load_document(session: AsyncSession, *, document_id: UUID) -> _Docume
         await session.execute(
             text(
                 "SELECT d.knowledge_base_id, d.filename, d.content_type, d.storage_path, "
-                "       kb.vector_namespace "
+                "       kb.vector_namespace, d.source_url "
                 "FROM documents d "
                 "JOIN knowledge_bases kb ON kb.id = d.knowledge_base_id "
                 "WHERE d.id = :did AND d.deleted_at IS NULL"
@@ -179,6 +215,7 @@ async def _load_document(session: AsyncSession, *, document_id: UUID) -> _Docume
         content_type=row[2],
         storage_path=row[3],
         vector_namespace=row[4],
+        source_url=row[5],
     )
 
 
@@ -189,6 +226,8 @@ async def _ingest(
     context: VerifiedJobContext,
     document_id: UUID,
     document: _DocumentRow,
+    usage: TokenUsage | None = None,
+    progress: ProgressCallback | None = None,
 ) -> None:
     """Fetch, parse, then hand off to the shared indexing step.
 
@@ -196,11 +235,30 @@ async def _ingest(
     after them is identical to what a crawled page needs, and lives in
     `indexing.py` so there is one copy of it rather than two.
     """
+    await report_progress(
+        progress, IngestionStage.EXTRACTING, PERCENT_EXTRACTING, f"Reading {document.filename}"
+    )
     data = await dependencies.object_storage.get(path=document.storage_path)
 
-    blocks = await dependencies.parser.parse(
-        data=data, content_type=document.content_type, filename=document.filename
-    )
+    if document.source_url is not None:
+        # **A crawled page is re-indexed from its stored markdown, not parsed
+        # as an upload.** The crawler wrote these bytes itself, and the file is
+        # named after the page title, with no extension. The upload parser
+        # identifies text formats by extension, so it refused every crawled
+        # page as "contents do not match a supported format", and the
+        # console's Retry could never succeed on one. The block is built
+        # exactly as the crawl job builds it, so a retried page indexes
+        # identically to a freshly crawled one.
+        blocks = [
+            ParsedBlock(
+                text=data.decode("utf-8", errors="replace"),
+                source_location=document.source_url,
+            )
+        ]
+    else:
+        blocks = await dependencies.parser.parse(
+            data=data, content_type=document.content_type, filename=document.filename
+        )
 
     chunk_count = await index_blocks(
         session,
@@ -214,6 +272,8 @@ async def _ingest(
         chunker=dependencies.chunker,
         embedding_client=dependencies.embedding_client,
         vector_search=dependencies.vector_search,
+        usage=usage,
+        progress=progress,
     )
 
     # **Zero chunks is a failure, not a quiet success.** The tenant uploaded
@@ -236,6 +296,30 @@ async def _ingest(
         raise DocumentParseError(
             f"{document.filename} was read but contained no indexable text."
         )
+
+
+def _progress_reporter(
+    store: IngestionProgressStore | None, *, tenant_id: UUID, document_id: UUID
+) -> ProgressCallback | None:
+    """Binds the store to this document, or `None` when nothing listens.
+
+    Created only after the job context is established: progress is reported
+    for a document whose tenant and actor have just been re-validated, never
+    for a claim that is about to be refused.
+    """
+    if store is None:
+        return None
+
+    async def report(stage: IngestionStage, percent: int, detail: str | None) -> None:
+        await store.report(
+            tenant_id=tenant_id,
+            document_id=document_id,
+            stage=stage,
+            percent=percent,
+            detail=detail,
+        )
+
+    return report
 
 
 async def _mark_ready(session: AsyncSession, *, document_id: UUID) -> None:

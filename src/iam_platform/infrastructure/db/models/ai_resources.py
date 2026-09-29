@@ -339,6 +339,8 @@ class KnowledgeBaseModel(TimestampMixin, Base):
     department_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
     team_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
     vector_namespace: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Soft delete -- see `KnowledgeBase.deleted_at` and migration c8e1f4a7b2d9.
+    deleted_at: Mapped[datetime | None]
 
 
 class DocumentModel(Base):
@@ -613,6 +615,12 @@ class ChatWidgetModel(TimestampMixin, Base):
     created_by_membership_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), nullable=False
     )
+    #: Install check (a9d7c2e4f1b3): where a visitor's browser last opened a
+    #: session, and where a page on a *disallowed* website last tried to.
+    last_seen_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_seen_origin: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_refused_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_refused_origin: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     #: Which assistant answers here. Nullable, and that is not laziness:
     #: every widget created before this column existed has none, and those
@@ -689,6 +697,7 @@ class ConversationModel(TimestampMixin, Base):
             "handoff_at",
             postgresql_where=text("state = 'unassigned'"),
         ),
+        Index("ix_conversations_created_at", "created_at"),
         Index(
             "ix_conversations_tenant_membership",
             "tenant_id",
@@ -754,6 +763,8 @@ class ConversationMessageModel(Base):
         Index(
             "ix_conversation_messages_thread", "tenant_id", "conversation_id", "seq"
         ),
+        # Cross-tenant time windows for the operator dashboard (e5c3a8f10b92).
+        Index("ix_conversation_messages_created_at", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = _pk()
@@ -766,9 +777,133 @@ class ConversationMessageModel(Base):
         JSONB, nullable=False, default=list
     )
     token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: How an assistant turn turned out -- see migrations b4e8d1a6c2f5 and
+    #: a3c6e9f2b7d4, and `application/ai_resources/answer_gate.py`.
+    answer_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: The agent who wrote an `agent_message` or `internal_comment`. Null for
     #: visitor, AI and system turns, which have no member behind them.
     author_membership_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(
         nullable=False, server_default=func.now()
     )
+
+
+class AnswerFeedbackModel(Base):
+    """A person's rating of one answer. Append-only: the migration revokes
+    UPDATE and DELETE from `app_tenant`, so there is no `updated_at`."""
+
+    __tablename__ = "answer_feedback"
+    __table_args__ = (
+        CheckConstraint("rating IN ('up','down')", name="rating_valid"),
+        # Exactly one author: a tenant member, or a whole visitor identity
+        # (widget + session). Never both, never a half-filled visitor.
+        CheckConstraint(
+            "(membership_id IS NOT NULL AND widget_id IS NULL "
+            "AND visitor_session_id IS NULL) OR "
+            "(membership_id IS NULL AND widget_id IS NOT NULL "
+            "AND visitor_session_id IS NOT NULL)",
+            name="exactly_one_author",
+        ),
+        CheckConstraint("length(question) <= 4000", name="question_bounded"),
+        CheckConstraint("length(answer) <= 20000", name="answer_bounded"),
+        CheckConstraint(
+            "comment IS NULL OR length(comment) <= 1000", name="comment_bounded"
+        ),
+        # Composite throughout, so feedback cannot name another tenant's
+        # knowledge base, widget or member whatever ids a caller supplies.
+        ForeignKeyConstraint(
+            ["tenant_id", "knowledge_base_id"],
+            ["knowledge_bases.tenant_id", "knowledge_bases.id"],
+            name="fk_answer_feedback_knowledge_base",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "widget_id"],
+            ["chat_widgets.tenant_id", "chat_widgets.id"],
+            name="fk_answer_feedback_widget",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "membership_id"],
+            ["tenant_memberships.tenant_id", "tenant_memberships.id"],
+            name="fk_answer_feedback_membership",
+            ondelete="CASCADE",
+        ),
+        Index("ix_answer_feedback_tenant_created", "tenant_id", "created_at"),
+        # Cross-tenant time windows for the operator dashboard (e5c3a8f10b92).
+        Index("ix_answer_feedback_created_at", "created_at"),
+        Index(
+            "ix_answer_feedback_visitor_session", "tenant_id", "visitor_session_id"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), nullable=False
+    )
+    membership_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    widget_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    visitor_session_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    rating: Mapped[str] = mapped_column(Text, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        nullable=False, server_default=func.now()
+    )
+
+
+class AiUsageEventModel(Base):
+    """One answered question's cost -- the durable record Redis is rebuilt from.
+
+    Counts only: no question, no answer, no identity. It outlives the
+    conversation it came from, because a month's bill must still add up after
+    retention has deleted the thread. Append-only -- the migration revokes
+    UPDATE and DELETE from both app roles.
+    """
+
+    __tablename__ = "ai_usage_events"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('console','widget','ingestion','search')", name="channel_valid"
+        ),
+        CheckConstraint(
+            "input_tokens >= 0 AND output_tokens >= 0 AND total_tokens >= 0",
+            name="tokens_non_negative",
+        ),
+        CheckConstraint(
+            "embedding_tokens IS NULL OR "
+            "(embedding_tokens >= 0 AND embedding_tokens <= input_tokens)",
+            name="embedding_tokens_valid",
+        ),
+        Index("ix_ai_usage_events_tenant_occurred", "tenant_id", "occurred_at"),
+        Index("ix_ai_usage_events_occurred_at", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        nullable=False, server_default=func.now()
+    )
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    model_configuration_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("model_configurations.id", ondelete="SET NULL"),
+    )
+    input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    #: Part of `input_tokens` that was embedding; NULL on rows from before
+    #: migration e7a3c1f9d2b4, whose split is unknown.
+    embedding_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    chat_model: Mapped[str | None] = mapped_column(Text)
+    embedding_model: Mapped[str | None] = mapped_column(Text)

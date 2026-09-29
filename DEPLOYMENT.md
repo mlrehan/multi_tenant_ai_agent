@@ -119,6 +119,8 @@ Copy the printed value into `.env` as the value of `ENCRYPTION__DATA_KEY=`.
 
 **2c. Everything else in `.env.example` already has a working default** — the database/Redis/Qdrant ports match what `docker-compose.dev.yml` publishes, and the passwords are throwaway local-only values. Leave it as-is; you can revisit `docs/21-configuration-and-secrets.md` later for things like social login (Google/Facebook).
 
+> **Keep `DATABASE__NAME=iam_platform`.** Never point your development `.env` at `iam_platform_test`: that database belongs to the test suite (Step 7), whose teardown truncates every table. A dev `.env` naming it makes the running app and the tests share one database, and every test run then wipes your tenants, users, knowledge bases and conversations.
+
 > **If you replace any of the three database passwords, never use one containing a literal `$`.** Docker Compose interpolates `${VAR}`/`$VAR` patterns wherever it resolves a value from `.env` — including *inside another value*. A password like `my$ecret` gets silently mangled to `my` before it ever reaches Postgres or the app: Compose treats `$ecret` as a reference to an unset variable and drops it, with only a quiet `"ecret" variable is not set` warning buried in the build log to explain why authentication starts failing. `openssl rand -base64 32` (used throughout this guide) never produces `$`, so following the commands as written avoids this entirely. If you generate passwords with something else — a password manager, for instance — strip or avoid `$` in the result.
 
 ### Step 3 — Build and start everything
@@ -129,7 +131,7 @@ docker compose -f docker-compose.dev.yml up -d --build
 
 This builds the application image once (used by `migrate`, `api` and `worker` alike), starts Postgres/Redis/Qdrant and waits until each is genuinely healthy, runs the database migration as a one-time job, then starts the API and the worker.
 
-> **Expect the first build to take 20–45 minutes**, and to download roughly 2 GB — it installs PyTorch, docling's document-parsing models and a headless browser, so a fresh container never has to fetch them the moment you upload your first document. This is a one-time cost; later runs of this same command finish in well under a minute, because only the small top layer (your source code) needs rebuilding. If a later build unexpectedly re-downloads the whole 2 GB again, something invalidated the dependency layer — check whether `pyproject.toml` changed, since that's the file it's keyed on.
+> **Expect the first build to take 20–45 minutes**, and to download roughly 2 GB — it installs PyTorch, docling's document-parsing models and a headless browser, so a fresh container never has to fetch them the moment you upload your first document. The Python dependency download is a one-time cost (it re-runs only if `pyproject.toml` changes). **A code change still takes several minutes to rebuild — typically 5–15 — not seconds:** in the current `Dockerfile` the application code is copied in *before* the document-model and headless-browser layers, so any source change re-runs those too. Moving the code copy below them is a known, not-yet-made improvement.
 
 Watch it happen:
 
@@ -204,7 +206,7 @@ docker compose -f docker-compose.dev.yml run --rm migrate python scripts/bootstr
 > ```bash
 > docker compose -f docker-compose.dev.yml run --rm migrate python scripts/seed_demo_data.py admin@lait.co.uk
 > ```
-> creates a demo tenant with three members, two AI assistants, and a knowledge base.
+> creates a demo tenant with members and AI resources (a knowledge base and the platform-side model configuration behind it).
 
 ### Step 6 — Run the admin console (frontend)
 
@@ -305,11 +307,13 @@ This runs the full test suite (hundreds of tests) against `iam_platform_test` an
 
 **Never run two copies at once.** They compete for the same test database and each other's teardown truncations, and the whole thing slows to a crawl — which reads exactly like a deadlock and isn't one.
 
-For a quick check while you're editing code, the subset that doesn't touch the database finishes in seconds:
+For a quick check while you're editing code, run only the unit tests — they touch no database at all and finish in well under a minute:
 
 ```bash
-python -m pytest -m "not integration"
+python -m pytest tests/unit
 ```
+
+(`-m "not integration"` is *not* equivalent: a few API and security test files are unmarked and still use the test database.)
 
 > Only `iam_platform_test` is ever truncated — your real `iam_platform` database (and everything you've clicked together in the console) is untouched by any of this, precisely because the two live in separate databases.
 
@@ -318,7 +322,7 @@ python -m pytest -m "not integration"
 Once set up, your day-to-day loop is:
 
 1. Make sure everything's running: `docker compose -f docker-compose.dev.yml up -d` (only needed if you'd stopped it)
-2. Edit backend code, then rebuild just the API to see your change: `docker compose -f docker-compose.dev.yml up -d --build api` — fast after the first build, since only your source layer needs rebuilding
+2. Edit backend code, then rebuild just the API to see your change: `docker compose -f docker-compose.dev.yml up -d --build api worker` — several minutes per rebuild (see Step 3), because the model and browser layers sit above the source copy. For a faster loop, run the API natively (below)
 3. Editing the worker instead? Same idea: `docker compose -f docker-compose.dev.yml up -d --build worker`
 4. The frontend hot-reloads on its own (Turbopack) — no restart needed for console changes
 5. Watch logs while you work: `docker compose -f docker-compose.dev.yml logs -f api worker`
@@ -488,15 +492,18 @@ openssl genrsa -out jwt_private.pem 2048
 openssl rsa -in jwt_private.pem -pubout -out jwt_public.pem
 
 python3 - <<'PY'
-for name in ["jwt_private.pem", "jwt_public.pem"]:
-    with open(name) as f:
-        print(name, "->", f.read().strip().replace("
-", "\n"))
+for name, field in [
+    ("jwt_private.pem", "JWT__PRIVATE_KEY_PEM"),
+    ("jwt_public.pem", "JWT__PUBLIC_KEY_PEM"),
+]:
+    with open(name, encoding="utf-8") as f:
+        value = f.read().strip().replace("\n", "\\n")
+    print(f"{field}={value}")
     print()
 PY
 ```
 
-The keys must be **single-line** values with real line breaks replaced by the two characters `\n` — that's what the script above prints. Keep both handy for Step 4d.
+The keys must be **single-line** values with real line breaks replaced by the two characters `\n` — the script above prints both lines ready to paste. Keep them handy for Step 4d.
 
 Once they're pasted into `.env` (Step 4d), delete the `.pem` files — leaving a second copy of the signing key lying in the project directory defeats the point of locking down `.env`:
 
@@ -597,6 +604,20 @@ CORS_ALLOWED_ORIGINS=["https://yourdomain.com"]
 PUBLIC_API_BASE_URL=https://yourdomain.com
 
 LOG_LEVEL=INFO
+
+# Which peers the API believes about a client's IP (X-Forwarded-For), for the
+# per-IP rate limit. The default -- loopback and private networks, where Nginx
+# and the console reach the API through Docker's bridge -- is right for this
+# setup; leave it unset. Never set it to "*".
+# FORWARDED_ALLOW_IPS=127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7
+
+# --- Optional: push notifications to agents whose console is closed ---
+# Leave blank to disable (the inbox still works, alerts just need an open
+# tab). Generate a pair after the image is built:
+#   docker compose -f docker-compose.prod.yml run --rm --no-deps migrate python -m scripts.generate_vapid_keys
+PUSH__VAPID_PUBLIC_KEY=
+PUSH__VAPID_PRIVATE_KEY=
+PUSH__VAPID_SUBJECT=mailto:you@yourdomain.com
 ```
 
 Save and exit (in `nano`: `Ctrl+O`, Enter, `Ctrl+X`).
@@ -627,9 +648,7 @@ This does four things in order:
 3. Runs the database migration as a one-time job, which then exits
 4. Starts the **API** and the **worker** — both wait for the migration to have finished *successfully* first, so a failed migration stops the rollout rather than leaving the app running against a stale schema
 
-> **Expect the first build to take 20–45 minutes**, and to download roughly 2 GB. It installs CPU PyTorch and bakes in the document-parsing models and a headless browser, so that a worker never downloads them at run time (which would make the first PDF upload on a fresh container extremely slow, and impossible on a server with no route to Hugging Face). This is a one-time cost per server. Subsequent deploys reuse the cached layers and take about a minute, because the dependency install sits *below* the source copy in the image.
->
-> If a later build re-downloads PyTorch after you have only changed application code, something has invalidated that layer — check whether `pyproject.toml` changed, since that is the file the dependency layer keys on.
+> **Expect the first build to take 20–45 minutes**, and to download roughly 2 GB. It installs CPU PyTorch and bakes in the document-parsing models and a headless browser, so that a worker never downloads them at run time (which would make the first PDF upload on a fresh container extremely slow, and impossible on a server with no route to Hugging Face). The PyTorch/dependency download is a one-time cost per server (it re-runs only if `pyproject.toml` changes), but **a deploy with code changes still takes several minutes, typically 5–15**: the application code is copied into the image *before* the document-model and headless-browser layers, so those re-run on every code change. Plan deploys with that in mind.
 
 Watch it happen:
 
@@ -641,7 +660,7 @@ Press `Ctrl+C` to stop watching (this does **not** stop the containers).
 
 ### Step 6 — Verify it's working
 
-All five services should be `running`, and `postgres`, `redis`, `qdrant` and `worker` should also show `healthy`:
+`api`, `worker`, `postgres`, `redis` and `qdrant` should be `running` — `postgres`, `redis`, `qdrant` and `worker` also `healthy` — and `migrate` should show `Exited (0)`:
 
 ```bash
 docker compose -f docker-compose.prod.yml ps
@@ -685,15 +704,13 @@ curl -X POST http://localhost:8100/v1/auth/register \
   -d '{"email": "admin@lait.co.uk", "password": "Correct-Horse-9!"}'
 ```
 
-(If you haven't put HTTPS in front of the API yet — that's the next step — substitute `http://localhost:8100` here.)
-
 Then bootstrap it, running the script inside a one-off container that reuses the `migrate` service's existing database credentials:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm migrate python scripts/bootstrap_platform_admin.py admin@lait.co.uk
 ```
 
-This activates the account and grants it a `platform_super_admin` role (`platform.tenants.create`, `platform.tenants.suspend`, `platform.support.impersonate`). It's idempotent — safe to re-run against an account that already holds the role, it'll just report that and do nothing else.
+This activates the account and grants it a `platform_super_admin` role: `platform.tenants.create`, `platform.tenants.suspend`, `platform.support.impersonate`, `platform.users.read`, `platform.users.manage`, `platform.model_configurations.manage`. It's idempotent — safe to re-run, and re-running after an upgrade picks up permissions added since.
 
 **Now seed the tenant role catalog too, the same way:**
 
@@ -705,7 +722,7 @@ This step is easy to miss and the failure mode isn't obvious: `bootstrap_platfor
 
 ### Step 7a — Run the admin console (frontend)
 
-**The admin console (`frontend/`) isn't part of `docker-compose.prod.yml`** — that file only builds and runs the backend API. The console is a separate Next.js process, run with Node directly and kept alive with **PM2** (a process manager that restarts it if it crashes and starts it again on reboot). Without this step you can still drive the API directly (`https://yourdomain.com/docs`), but there is no console to administer tenants, roles or AI resources from.
+**The admin console (`frontend/`) isn't part of `docker-compose.prod.yml`** — that file only builds and runs the backend API. The console is a separate Next.js process, run with Node directly and kept alive with **PM2** (a process manager that restarts it if it crashes and starts it again on reboot). Without this step there is no console to administer tenants, roles or AI resources from. (The API's interactive docs are at `http://127.0.0.1:8100/docs` on the server itself — Nginx deliberately does not publish them; reach them from your own machine with an SSH tunnel: `ssh -L 8100:127.0.0.1:8100 deploy@your-server-ip`, then open `http://localhost:8100/docs`.)
 
 **Install Node.js and PM2, if you haven't already:**
 
@@ -746,6 +763,8 @@ pm2 startup   # prints one command starting with `sudo env PATH=...` -- run exac
 
 The `-H 127.0.0.1` matters as much as the API's own `127.0.0.1:` port binding in Step 8e below: without it, Next.js listens on every network interface, and the console — the one surface in this whole system that handles session cookies — would be reachable directly from the internet on port 3100, bypassing Nginx, TLS, and every security header the proxy adds.
 
+**Run exactly one console process.** The console refreshes login tokens once per process; two or more console instances behind a load balancer can present the same refresh token twice, which the backend treats as theft and signs the user out. One process comfortably serves a pilot.
+
 **Confirm it's running:**
 
 ```bash
@@ -765,7 +784,7 @@ Right now the API and the console are only reachable on their own ports (8100 an
 sudo apt install -y nginx certbot python3-certbot-nginx
 ```
 
-**8b. Point your domain at the server.** In your domain registrar's DNS settings, create an **A record** for `yourdomain.com` (and/or `api.yourdomain.com`) pointing at your server's public IP address. This can take a few minutes to a few hours to propagate.
+**8b. Point your domain at the server.** In your domain registrar's DNS settings, create an **A record** for `yourdomain.com` pointing at your server's public IP address. (One name serves both the console and the widget — see the Nginx config below — so no `api.` subdomain is needed.) This can take a few minutes to a few hours to propagate.
 
 **8c. Create an Nginx site config:**
 
@@ -780,6 +799,11 @@ server {
     listen 80;
     server_name yourdomain.com;
 
+    # Nginx refuses request bodies over 1 MB by default -- every document
+    # upload larger than that would fail with a 413 before reaching the
+    # console. The API accepts up to 50 MB; leave a little headroom.
+    client_max_body_size 55m;
+
     # The admin console. Everything a signed-in person uses -- login, tenants,
     # roles, AI resources -- goes through the console's own same-origin proxy
     # (`/api/backend/*` under this same location), never straight to the API.
@@ -792,10 +816,17 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # Overwrite, never append: the API trusts this header for the
+        # client's IP (rate limiting), so a client-supplied value must not
+        # survive into it.
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+        # The inbox's live updates and the Ask panel stream over long-lived
+        # connections (the console already sends X-Accel-Buffering: no);
+        # the 60 s default would cut the live inbox every minute.
+        proxy_read_timeout 3600s;
     }
 
     # The one part of the backend the public reaches directly: the embeddable
@@ -807,7 +838,10 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # Overwrite, never append -- the per-IP rate limit is what bounds a
+        # stranger's use of the widget, and an appended header lets them
+        # choose their own IP.
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Connection "";
         # The widget's answer endpoint streams (SSE). Without this, nginx
@@ -882,7 +916,12 @@ sudo systemctl is-enabled docker
 # should print: enabled
 ```
 
-**You're live.** Visit `https://yourdomain.com/docs` in a browser to confirm.
+**You're live.** Confirm from your own machine:
+
+- `https://yourdomain.com` shows the console's sign-in page, and you can sign in with the account from Step 7.
+- `curl -sI https://yourdomain.com/v1/public/chat/widget.js` returns `200` (the widget script tenants embed).
+
+(`https://yourdomain.com/docs` and `/readyz` are **not** public — Nginx sends everything except `/v1/public/` to the console. Check the API's health on the server: `curl http://localhost:8100/readyz`.)
 
 ---
 
@@ -901,8 +940,10 @@ Logs are structured JSON, one line per event — pipe through `jq` if you have i
 
 ### Checking health
 
+On the server (the API's health endpoints are deliberately not published through Nginx):
+
 ```bash
-curl https://yourdomain.com/readyz
+curl http://localhost:8100/readyz
 ```
 
 For metrics (Prometheus format, only reachable from the server itself per the Nginx config above):
@@ -941,7 +982,7 @@ git pull
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-This one command rebuilds the image, applies any new database changes (skipping ones already applied — it never re-runs an old one), and restarts the API and worker. The old containers keep answering traffic until the new ones are confirmed healthy, so there's no window where the site is down.
+This one command rebuilds the image, applies any new database changes (skipping ones already applied — it never re-runs an old one), and restarts the API and worker. **Expect a short interruption** — usually under a minute — while the API and worker containers are recreated: Docker Compose stops the old container before starting the new one, so there is no zero-downtime handover on a single server. Deploy at a quiet time.
 
 > **If `migrate` fails right after this command with a connection timeout, it's very likely a startup race, not a real failure.** Recreating containers restarts Postgres too, and `migrate` can begin connecting before Postgres has finished coming back up. Just run the migration again on its own — it will succeed once Postgres is ready, and nothing about the failed attempt needs cleaning up:
 > ```bash
@@ -961,7 +1002,7 @@ cd ..
 **Step 5 — Confirm it actually worked.**
 
 ```bash
-curl https://yourdomain.com/readyz
+curl http://localhost:8100/readyz
 curl -sI http://127.0.0.1:3100/
 docker compose -f docker-compose.prod.yml logs --tail=50 migrate
 docker compose -f docker-compose.prod.yml logs --tail=50 api
@@ -1013,14 +1054,21 @@ Put this in a **daily cron job** and copy the resulting file off the server (S3,
 0 2 * * * cd /home/deploy/ai_agent_by_Claude && docker compose -f docker-compose.prod.yml exec -T postgres pg_dump -U postgres --clean --if-exists iam_platform | gzip > backups/backup-$(date +\%F).sql.gz
 ```
 
-**What this backup does and doesn't cover:** it captures every tenant, user, role, conversation, and message — all of the actual data. It does **not** include uploaded document files or the Qdrant search index, which live in two separate Docker volumes (`uploads` and `qdrant-storage`). A routine `git pull` + deploy never touches those volumes at all, so you don't need to back them up for ordinary updates — only the database matters there. If you ever want extra peace of mind before an unusually large change, you can additionally copy those volumes:
+**What this backup does and doesn't cover:** it captures every tenant, user, role, conversation, and message — all of the actual data. It does **not** include uploaded document files or the Qdrant search index, which live in two separate Docker volumes (`uploads` and `qdrant-storage`). A routine deploy never touches those volumes, so for *ordinary updates* the database backup is enough. **For disaster recovery — losing the server — you need all three**: without `uploads` the documents are gone, and without `qdrant-storage` nothing is searchable until every document is re-ingested. Back both up on the same schedule as the database (the `redis-data` volume needs no backup: its usage counters rebuild themselves from the database). To copy a volume:
 
 ```bash
 docker run --rm -v ai_agent_by_claude_uploads:/data -v "$(pwd)/backups":/backup alpine \
   tar czf /backup/uploads-$(date +%F).tar.gz -C /data .
 ```
 
-(Check the exact volume name first with `docker volume ls | grep uploads` — Compose prefixes it with the project directory name, which may differ from the example above.)
+The same for the search index — stop the stack first so the copy is consistent (`docker compose -f docker-compose.prod.yml stop qdrant`, copy, then `start qdrant`):
+
+```bash
+docker run --rm -v ai_agent_by_claude_qdrant-storage:/data -v "$(pwd)/backups":/backup alpine \
+  tar czf /backup/qdrant-$(date +%F).tar.gz -C /data .
+```
+
+(Check the exact volume names first with `docker volume ls` — Compose prefixes them with the project directory name, which may differ from the examples above.)
 
 ### Restoring from a backup
 
@@ -1079,9 +1127,9 @@ docker compose -f docker-compose.prod.yml restart worker
 # Stop everything
 docker compose -f docker-compose.prod.yml down
 
-# Stop everything AND delete ALL data (careful!) -- this removes three
-# volumes, not one: the database, the Qdrant vectors, and every uploaded
-# document. Re-uploading is the only way back.
+# Stop everything AND delete ALL data (careful!) -- this removes four
+# volumes: the database, the Redis counters, the Qdrant vectors, and every
+# uploaded document. Only a restore from backup brings them back.
 docker compose -f docker-compose.prod.yml down -v
 ```
 
@@ -1102,7 +1150,11 @@ Go through this list once before pointing real users at the server:
 - [ ] The `jwt_private.pem` / `jwt_public.pem` files from Step 4b are deleted — the key belongs only in `.env`
 - [ ] `.env` itself is backed up somewhere encrypted and off this server: it is the only copy of the JWT signing key and the encryption key, and losing it makes every stored provider credential undecryptable
 - [ ] Database backups are running and are copied somewhere other than the server itself
-- [ ] Uploaded documents are backed up too — they live in the `uploads` Docker volume, which `pg_dump` does not cover
+- [ ] Uploaded documents **and the Qdrant search index** are backed up too — they live in the `uploads` and `qdrant-storage` volumes, which `pg_dump` does not cover
+- [ ] Nginx has `client_max_body_size 55m` (Step 8c) — without it, every upload over 1 MB fails
+- [ ] Nginx **overwrites** `X-Forwarded-For` with `$remote_addr` in both locations (Step 8c) — appending lets a client choose the IP the rate limiter sees
+- [ ] Exactly **one** console process is running (Step 7a)
+- [ ] Remember that **email is not delivered** in any environment yet (password reset, invitations, verification only log) — see Troubleshooting
 - [ ] You've read the **Known gaps** section of [docs/22-deployment-and-operations.md](docs/22-deployment-and-operations.md#known-gaps) so you know what this project deliberately doesn't do yet (rotating the JWT key or the encryption key isn't a supported operation — plan around both)
 - [ ] The conversation-retention purge is scheduled (see **Everyday production operations** below) — nothing deletes expired conversations on its own
 
@@ -1121,7 +1173,7 @@ docker compose -f docker-compose.prod.yml exec -T postgres \
   psql -U postgres -v pw="$NEW_PW" -c "ALTER ROLE app_platform LOGIN PASSWORD :'pw';"
 ```
 
-Then update **both** `APP_PLATFORM_PASSWORD` and `DATABASE__PLATFORM_PASSWORD` in `.env` to the same new value (they must always match each other — see Step 4d), and restart so the containers pick it up: `docker compose -f docker-compose.prod.yml up -d`. Repeat for `app_tenant`/`APP_TENANT_PASSWORD` if that one also contains a `$`.
+Then set `APP_PLATFORM_PASSWORD` in `.env` to the new value — `docker-compose.prod.yml` passes it to the app as `DATABASE__PLATFORM_PASSWORD` itself, so there is no second variable to keep in sync — and recreate the containers so they pick it up: `docker compose -f docker-compose.prod.yml up -d`. Repeat for `app_tenant`/`APP_TENANT_PASSWORD` if that one also contains a `$`.
 
 **`password authentication failed for user "app_tenant"` (or `app_platform`), but the password in `.env` is correct and contains no `$`** — the database was created by an older version of `docker/postgres-init/01-roles.sh`, which was a `.sql` file that hard-coded `dev_only_password` for both roles. `.sql` files get no environment expansion, so the roles were created with a password nothing connects with. The script now takes the real passwords.
 
@@ -1201,7 +1253,7 @@ SELECT gen_random_uuid(), '<tenant-id>', '<membership-id>',
 
 **`/readyz` returns 503 / `"not_ready"`** — one of Postgres or Redis isn't reachable yet. Check `docker compose ... ps` to confirm both show as healthy, and check `docker compose ... logs postgres redis`.
 
-**Migration container exits immediately with a permission or validation error** — almost always a `.env` value is missing or malformed. Re-check every value in Step 4e is filled in, especially that `SECRET_PROVIDER` is not left as `env` (production refuses to start with that setting on purpose).
+**Migration container exits immediately with a permission or validation error** — almost always a `.env` value is missing or malformed. Re-check every value in Step 4d is filled in; `docker compose -f docker-compose.prod.yml config` names any required variable that is missing. (`SECRET_PROVIDER=env` is expected here: this setup keeps secrets in `.env` and the compose file sets `ALLOW_PLAINTEXT_SECRETS=true` for exactly that.)
 
 **"refusing to start: environment=production requires a real secret provider"** — `ALLOW_PLAINTEXT_SECRETS=true` is missing from the environment. The compose file sets it by default, so this usually means a stray `ALLOW_PLAINTEXT_SECRETS=false` in your `.env`, or `SECRET_PROVIDER` set to something other than `env` without the matching credentials.
 
@@ -1217,6 +1269,8 @@ docker compose -f docker-compose.prod.yml up -d
 ```
 
 Any documents already uploaded must be re-uploaded; their rows remain and can be deleted from the console.
+
+**Uploading a document fails with `413 Request Entity Too Large`** — Nginx's default 1 MB body limit. Add `client_max_body_size 55m;` inside the `server` block (Step 8c), then `sudo nginx -t && sudo systemctl reload nginx`.
 
 **Changes to `.env` don't seem to apply** — Docker Compose only re-reads environment variables when a container restarts, not automatically. Run `docker compose -f docker-compose.prod.yml up -d` again after editing `.env`.
 

@@ -815,6 +815,18 @@ class Settings(BaseSettings):
     #: passes through a truthful Host. Set it explicitly behind a proxy.
     public_api_base_url: str = ""
 
+    #: Which peers may tell the API the client's IP in `X-Forwarded-For`.
+    #:
+    #: The per-IP rate limit, login-attempt records and audit IPs all use the
+    #: address this yields. It used to be `"*"` -- every peer trusted -- which
+    #: let any caller that reached the API pick its own rate-limit bucket by
+    #: sending a header. Now only loopback and private networks are trusted:
+    #: the reverse proxy (Nginx, reaching the container through Docker's
+    #: bridge) and the admin console's server-side proxy sit there, and a
+    #: public address never does. Comma-separated IPs or CIDRs, as uvicorn
+    #: takes them; narrow it further to your proxy's exact address if you can.
+    forwarded_allow_ips: str = "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+
     log_level: str = "INFO"
 
     def __init__(self, **values: Any) -> None:

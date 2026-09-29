@@ -20,6 +20,8 @@
  *     reaches the browser.
  */
 
+import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { BACKEND_API_URL } from "@/lib/env";
@@ -71,6 +73,38 @@ const NEVER_REFRESH_PATHS = new Set([
   "v1/auth/logout",
 ]);
 
+/**
+ * A reused keep-alive connection the backend has already closed.
+ *
+ * uvicorn drops an idle connection after 5 s. Node's pool closes its own end
+ * sooner -- when its event loop is free to run the timer. When it isn't (a
+ * dev-server page compile stalls it for 10-30 s; heavy load does the same in
+ * production), the pool hands out a socket the backend closed, and the
+ * request dies with "other side closed" before the backend read it. Seen
+ * live as a stray 500 on `GET /v1/tenants/me/memberships`.
+ */
+const STALE_CONNECTION_CODES = new Set(["UND_ERR_SOCKET", "UND_ERR_CLOSED", "ECONNRESET", "EPIPE"]);
+
+function isStaleConnection(err: unknown): boolean {
+  const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
+  return typeof code === "string" && STALE_CONNECTION_CODES.has(code);
+}
+
+/**
+ * `fetch`, retried once on a stale connection -- but only where repeating
+ * the request is harmless. A GET is. A POST that dies this way *probably*
+ * never reached the backend, but "probably" is not good enough for sending a
+ * message or creating a tenant twice, so writes surface the failure instead.
+ */
+async function fetchUpstream(target: string, init: RequestInit, retryable: boolean): Promise<Response> {
+  try {
+    return await fetch(target, init);
+  } catch (err) {
+    if (!retryable || !isStaleConnection(err)) throw err;
+    return fetch(target, init);
+  }
+}
+
 interface TokenResponseShape {
   access_token: string;
   refresh_token?: string;
@@ -83,13 +117,72 @@ interface CookieEntry {
   options: Record<string, unknown>;
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<TokenResponseShape | null> {
-  const resp = await fetch(`${BACKEND_API_URL}/v1/auth/refresh`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-    cache: "no-store",
-  });
+/**
+ * The backend answered, but not with a verdict on the session (a 5xx while it
+ * restarts, say). Surfaced as a 502 like a network failure, never read as
+ * "session over".
+ */
+class UpstreamUnavailableError extends Error {}
+
+/**
+ * The new tokens; `null` only when the backend *refused* the refresh token
+ * (expired, rotated, revoked) -- the one answer that really ends a session.
+ * Anything else throws, so a restart or a network blip at the moment an
+ * access token expires no longer signs the administrator out. Found live: a
+ * session whose refresh token was never even presented to the backend had its
+ * cookies cleared, because a failed fetch was reported as `null`.
+ */
+/**
+ * The browser's IP, as the reverse proxy in front of this console saw it.
+ *
+ * Every request this proxy makes reaches the API from *this* process, so
+ * without this the API's per-IP rate limit put every signed-in user in one
+ * bucket -- a few admins on live dashboards could exhaust it for everyone --
+ * and login attempts and audit entries all recorded the console's address.
+ *
+ * **The last entry, and only a real IP.** The last entry is the one the
+ * nearest proxy wrote: with Nginx overwriting the header (DEPLOYMENT.md Step
+ * 8c) it is the only entry; with a proxy that appends, it is still the one a
+ * client cannot forge, while the first could be anything the client sent.
+ * Anything that doesn't parse as an IP is dropped rather than passed on.
+ *
+ * With no proxy in front (local development), there is no header and nothing
+ * is forwarded -- the API then sees this process, as before.
+ */
+function clientIp(request: NextRequest): string | null {
+  const header = request.headers.get("x-forwarded-for");
+  if (!header) return null;
+  let last = header.split(",").pop()?.trim() ?? "";
+  // An IPv4 client on a dual-stack socket arrives as "::ffff:203.0.113.7";
+  // unwrapped, so one client does not get two rate-limit buckets.
+  if (last.toLowerCase().startsWith("::ffff:") && isIP(last.slice(7)) === 4) last = last.slice(7);
+  return isIP(last) ? last : null;
+}
+
+async function refreshAccessToken(
+  refreshToken: string,
+  forwardedFor: string | null,
+): Promise<TokenResponseShape | null> {
+  // Retried on a stale connection even though it is a POST. Repeating it is
+  // safe in both cases: if the first attempt never arrived the retry simply
+  // succeeds, and if it did, the retry trips reuse detection -- the same
+  // sign-out that happens without it.
+  const resp = await fetchUpstream(
+    `${BACKEND_API_URL}/v1/auth/refresh`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(forwardedFor ? { "x-forwarded-for": forwardedFor } : {}),
+      },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      cache: "no-store",
+    },
+    true,
+  );
+  if (resp.status >= 500) {
+    throw new UpstreamUnavailableError(`token refresh answered ${resp.status}`);
+  }
   if (!resp.ok) return null;
   return (await resp.json()) as TokenResponseShape;
 }
@@ -156,14 +249,16 @@ async function forward(
   // an operator which browser a dead subscription belonged to.
   const userAgent = request.headers.get("user-agent");
   if (userAgent) headers.set("user-agent", userAgent);
+  // Set explicitly (never copied through): see `clientIp`.
+  const forwardedFor = clientIp(request);
+  if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
   if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
 
-  return fetch(target, {
-    method: request.method,
-    headers,
-    body,
-    cache: "no-store",
-  });
+  return fetchUpstream(
+    target,
+    { method: request.method, headers, body, cache: "no-store" },
+    request.method === "GET" || request.method === "HEAD",
+  );
 }
 
 /**
@@ -187,6 +282,59 @@ function substituteRefreshToken(body: string | undefined, refreshToken: string |
   } catch {
     return JSON.stringify({ refresh_token: refreshToken });
   }
+}
+
+/**
+ * One refresh per refresh token, shared by every request that needs it.
+ *
+ * Refresh tokens rotate, and presenting one twice is treated by the backend
+ * as theft: it revokes the whole token family. When an access token expires,
+ * a page that fires several requests at once (the dashboards fire six, and
+ * refetch every minute) sent several refreshes with the *same* token -- the
+ * first rotated it, the rest tripped reuse detection, and the administrator
+ * was signed out. The audit log showed these in pairs ~100 ms apart.
+ *
+ * Concurrent callers now await one promise, and its result is kept briefly
+ * so requests that left the browser before the new cookies arrived get the
+ * same new tokens rather than re-presenting the old one. Keyed by a hash, so
+ * the raw token is not held as a map key.
+ *
+ * **Two minutes, not ten seconds.** A request carrying the old cookie can
+ * reach this proxy long after the refresh that rotated it -- seen live at 28 s
+ * and 61 s while the server was slow -- and past the window it re-presented
+ * the rotated token, tripping reuse detection and revoking the whole session.
+ * The window only has to outlast the slowest queued request; holding a result
+ * longer costs nothing, since it is only ever handed to a caller that already
+ * holds the token it was derived from.
+ *
+ * A *failed* refresh is not kept: it is dropped as soon as it settles, so the
+ * next request after a backend restart tries again instead of inheriting the
+ * failure.
+ *
+ * Per process: behind several console instances, requests can still land on
+ * different ones. That needs a short reuse grace window on the backend --
+ * recorded as open rather than implied fixed.
+ */
+const REFRESH_SHARE_MS = 120_000;
+const refreshes = new Map<string, { at: number; result: Promise<TokenResponseShape | null> }>();
+
+function refreshOnce(
+  refreshToken: string,
+  forwardedFor: string | null,
+): Promise<TokenResponseShape | null> {
+  const now = Date.now();
+  for (const [key, entry] of refreshes) {
+    if (now - entry.at > REFRESH_SHARE_MS) refreshes.delete(key);
+  }
+  const key = createHash("sha256").update(refreshToken).digest("hex");
+  const existing = refreshes.get(key);
+  if (existing) return existing.result;
+  const result = refreshAccessToken(refreshToken, forwardedFor);
+  refreshes.set(key, { at: now, result });
+  result.catch(() => {
+    if (refreshes.get(key)?.result === result) refreshes.delete(key);
+  });
+  return result;
 }
 
 async function handle(request: NextRequest, pathSegments: string[]): Promise<NextResponse> {
@@ -229,7 +377,7 @@ async function handle(request: NextRequest, pathSegments: string[]): Promise<Nex
   if (upstream.status === 401 && !NEVER_REFRESH_PATHS.has(joinedPath)) {
     const refreshToken = sessionRefreshToken;
     if (refreshToken) {
-      const refreshed = await refreshAccessToken(refreshToken);
+      const refreshed = await refreshOnce(refreshToken, clientIp(request));
       if (refreshed) {
         cookiesToApply.push(
           ...buildAuthCookies({
@@ -337,18 +485,38 @@ async function handle(request: NextRequest, pathSegments: string[]): Promise<Nex
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
-export async function GET(request: NextRequest, ctx: RouteContext) {
-  return handle(request, (await ctx.params).path);
+/**
+ * The backend could not be reached: a 502 in the API's own `{detail}` shape.
+ *
+ * Unhandled, a network failure became a bare 500 from this proxy -- which
+ * reads as "the server has a bug" rather than "it could not be reached", and
+ * carries no message the console can show. Cookies are left alone on
+ * purpose: an unreachable backend says nothing about whether the session is
+ * still good.
+ */
+async function proxied(request: NextRequest, ctx: RouteContext): Promise<NextResponse> {
+  const path = (await ctx.params).path;
+  try {
+    return await handle(request, path);
+  } catch (err) {
+    // Only a network failure ("fetch failed", with the socket error as its
+    // cause) or a refresh the backend could not answer. Anything else is a bug
+    // in this file and must stay a 500, not be relabelled as the backend's
+    // absence.
+    const unreachable =
+      (err instanceof TypeError && Boolean((err as { cause?: unknown }).cause)) ||
+      err instanceof UpstreamUnavailableError;
+    if (!unreachable) throw err;
+    console.error(`[bff] ${request.method} /${path.join("/")} could not reach the backend`, err);
+    return NextResponse.json(
+      { detail: "The service could not be reached. Please try again." },
+      { status: 502 },
+    );
+  }
 }
-export async function POST(request: NextRequest, ctx: RouteContext) {
-  return handle(request, (await ctx.params).path);
-}
-export async function PUT(request: NextRequest, ctx: RouteContext) {
-  return handle(request, (await ctx.params).path);
-}
-export async function PATCH(request: NextRequest, ctx: RouteContext) {
-  return handle(request, (await ctx.params).path);
-}
-export async function DELETE(request: NextRequest, ctx: RouteContext) {
-  return handle(request, (await ctx.params).path);
-}
+
+export const GET = proxied;
+export const POST = proxied;
+export const PUT = proxied;
+export const PATCH = proxied;
+export const DELETE = proxied;

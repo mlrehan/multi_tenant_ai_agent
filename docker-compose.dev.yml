@@ -117,7 +117,13 @@ services:
   # ----------------------------------------------------------
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # AOF on, as in production: with persistence off, every restart zeroed
+    # the tenant usage counters and handed every quota back in full. See the
+    # comment on the prod service.
+    command:
+      ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--save", ""]
+    volumes:
+      - redis-data:/data
     ports:
       - "127.0.0.1:56379:6379"
     healthcheck:
@@ -281,5 +287,6 @@ services:
 # ============================================================
 volumes:
   pgdata:
+  redis-data:
   qdrant-storage:
   uploads:

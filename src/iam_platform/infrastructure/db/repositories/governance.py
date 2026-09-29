@@ -44,6 +44,8 @@ from iam_platform.infrastructure.db.models.tenancy import (
     PushSubscriptionModel,
     TenantChatbotSettingsModel,
     TenantEntitlementModel,
+    TenantMembershipModel,
+    TenantModel,
     TenantTeamMemberModel,
     TenantTeamModel,
 )
@@ -137,7 +139,11 @@ class SqlTenantEntitlementRepository:
             await self._session.scalar(
                 select(func.count())
                 .select_from(KnowledgeBaseModel)
-                .where(KnowledgeBaseModel.tenant_id == tenant_id)
+                .where(
+                    KnowledgeBaseModel.tenant_id == tenant_id,
+                    # A deleted knowledge base frees its place in the plan.
+                    KnowledgeBaseModel.deleted_at.is_(None),
+                )
             )
             or 0
         )
@@ -172,6 +178,12 @@ class SqlTenantEntitlementRepository:
 class SqlTenantChatbotSettingsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def tenant_display_name(self, tenant_id: UUID) -> str | None:
+        name: str | None = await self._session.scalar(
+            select(TenantModel.display_name).where(TenantModel.id == tenant_id)
+        )
+        return name
 
     async def get_for_tenant(self, tenant_id: UUID) -> TenantChatbotSettings | None:
         row = await self._session.scalar(
@@ -296,6 +308,25 @@ class SqlTenantTeamRepository:
             )
         )
         return list(rows)
+
+    async def staffed_team_ids(self, *, tenant_id: UUID) -> set[UUID]:
+        # Active memberships only: a team whose only member was suspended or
+        # revoked has nobody who can open the Inbox, so offering it to a
+        # visitor would promise a reply no one can give.
+        rows = await self._session.scalars(
+            select(TenantTeamMemberModel.team_id)
+            .join(
+                TenantMembershipModel,
+                (TenantMembershipModel.id == TenantTeamMemberModel.membership_id)
+                & (TenantMembershipModel.tenant_id == TenantTeamMemberModel.tenant_id),
+            )
+            .where(
+                TenantTeamMemberModel.tenant_id == tenant_id,
+                TenantMembershipModel.status == "active",
+            )
+            .distinct()
+        )
+        return set(rows)
 
     async def list_memberships_with_permission(
         self, *, tenant_id: UUID, permission_code: str

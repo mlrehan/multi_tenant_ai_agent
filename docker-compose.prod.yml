@@ -127,15 +127,26 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
-    # Persistence off on purpose: Redis holds only cache and rate-limit state
-    # (docs/06-authorization-model.md -- "never authoritative"), so durability
-    # buys nothing and an RDB dump on disk is one more place session-adjacent
-    # data could linger.
+    # Append-only file, fsynced every second; RDB snapshots stay off.
     #
-    # It is also the Celery broker. That is not a contradiction: a lost job is
-    # a document that shows as `failed` and can be retried from the console,
-    # whereas the queue is empty for seconds at a time in normal operation.
+    # This was `--appendonly no`, on the reasoning that Redis held only cache
+    # and rate-limit state. That stopped being true when the AI quotas moved
+    # here: every restart zeroed each tenant's monthly token and daily message
+    # counters, so the dashboards read "0 used" and every allowance was
+    # silently handed back in full. Postgres (`ai_usage_events`) is now the
+    # record those counters are rebuilt from, so a lost Redis is survivable --
+    # AOF makes it rare as well, and keeps sessions, rate-limit windows and
+    # queued Celery jobs across a restart.
+    #
+    # `everysec` bounds loss to about one second of writes; `always` would
+    # fsync on every INCR on the answer path, a cost these counters do not
+    # justify now that the ledger backs them. The volume holds session-adjacent
+    # data (MFA challenges, OAuth state, a visitor's last few widget turns, all
+    # TTL-bound), so it belongs on the same encrypted storage as `pgdata`.
+    command:
+      ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--save", ""]
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -314,5 +325,6 @@ services:
 
 volumes:
   pgdata:
+  redis-data:
   qdrant-storage:
   uploads:

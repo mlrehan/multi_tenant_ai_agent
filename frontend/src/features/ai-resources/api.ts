@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api-client";
+import { ApiError, apiFetch, parseErrorBody } from "@/lib/api-client";
 import type {
   Conversation,
   CrawlMode,
@@ -62,6 +62,58 @@ export function uploadDocument(tenantId: string, knowledgeBaseId: string, file: 
   );
 }
 
+/** The same upload as `uploadDocument`, reporting progress as the bytes go.
+ *
+ *  `XMLHttpRequest` rather than `fetch`: fetch has no upload-progress event,
+ *  and without one a 40 MB file shows nothing for a minute. Same endpoint,
+ *  same BFF proxy, same headers and error shape as `apiFetch`.
+ */
+export function uploadDocumentWithProgress(
+  tenantId: string,
+  knowledgeBaseId: string,
+  file: File,
+  onProgress: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<{ id: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/backend/v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/documents`);
+    xhr.setRequestHeader("x-tenant-id", tenantId);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded, event.total);
+    };
+    xhr.onload = () => {
+      let body: unknown = null;
+      try {
+        body = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+      } catch {
+        body = null;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as { id: string });
+        return;
+      }
+      if (xhr.status === 401 && typeof window !== "undefined") {
+        // Same as apiFetch: the proxy already tried a refresh, so the session
+        // is over. Sign in again rather than leaving a dead upload row.
+        // A full page load on purpose, exactly as in apiFetch: the session is
+        // gone, so no client state derived from it should survive.
+        // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+        window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+      }
+      reject(parseErrorBody(xhr.status, body));
+    };
+    xhr.onerror = () => reject(new ApiError(0, "The upload was interrupted. Check your connection and try again."));
+    xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+
+    const formData = new FormData();
+    formData.append("file", file);
+    xhr.send(formData);
+  });
+}
+
 export function listDocuments(tenantId: string, knowledgeBaseId: string) {
   return apiFetch<{ documents: KnowledgeBaseDocument[] }>(
     `v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/documents`,
@@ -99,6 +151,15 @@ export function retryDocument(
 }
 
 /** Removes the document, its chunks, its vectors and its stored bytes. */
+/** Soft-deletes a knowledge base and removes everything searchable in it.
+ *  409 while a chatbot uses it or anything in it is still being ingested. */
+export function deleteKnowledgeBase(tenantId: string, knowledgeBaseId: string) {
+  return apiFetch<void>(`v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}`, {
+    method: "DELETE",
+    tenantId,
+  });
+}
+
 export function deleteDocument(
   tenantId: string,
   knowledgeBaseId: string,
@@ -203,6 +264,28 @@ export function setChatWidgetStatus(
   return apiFetch<ChatWidget>(
     `v1/tenants/${tenantId}/chat-widgets/${widgetId}/status`,
     { method: "POST", tenantId, body: { enabled } },
+  );
+}
+
+/** Records a rating of one answer from the Ask panel.
+ *
+ *  `question` and `answer` are sent back because the Ask panel is stateless --
+ *  nothing else records what was asked or said, and a "thumbs down" that
+ *  cannot say *what* was bad is not worth storing. Authorized exactly as
+ *  asking is. */
+export function recordAnswerFeedback(
+  tenantId: string,
+  knowledgeBaseId: string,
+  body: {
+    rating: "up" | "down";
+    question: string;
+    answer: string;
+    comment?: string | null;
+  },
+) {
+  return apiFetch<{ id: string }>(
+    `v1/tenants/${tenantId}/knowledge-bases/${knowledgeBaseId}/answer-feedback`,
+    { method: "POST", tenantId, body },
   );
 }
 
@@ -349,3 +432,65 @@ export function listTenantConversations(tenantId: string) {
 
 // Provider-credential calls were removed with the tenant-facing BYOK surface.
 // The platform owns every credential now; the tenant has no route to call.
+
+// ---- Answer feedback (review) ----
+
+export interface AnswerFeedbackItem {
+  id: string;
+  rating: "up" | "down";
+  question: string;
+  answer: string;
+  comment: string | null;
+  channel: "website" | "console";
+  knowledge_base_name: string | null;
+  created_at: string;
+  /** Platform view only. */
+  tenant_id?: string;
+  tenant_name?: string | null;
+  author_email?: string | null;
+}
+
+export interface FeedbackFilters {
+  rating?: "up" | "down";
+  channel?: "website" | "console";
+  tenantId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+function feedbackQuery(f: FeedbackFilters, includeTenant: boolean): string {
+  const q = new URLSearchParams();
+  if (f.rating) q.set("rating", f.rating);
+  if (f.channel) q.set("channel", f.channel);
+  if (includeTenant && f.tenantId) q.set("tenant_id", f.tenantId);
+  q.set("limit", String(f.limit ?? 25));
+  q.set("offset", String(f.offset ?? 0));
+  return q.toString();
+}
+
+/** A tenant's own ratings. Needs `tenant.conversations.view`: feedback
+ *  carries what visitors asked. */
+export function listAnswerFeedback(tenantId: string, filters: FeedbackFilters) {
+  return apiFetch<{
+    items: AnswerFeedbackItem[];
+    total: number;
+    helpful: number;
+    not_helpful: number;
+  }>(`v1/tenants/${tenantId}/answer-feedback?${feedbackQuery(filters, false)}`, { tenantId });
+}
+
+/** Ratings across every tenant, for the platform operator. Each read is
+ *  audited server-side. */
+export function listPlatformAnswerFeedback(filters: FeedbackFilters) {
+  return apiFetch<{
+    items: AnswerFeedbackItem[];
+    total: number;
+    by_tenant: {
+      tenant_id: string;
+      tenant_name: string | null;
+      total: number;
+      helpful: number;
+      not_helpful: number;
+    }[];
+  }>(`v1/platform/answer-feedback?${feedbackQuery(filters, true)}`);
+}

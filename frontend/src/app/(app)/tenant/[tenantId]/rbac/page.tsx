@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
+import { useTenantPlan } from "@/features/chatbot/hooks";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -109,12 +110,20 @@ type RoleForm = z.infer<typeof roleSchema>;
 function RolesTab({ tenantId }: { tenantId: string }) {
   const { data: roles, isLoading, error } = useTenantRoles(tenantId);
   const [open, setOpen] = useState(false);
+  // Same rule as Members: withheld only on a definite `false` from the plan.
+  const plan = useTenantPlan(tenantId);
+  const rolesWithheld = plan.data?.allow_create_roles === false;
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex items-center justify-end gap-3">
+        {rolesWithheld && (
+          <span className="text-xs text-muted-foreground">
+            Your plan doesn&rsquo;t include custom roles. Ask your platform administrator.
+          </span>
+        )}
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger render={<Button size="sm" />}>
+          <DialogTrigger render={<Button size="sm" disabled={rolesWithheld} />}>
             <Plus />
             New custom role
           </DialogTrigger>

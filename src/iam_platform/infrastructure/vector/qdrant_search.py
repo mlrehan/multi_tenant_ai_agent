@@ -151,7 +151,12 @@ class QdrantVectorSearchClient:
         )
 
     async def query(
-        self, *, namespace: str, query_text: str, top_k: int
+        self,
+        *,
+        namespace: str,
+        query_text: str,
+        top_k: int,
+        usage: TokenUsage | None = None,
     ) -> list[tuple[UUID, float]]:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
@@ -164,7 +169,7 @@ class QdrantVectorSearchClient:
         if not await self._client.collection_exists(collection):
             return []
 
-        query_vector = await self._embedding_client.embed(query_text)
+        query_vector = await self._embedding_client.embed(query_text, usage=usage)
 
         response = await self._client.query_points(
             collection_name=collection,

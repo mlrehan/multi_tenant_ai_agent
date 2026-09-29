@@ -28,7 +28,6 @@ import {
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { IdentityChip } from "@/components/shared/identity-chip";
 import {
   type AskerLabel,
   ConversationTurn,
@@ -43,7 +42,7 @@ import {
 } from "@/features/ai-resources/hooks";
 import { useHasTenantPermission } from "@/features/rbac/hooks";
 import { isApiError } from "@/lib/api-client";
-import type { Conversation } from "@/lib/types";
+import type { Conversation, ConversationState } from "@/lib/types";
 
 /** The permission that turns this screen into an oversight surface. Opening
  *  someone else's conversation is audited server-side; the UI says so rather
@@ -78,7 +77,7 @@ export default function ConversationsPage({
     <div>
       <PageHeader
         title="Conversations"
-        description="Your chat history. Reopen a thread to continue it with its context intact."
+        description="Chats from your website chatbot, and any handled by your team after a handoff."
       />
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
@@ -125,11 +124,32 @@ export default function ConversationsPage({
       {conversations && conversations.length === 0 && (
         <EmptyState
           icon={MessagesSquare}
-          title={searching ? "Nothing matched" : "No conversations yet"}
+          title={
+            searching
+              ? "Nothing matched"
+              : allMembers && canViewAll
+                ? "No conversations yet"
+                : "No conversations of your own"
+          }
+          // The old copy pointed at "a published assistant" -- a feature tenants
+          // no longer have -- and never said where conversations actually are.
+          // The Ask panel keeps no threads, so for a tenant member "Only mine"
+          // is normally empty; website visitors' chats live under "All".
           description={
             searching
               ? "No conversation contains that text."
-              : "Conversations appear here once you start chatting with a published assistant."
+              : allMembers && canViewAll
+                ? "Chats from your website chatbot appear here as soon as a visitor asks something."
+                : canViewAll
+                  ? "Questions asked in the Ask panel aren't kept as threads. Your website visitors' chats are under All conversations."
+                  : "Questions asked in the Ask panel aren't kept as threads."
+          }
+          action={
+            !searching && !allMembers && canViewAll ? (
+              <Button size="sm" onClick={() => setAllMembers(true)}>
+                Show all conversations
+              </Button>
+            ) : undefined
           }
         />
       )}
@@ -142,7 +162,7 @@ export default function ConversationsPage({
                 <TableRow>
                   <TableHead>Title</TableHead>
                   <TableHead>Who</TableHead>
-                  <TableHead>Assistant</TableHead>
+                  <TableHead>Handled by</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Last message</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -231,11 +251,10 @@ function ConversationRow({
         </Badge>
       </TableCell>
       <TableCell>
-        {conversation.assistant_id ? (
-          <IdentityChip value={conversation.assistant_id} label="assistant" />
-        ) : (
-          <span className="text-sm text-muted-foreground">—</span>
-        )}
+        {/* Replaces an "Assistant" column that read "—" on every row once
+            assistants were withdrawn from tenants. Who replies next is what
+            someone scanning this list actually needs. */}
+        <HandledBy state={conversation.state} />
       </TableCell>
       <TableCell>
         <StatusBadge status={conversation.status} />
@@ -358,4 +377,19 @@ function ThreadDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+const HANDLED_BY: Record<ConversationState, { label: string; tone: string }> = {
+  ai_active: { label: "AI chatbot", tone: "text-muted-foreground" },
+  handoff_requested: { label: "Waiting for a person", tone: "text-amber-700 dark:text-amber-400" },
+  unassigned: { label: "Waiting for a person", tone: "text-amber-700 dark:text-amber-400" },
+  assigned: { label: "Team member", tone: "text-foreground" },
+  human_active: { label: "Team member", tone: "text-foreground" },
+  resolved: { label: "Resolved", tone: "text-muted-foreground" },
+};
+
+function HandledBy({ state }: { state: ConversationState | null | undefined }) {
+  const entry = state ? HANDLED_BY[state] : undefined;
+  if (!entry) return <span className="text-sm text-muted-foreground">—</span>;
+  return <span className={`text-sm ${entry.tone}`}>{entry.label}</span>;
 }

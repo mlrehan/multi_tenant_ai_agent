@@ -73,6 +73,16 @@ from iam_platform.application.ai_resources.manage_push import (
     UnsubscribeFromPush,
     UnsubscribeFromPushCommand,
 )
+from iam_platform.application.ai_resources.tenant_activity import (
+    SATISFACTION_DAYS,
+    TREND_DAYS,
+    GetTenantActivity,
+    TenantActivityQuery,
+)
+from iam_platform.application.ai_resources.unanswered_questions import (
+    ListUnansweredQuestions,
+    ListUnansweredQuestionsQuery,
+)
 from iam_platform.application.identity.ports import AccessTokenClaims
 from iam_platform.domain.ai_resources.chatbot import DEFAULT_AVOID, default_role
 from iam_platform.domain.ai_resources.entities import HandoffInitiator
@@ -121,6 +131,8 @@ async def get_tenant_plan(
         messages_used_today=view.messages_used_today,
         tokens_used_this_month=view.tokens_used_this_month,
         effective_daily_message_limit=view.effective_daily_message_limit,
+        token_alert_level=view.token_alert_level,
+        message_alert_level=view.message_alert_level,
     )
 
 
@@ -188,6 +200,96 @@ async def update_chatbot_settings(
         )
     )
     return _settings_response(settings, plan.effective_daily_message_limit)
+
+
+# --- activity (tenant dashboard) ----------------------------------------------
+
+
+@router.get("/activity", response_model=schemas.TenantActivityResponse)
+async def get_tenant_activity(
+    tenant_id: str,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> schemas.TenantActivityResponse:
+    """Questions, conversations, satisfaction, the handoff queue and knowledge
+    health for this tenant's own dashboard. Counts only -- see
+    `tenant_activity.py`."""
+    a = await GetTenantActivity(container.ai_resource_uow_factory, container.clock).execute(
+        TenantActivityQuery(
+            actor_user_id=str(claims.user_id), tenant_id=tenant_id, permissions=permissions
+        )
+    )
+
+    def period(c: Any) -> schemas.TenantPeriodResponse:
+        return schemas.TenantPeriodResponse(current=c.current, previous=c.previous)
+
+    return schemas.TenantActivityResponse(
+        generated_at=a.generated_at,
+        daily=[
+            schemas.TenantDailyActivityResponse(
+                day=d.day,
+                conversations_started=d.conversations_started,
+                questions=d.questions,
+                answers=d.answers,
+                handoffs=d.handoffs,
+            )
+            for d in a.daily
+        ],
+        trend_days=TREND_DAYS,
+        questions=period(a.questions),
+        conversations=period(a.conversations),
+        handoffs=period(a.handoffs),
+        satisfaction_days=SATISFACTION_DAYS,
+        helpful=period(a.helpful),
+        not_helpful=period(a.not_helpful),
+        waiting_handoffs=a.waiting_handoffs,
+        handled_handoffs=a.handled_handoffs,
+        oldest_waiting_at=a.oldest_waiting_at,
+        documents_stuck=a.documents_stuck,
+        knowledge=schemas.KnowledgeSummaryResponse(
+            ready=a.knowledge.ready,
+            processing=a.knowledge.processing,
+            failed=a.knowledge.failed,
+            web_pages=a.knowledge.web_pages,
+            files=a.knowledge.files,
+            last_added_at=a.knowledge.last_added_at,
+        ),
+        ingestion_tokens_this_month=a.ingestion_tokens_this_month,
+    )
+
+
+@router.get("/unanswered-questions", response_model=schemas.UnansweredQuestionsResponse)
+async def list_unanswered_questions(
+    tenant_id: str,
+    days: int = 30,
+    limit: int = 20,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    permissions: frozenset[str] = Depends(get_effective_tenant_permissions),
+    container: AppContainer = Depends(get_container),
+) -> schemas.UnansweredQuestionsResponse:
+    """Questions the chatbot couldn't answer from this tenant's sources."""
+    rows = await ListUnansweredQuestions(container.ai_resource_uow_factory, container.clock).execute(
+        ListUnansweredQuestionsQuery(
+            actor_user_id=str(claims.user_id),
+            tenant_id=tenant_id,
+            permissions=permissions,
+            days=days,
+            limit=limit,
+        )
+    )
+    return schemas.UnansweredQuestionsResponse(
+        days=max(1, min(days, 365)),
+        questions=[
+            schemas.UnansweredQuestionResponse(
+                question=r.question,
+                times_asked=r.times_asked,
+                last_asked_at=r.last_asked_at,
+                no_sources=r.no_sources,
+            )
+            for r in rows
+        ],
+    )
 
 
 # --- teams ------------------------------------------------------------------
