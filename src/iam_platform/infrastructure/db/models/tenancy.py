@@ -40,6 +40,10 @@ class TenantModel(TimestampMixin, Base):
         CheckConstraint(
             "status IN ('pending','active','suspended','deactivated')", name="status_valid"
         ),
+        CheckConstraint(
+            "assistant_profile IN ('nursery','education','general')",
+            name="assistant_profile_valid",
+        ),
         Index("ix_tenants_status", "status"),
     )
 
@@ -54,6 +58,12 @@ class TenantModel(TimestampMixin, Base):
     suspended_at: Mapped[datetime | None]
     suspended_reason: Mapped[str | None] = mapped_column(Text)
     deleted_at: Mapped[datetime | None]
+    #: Which sector's policy the tenant's assistant answers under. Here, on
+    #: `tenants`, because this table is read-only to `app_tenant` (SELECT
+    #: policy plus REVOKE) -- the platform chooses it, the tenant cannot.
+    assistant_profile: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'nursery'")
+    )
 
 
 class TenantMembershipModel(TimestampMixin, Base):

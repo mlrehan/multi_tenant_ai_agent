@@ -20,6 +20,7 @@ from uuid import UUID
 
 from iam_platform.application.identity.ports import AuditWriter, SecurityEventWriter
 from iam_platform.application.tenancy.ports import TenantMembershipRepository
+from iam_platform.domain.ai_resources.assistant_profiles import AssistantProfile
 from iam_platform.domain.ai_resources.chatbot import TenantChatbotSettings
 from iam_platform.domain.ai_resources.entities import (
     AiAssistant,
@@ -1199,6 +1200,11 @@ class TenantChatbotSettingsRepository(Protocol):
         """The tenant's own display name, which the chatbot introduces itself
         with when no company name has been set. Read under the tenant's RLS
         scope, which admits exactly its own `tenants` row."""
+        ...
+
+    async def assistant_profile(self, tenant_id: UUID) -> AssistantProfile:
+        """The platform-chosen profile on the tenant's own `tenants` row.
+        Readable by the tenant, writable only by the platform."""
         ...
 
     async def upsert(self, settings: TenantChatbotSettings) -> None: ...

@@ -535,6 +535,16 @@ export default function ChatbotPage({ params }: { params: Promise<{ tenantId: st
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {settings.data?.assistant_profile_label && (
+                    <div className="rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+                      <span className="text-muted-foreground">Assistant type: </span>
+                      <span className="font-medium">{settings.data.assistant_profile_label}</span>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        Set by your platform administrator. It decides which sector&rsquo;s rules
+                        your chatbot follows and the default brief it starts from.
+                      </p>
+                    </div>
+                  )}
                   <div>
                     <Label htmlFor="company-name">Company name</Label>
                     <Input

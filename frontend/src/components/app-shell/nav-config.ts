@@ -63,6 +63,14 @@ export const platformNavItems: NavItem[] = [
     requiresPlatformPermission: "platform.model_configurations.manage",
   },
   {
+    label: "Assistant profiles",
+    href: "/platform/assistant-profiles",
+    icon: Bot,
+    // The same authority as entitlements: deciding how a tenant's assistant
+    // behaves, as well as what it may spend.
+    requiresPlatformPermission: "platform.model_configurations.manage",
+  },
+  {
     label: "Answer feedback",
     href: "/platform/feedback",
     icon: ThumbsUp,

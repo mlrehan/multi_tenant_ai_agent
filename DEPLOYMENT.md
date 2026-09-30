@@ -958,6 +958,8 @@ curl http://localhost:8100/metrics
 
 Why this is safe by design, before you even get to the backup: this project's database changes ("migrations") are written to only ever *add* — a new column, a new table — never to silently destroy something the running app still needs. A migration that adds a table can't lose data that already exists, because it never touches existing rows. That said, "the design is careful" is not the same guarantee as "nothing can ever go wrong" — a mistake is still possible, which is exactly what Step 1 protects you from. Treat it as non-negotiable, not optional.
 
+**The short way:** `scripts/deploy.sh you@yourdomain.com` runs all of the steps below in order. It stops at the first failure and ends by checking that the new version is the one running. It refuses to start if files were edited on the server, because `git pull` would then leave the old code in place. The manual steps are below for when you need to run one step on its own.
+
 **Step 1 — Back up the database. Always, every time, no exceptions.**
 
 ```bash

@@ -1,5 +1,9 @@
 import { apiFetch } from "@/lib/api-client";
 import type {
+  AssistantProfileCode,
+  AssistantProfileOption,
+  TenantAssistantProfile,
+  TenantPromptPreview,
   ChatbotBehaviour,
   ChatbotSettings,
   Personality,
@@ -37,6 +41,27 @@ export function setTenantEntitlements(
 
 export function listAiProviders() {
   return apiFetch<{ providers: ProviderCapability[] }>("v1/platform/ai-providers");
+}
+
+// ---- Platform: assistant profiles ----
+
+export function listAssistantProfiles() {
+  return apiFetch<{
+    profiles: AssistantProfileOption[];
+    tenants: TenantAssistantProfile[];
+  }>("v1/platform/assistant-profiles");
+}
+
+export function setTenantAssistantProfile(tenantId: string, profile: AssistantProfileCode) {
+  return apiFetch<{ tenant_id: string; profile: AssistantProfileCode; profile_label: string }>(
+    `v1/platform/tenants/${tenantId}/assistant-profile`,
+    { method: "PUT", body: { profile } },
+  );
+}
+
+/** Audited server-side: it shows tenant-authored configuration to the platform. */
+export function getTenantAssistantPrompt(tenantId: string) {
+  return apiFetch<TenantPromptPreview>(`v1/platform/tenants/${tenantId}/assistant-prompt`);
 }
 
 // ---- Tenant: plan, chatbot settings, teams ----

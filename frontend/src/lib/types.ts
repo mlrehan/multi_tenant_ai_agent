@@ -471,6 +471,42 @@ export interface ChatbotSettings {
   personality: Personality;
   response_length: ResponseLength;
   updated_at: string;
+  /** The sector profile the platform put this tenant on. Read-only for the
+   *  tenant; optional so an older API without it still renders. */
+  assistant_profile?: AssistantProfileCode;
+  assistant_profile_label?: string;
+}
+
+/** Which sector's rules a tenant's assistant answers under. Chosen by the
+ *  platform; every tenant starts on `nursery`. */
+export type AssistantProfileCode = "nursery" | "education" | "general";
+
+export interface AssistantProfileOption {
+  code: AssistantProfileCode;
+  label: string;
+  summary: string;
+}
+
+export interface TenantAssistantProfile {
+  tenant_id: string;
+  display_name: string;
+  slug: string;
+  status: string;
+  profile: AssistantProfileCode;
+  profile_label: string;
+}
+
+/** The exact system prompt a tenant's assistant is sent, above the sources
+ *  and the visitor's question. Reading it is audited. */
+export interface TenantPromptPreview {
+  tenant_id: string;
+  profile: AssistantProfileCode;
+  profile_label: string;
+  prompt: string;
+  characters: number;
+  estimated_tokens: number;
+  has_saved_settings: boolean;
+  handoff_available: boolean;
 }
 
 /** The tenant's own plan. Usage fields are `number | null`: null means the

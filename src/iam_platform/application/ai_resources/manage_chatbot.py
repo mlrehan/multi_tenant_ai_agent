@@ -68,11 +68,21 @@ class GetChatbotSettings:
         tenant_id = UUID(query.tenant_id)
         async with self._uow_factory(UUID(query.actor_user_id), tenant_id) as uow:
             stored = await uow.chatbot_settings.get_for_tenant(tenant_id)
+            # Needed even with no row: the defaults shown are the profile's.
+            profile = (
+                stored.assistant_profile
+                if stored is not None
+                else await uow.chatbot_settings.assistant_profile(tenant_id)
+            )
         if stored is not None:
             return stored
         now = self._clock.now()
         return TenantChatbotSettings(
-            id=uuid4(), tenant_id=tenant_id, created_at=now, updated_at=now
+            id=uuid4(),
+            tenant_id=tenant_id,
+            created_at=now,
+            updated_at=now,
+            assistant_profile=profile,
         )
 
 
@@ -180,7 +190,11 @@ class UpdateChatbotSettings:
                 )
 
             settings = existing or TenantChatbotSettings(
-                id=uuid4(), tenant_id=tenant_id, created_at=now, updated_at=now
+                id=uuid4(),
+                tenant_id=tenant_id,
+                created_at=now,
+                updated_at=now,
+                assistant_profile=await uow.chatbot_settings.assistant_profile(tenant_id),
             )
             settings.ai_chatbot_enabled = command.ai_chatbot_enabled
             settings.company_name = (command.company_name or "").strip() or None

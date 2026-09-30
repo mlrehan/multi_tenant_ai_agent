@@ -383,6 +383,33 @@ Tests: 795 unit tests pass. Not built (see the roadmap): installing from the cha
   - The real browser dashboard counted against `::1`.
 - **Frontend still has no test runner,** so the BFF half is guarded by the live proof only. 968 unit tests pass.
 
+**Assistant profiles: the platform chooses each tenant's sector (2026-09-30, migration `d4a7e2c9f1b6`).**
+- **Why.** Every tenant was told "You are the ... assistant for an Early Years / Day Nursery service". Falgoon's knowledge base is IT-academy content, so "do you teach python?" got "I cannot confirm". The policy's multi-tenant rule tells the model to set aside content that "clearly conflicts with the established tenant context", and a Python course conflicts with a nursery. It was the prompt, not the guardrails and not retrieval.
+- **The design.**
+  - `tenants.assistant_profile` is `nursery` (the default for every tenant), `education` or `general`.
+  - It lives on `tenants` because that table is already read-only to `app_tenant`. Tenants can read their profile but can't change it; only the platform can.
+- **The platform policy is now a shared core plus a sector section** (`application/ai_resources/platform_policy.py`).
+  - The core is the same for every profile: precedence, grounding, citations, the `[NO_ANSWER]`/`[RESTRICTED]` markers, injection defence, read-only actions, tenant isolation, uncertainty and style.
+  - The sector section differs per profile: what the assistant serves, what it must not claim to be, which facts must come from sources, and the sector's high-risk rules. Nursery keeps EYFS safeguarding and child data. Education gets learner welfare, young people, outcome claims and a rule for answering lists. General gets professional advice and commitments.
+  - The 999/112 emergency rule is in every profile.
+  - `SYSTEM_PROMPT` is still the name callers import; it is now `platform_policy(NURSERY)`.
+- **Nursery is byte-for-byte unchanged.** `tests/unit/ai_resources/fixtures/*.txt` were frozen from the old prompt before the split. Tests compare the policy and two whole assembled prompts (no settings row; a settings row with professional, detailed, no handoff) against them.
+- **Tenant defaults follow the profile:** role, avoid rules, company description, industry, widget name and title, and quick-reply buttons (`ProfileDefaults` in `domain/ai_resources/chatbot.py`).
+  - The console pre-fills the defaults and saving writes them back. So a stored value equal to *any* profile's shipped default counts as unchosen (`_is_a_shipped_default`, whitespace-insensitive, rendered with the tenant's name or the shipped `Falgoon Little Star`). A tenant moved to education is not pinned to the nursery brief.
+  - Text a tenant actually wrote is kept on every profile.
+  - The settings response reports such a stored default as `""`, so the form shows the new profile's default.
+  - Side effect for nursery tenants: a saved nursery default rendered with the wrong company name now re-renders with the right one.
+- **One assembly, two readers** (`application/ai_resources/tenant_prompt.py`). `_with_tenant_layers` (the answer path) and the platform's preview both call `read_tenant_prompt_context` + `compose_tenant_prompt`, so the preview is exactly what the model receives. A legacy assistant `system_prompt` appended after the nursery policy survives the swap. A failed read still falls back to the nursery policy, the strictest.
+- **Platform surface.** It is gated on `platform.model_configurations.manage`, like entitlements.
+  - `GET /v1/platform/assistant-profiles`: the options, and each live tenant's profile.
+  - `PUT /v1/platform/tenants/{id}/assistant-profile`: refuses an unknown value with a 400 naming the valid ones (never coerced); setting the same profile is a no-op; audited `platform.tenant_assistant_profile.updated` with from/to.
+  - `GET /v1/platform/tenants/{id}/assistant-prompt`: the exact prompt, read under the tenant's RLS, audited `platform.tenant_assistant_prompt.viewed`.
+- **Console.**
+  - Platform → **Assistant profiles** (`/platform/assistant-profiles`): profile cards with tenant counts, a tenant table, a Change dialog that warns when leaving nursery, and a View-prompt sheet with a copy button and a character/token estimate.
+  - The tenant's AI Chatbot → Company tab shows "Assistant type: … set by your platform administrator".
+- **Lint:** the 55 E501 errors moved from `answer_question.py` to `platform_policy.py`, which now has a per-file E501 ignore (the lines are prose sent to the model). `ruff check src tests scripts` is fully clean.
+- **Tests:** `test_assistant_profiles.py` (77). Mutation-caught: 17 of 17, including the answer path ignoring the profile, stored defaults pinning, personality/handoff/defaults staying nursery, an unknown value coerced, both permission checks, both audits, the no-op, education losing the emergency or lists rule or keeping the nursery frame, and a reworded core sentence. 1,045 unit tests pass.
+
 **Open, and not decided:**
 - `PostAgentMessage` accepts *any* conversation id in the tenant — including a member's private Ask thread. The leak through the AI is closed, but whether agents should be able to write there at all is still a product decision.
 - Per-answer cost is ~6k tokens even for "hi": ~4.1k is system prompt plus tenant layers, and up to ~3.5k is five passages. Skipping retrieval for greetings, and prompt caching, have both been proposed but not built.
@@ -420,7 +447,7 @@ Tests: 795 unit tests pass. Not built (see the roadmap): installing from the cha
 
 **⚠ Local data hazard, which already caused data loss.** `.env` sets `DATABASE__NAME=iam_platform_test`, and the dev API container uses the same database that pytest's conftest `TRUNCATE`s. On 2026-09-27 a `pytest tests/unit tests/security` run wiped every local user, tenant, knowledge base, widget and conversation. **Only `tests/unit` is safe to run without first asking the user.** The fix, not yet made, is a separate dev database.
 
-**Status:** migration head `c8e1f4a7b2d9`. The API and worker images were rebuilt on 2026-09-29 with everything above, including the `widget.js` avatar hardening. Full suite on 2026-09-29: 1,124 tests, all green after the fixes in "Full test run on the shared database"; `tests/unit` is 898. `mypy src/iam_platform`: 10 pre-existing errors, none in files changed here. Next.js and `eslint-config-next` were upgraded from 16.3.0 to 16.3.6 (pinned) on 2026-09-29, fixing a **critical** unauthenticated RCE on Windows-hosted servers. `npm audit fix` (non-forced) cleared 7 transitive advisories, and `npm audit` now reports 0. `tsc`, `eslint src` and `npm run build` pass; the login page and BFF proxy were checked in the browser.
+**Status:** migration head `d4a7e2c9f1b6` (assistant profiles, 2026-09-30; before it `c8e1f4a7b2d9`). The API and worker images were rebuilt on 2026-09-29 with everything above, including the `widget.js` avatar hardening. Full suite on 2026-09-29: 1,124 tests, all green after the fixes in "Full test run on the shared database"; `tests/unit` is 898. `mypy src/iam_platform`: 10 pre-existing errors, none in files changed here. Next.js and `eslint-config-next` were upgraded from 16.3.0 to 16.3.6 (pinned) on 2026-09-29, fixing a **critical** unauthenticated RCE on Windows-hosted servers. `npm audit fix` (non-forced) cleared 7 transitive advisories, and `npm audit` now reports 0. `tsc`, `eslint src` and `npm run build` pass; the login page and BFF proxy were checked in the browser.
 
 **Recurring traps in this pass**, each hit more than once:
 - **A fake narrower than the Protocol it replaces** fails every caller with a `TypeError` whenever a port grows a parameter. It happened three times; give shared fakes `**kwargs`.

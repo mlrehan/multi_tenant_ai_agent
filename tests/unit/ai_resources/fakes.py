@@ -566,12 +566,25 @@ class FakeTenantChatbotSettingsRepository:
     def __init__(self) -> None:
         self.stored: dict[UUID, object] = {}
         self.display_names: dict[UUID, str] = {}
+        #: Stands in for `tenants.assistant_profile`; absent means the default.
+        self.profiles: dict[UUID, object] = {}
 
     async def tenant_display_name(self, tenant_id: UUID) -> str | None:
         return self.display_names.get(tenant_id)
 
+    async def assistant_profile(self, tenant_id: UUID, **_: object) -> object:
+        from iam_platform.domain.ai_resources.assistant_profiles import (
+            coerce_assistant_profile,
+        )
+
+        return coerce_assistant_profile(self.profiles.get(tenant_id, "nursery"))
+
     async def get_for_tenant(self, tenant_id: UUID) -> object | None:
-        return self.stored.get(tenant_id)
+        settings = self.stored.get(tenant_id)
+        if settings is not None and tenant_id in self.profiles:
+            # The real repository fills this from `tenants` on every read.
+            settings.assistant_profile = await self.assistant_profile(tenant_id)  # type: ignore[attr-defined]
+        return settings
 
     async def upsert(self, settings: object) -> None:
         self.stored[settings.tenant_id] = settings  # type: ignore[attr-defined]

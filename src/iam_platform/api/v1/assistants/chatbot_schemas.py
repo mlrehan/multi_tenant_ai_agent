@@ -68,6 +68,10 @@ class ChatbotSettingsResponse(BaseModel):
     #: IANA name the daily message allowance resets on, e.g. `Europe/London`.
     quota_timezone: str = "UTC"
     updated_at: datetime
+    #: The sector profile the platform put this tenant on, and its label.
+    #: Read-only here: there is no field for it in the update request.
+    assistant_profile: str = "nursery"
+    assistant_profile_label: str = ""
 
 
 class UpdateChatbotSettingsRequest(BaseModel):

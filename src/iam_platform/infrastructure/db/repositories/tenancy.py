@@ -39,6 +39,7 @@ def _tenant_to_domain(m: TenantModel) -> Tenant:
         suspended_at=m.suspended_at,
         suspended_reason=m.suspended_reason,
         deleted_at=m.deleted_at,
+        assistant_profile=m.assistant_profile,
     )
 
 
@@ -72,6 +73,7 @@ class SqlTenantRepository:
                 suspended_at=tenant.suspended_at,
                 suspended_reason=tenant.suspended_reason,
                 deleted_at=tenant.deleted_at,
+                assistant_profile=tenant.assistant_profile,
             )
         )
         await self._session.flush()
@@ -87,6 +89,7 @@ class SqlTenantRepository:
                 suspended_at=tenant.suspended_at,
                 suspended_reason=tenant.suspended_reason,
                 deleted_at=tenant.deleted_at,
+                assistant_profile=tenant.assistant_profile,
             )
         )
 

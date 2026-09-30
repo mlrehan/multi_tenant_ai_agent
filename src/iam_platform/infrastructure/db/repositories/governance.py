@@ -24,6 +24,10 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from iam_platform.domain.ai_resources.assistant_profiles import (
+    AssistantProfile,
+    coerce_assistant_profile,
+)
 from iam_platform.domain.ai_resources.chatbot import (
     DEFAULT_INDUSTRY,
     TenantChatbotSettings,
@@ -185,6 +189,18 @@ class SqlTenantChatbotSettingsRepository:
         )
         return name
 
+    async def assistant_profile(self, tenant_id: UUID) -> AssistantProfile:
+        """The tenant's profile, from its own `tenants` row.
+
+        A tenant session reads it through the own-row SELECT policy; nothing
+        this class does can write it. Unknown or unreadable values degrade to
+        the nursery default rather than failing the caller.
+        """
+        value = await self._session.scalar(
+            select(TenantModel.assistant_profile).where(TenantModel.id == tenant_id)
+        )
+        return coerce_assistant_profile(value)
+
     async def get_for_tenant(self, tenant_id: UUID) -> TenantChatbotSettings | None:
         row = await self._session.scalar(
             select(TenantChatbotSettingsModel).where(
@@ -194,6 +210,8 @@ class SqlTenantChatbotSettingsRepository:
         if row is None:
             return None
         return TenantChatbotSettings(
+            # Context from `tenants`, never written back by `upsert` below.
+            assistant_profile=await self.assistant_profile(tenant_id),
             id=row.id,
             tenant_id=row.tenant_id,
             ai_chatbot_enabled=row.ai_chatbot_enabled,

@@ -236,6 +236,54 @@ class TenantEntitlementsListResponse(BaseModel):
     entitlements: list[TenantEntitlementsResponse]
 
 
+class AssistantProfileOption(BaseModel):
+    """One profile a tenant can be put on, with what it changes."""
+
+    code: str
+    label: str
+    summary: str
+
+
+class TenantAssistantProfileResponse(BaseModel):
+    tenant_id: UUID
+    display_name: str
+    slug: str
+    status: str
+    profile: str
+    profile_label: str
+
+
+class AssistantProfilesResponse(BaseModel):
+    profiles: list[AssistantProfileOption]
+    tenants: list[TenantAssistantProfileResponse]
+
+
+class SetAssistantProfileRequest(BaseModel):
+    #: Validated by the use case, so an unknown value gets a message naming
+    #: the valid ones rather than a generic schema error.
+    profile: str = Field(min_length=1, max_length=40)
+
+
+class SetAssistantProfileResponse(BaseModel):
+    tenant_id: UUID
+    profile: str
+    profile_label: str
+
+
+class TenantPromptPreviewResponse(BaseModel):
+    """The system prompt the tenant's assistant is sent, above the sources."""
+
+    tenant_id: UUID
+    profile: str
+    profile_label: str
+    prompt: str
+    characters: int
+    #: A rough guide (about four characters per token), not a billing figure.
+    estimated_tokens: int
+    has_saved_settings: bool
+    handoff_available: bool
+
+
 class ProviderCapabilityResponse(BaseModel):
     """What the console needs to disable the fields a provider cannot honour.
 

@@ -31,19 +31,25 @@ could otherwise end the quoted region and have its remainder read as prompt.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from iam_platform.domain.ai_resources.assistant_profiles import (
+    DEFAULT_ASSISTANT_PROFILE,
+    AssistantProfile,
+    coerce_assistant_profile,
+)
 from iam_platform.domain.ai_resources.chatbot import (
     DEFAULT_AVOID,
     DEFAULT_COMPANY_NAME,
-    DEFAULT_INDUSTRY,
     DEFAULT_ROLE,
     Personality,
     ResponseLength,
     TenantChatbotSettings,
+    default_avoid,
     default_company_description,
     default_role,
     personality_instruction,
+    profile_defaults,
     response_length_instruction,
 )
 from iam_platform.domain.ai_resources.guardrails import neutralize_passage
@@ -84,13 +90,51 @@ _HANDOFF_HEADER = (
     "emergency action:\n"
 )
 
+#: The matters that call for a person, per profile. The nursery wording is the
+#: text every tenant received before profiles existed, unchanged.
+_TRANSFER_MATTERS: dict[AssistantProfile, str] = {
+    AssistantProfile.NURSERY: (
+        "safeguarding, emergencies, child-specific "
+        "health or medication concerns, serious accidents/incidents, SEND or developmental "
+        "judgement, complaints requiring investigation, custody/collection issues, "
+        "privacy or security concerns, admissions/funding/fees requiring a decision, "
+        "or information that cannot be safely confirmed from approved sources"
+    ),
+    AssistantProfile.EDUCATION: (
+        "safeguarding or learner-welfare concerns, emergencies, individual learner or "
+        "applicant circumstances, disability or learning-support needs, complaints "
+        "requiring investigation, privacy or security concerns, admissions/enrolment/"
+        "fees/funding/refunds requiring a decision, or information that cannot be "
+        "safely confirmed from approved sources"
+    ),
+    AssistantProfile.GENERAL: (
+        "safety concerns, emergencies, an individual customer's account, order or "
+        "booking, complaints requiring investigation, privacy or security concerns, "
+        "prices/refunds/commitments requiring a decision, matters needing professional "
+        "judgement, or information that cannot be safely confirmed from approved sources"
+    ),
+}
+
+_REVIEW_MATTERS: dict[AssistantProfile, str] = {
+    AssistantProfile.NURSERY: (
+        "safeguarding, serious child-specific health/medication concerns, custody "
+        "or collection disputes, privacy/security incidents, serious complaints, or "
+        "other matters requiring professional judgement"
+    ),
+    AssistantProfile.EDUCATION: (
+        "safeguarding or learner-welfare concerns, individual learner or applicant "
+        "matters, privacy/security incidents, serious complaints, or other matters "
+        "requiring professional judgement"
+    ),
+    AssistantProfile.GENERAL: (
+        "safety concerns, account-specific matters, privacy/security incidents, "
+        "serious complaints, or other matters requiring professional judgement"
+    ),
+}
+
 _HANDOFF_AVAILABLE = (
     "- Offer a human transfer when the visitor asks for a person or when the matter "
-    "requires human judgement, including safeguarding, emergencies, child-specific "
-    "health or medication concerns, serious accidents/incidents, SEND or developmental "
-    "judgement, complaints requiring investigation, custody/collection issues, "
-    "privacy or security concerns, admissions/funding/fees requiring a decision, "
-    "or information that cannot be safely confirmed from approved sources.\n"
+    "requires human judgement, including §TRANSFER§.\n"
     "- State clearly that you are offering a transfer. Never claim the transfer, "
     "callback, booking, escalation, notification, or case creation has completed "
     "unless the platform explicitly confirms it.\n"
@@ -101,12 +145,10 @@ _HANDOFF_AVAILABLE = (
 )
 _HANDOFF_UNAVAILABLE = (
     "- A direct in-chat transfer is not available. When a matter requires a person, "
-    "say so clearly and direct the visitor only to approved nursery contact details "
+    "say so clearly and direct the visitor only to approved §ORG§contact details "
     "present in trusted configuration or approved sources. Do not invent contact "
     "details, promise a callback, or imply that anyone has been notified.\n"
-    "- For safeguarding, serious child-specific health/medication concerns, custody "
-    "or collection disputes, privacy/security incidents, serious complaints, or "
-    "other matters requiring professional judgement, make the need for authorised "
+    "- For §REVIEW§, make the need for authorised "
     "human review explicit.\n"
     "- For an apparent immediate threat to life or serious immediate danger, do not "
     "delay emergency guidance merely because handoff is unavailable.\n"
@@ -134,6 +176,9 @@ class PromptLayers:
     #: using it. Appended last of the tenant-authored blocks, and under the
     #: same "does not override" statement as the rest.
     legacy_system_prompt: str | None = None
+    #: Which sector's wording the handoff and style blocks use. The platform
+    #: policy above these layers is chosen by the same profile.
+    profile: AssistantProfile = DEFAULT_ASSISTANT_PROFILE
 
     @classmethod
     def from_settings(
@@ -147,7 +192,14 @@ class PromptLayers:
         response_length: str | None = None,
         legacy_system_prompt: str | None = None,
         teams_configured: bool = False,
+        profile: AssistantProfile | None = None,
     ) -> PromptLayers:
+        # The explicit profile wins; otherwise the one the settings row was
+        # read with; otherwise the nursery default.
+        if profile is None:
+            profile = settings.assistant_profile if settings else DEFAULT_ASSISTANT_PROFILE
+        if settings is not None and settings.assistant_profile is not profile:
+            settings = replace(settings, assistant_profile=profile)
         company_name = (
             settings.resolved_company_name(tenant_display_name)
             if settings
@@ -156,23 +208,28 @@ class PromptLayers:
         return cls(
             company_name=company_name,
             # Resolved, not read raw: a tenant who has never opened the Company
-            # tab still gets a coherent description of the nursery rather than
-            # an empty block the model has to guess around.
+            # tab still gets a coherent description of their organisation
+            # rather than an empty block the model has to guess around.
             company_description=(
                 settings.resolved_company_description(tenant_display_name)
                 if settings
-                else default_company_description(company_name)
+                else default_company_description(company_name, profile)
             ),
-            industry=settings.industry if settings else DEFAULT_INDUSTRY,
-            # Named for this nursery. `DEFAULT_ROLE` carries the shipped name,
+            industry=settings.resolved_industry() if settings else profile_defaults(profile).industry,
+            # Named for this company. `DEFAULT_ROLE` carries the shipped name,
             # which would introduce the assistant as the wrong company to every
             # tenant that has not written their own brief.
             #
             # The explicit argument still wins where a caller passes one, but
             # the brief's home is now `TenantChatbotSettings` -- it moved off
             # `ai_assistants` when assistant management left the tenant surface.
-            role=role or (settings.resolved_role(company_name) if settings else default_role(company_name)),
-            avoid=avoid or (settings.resolved_avoid() if settings else DEFAULT_AVOID),
+            role=role
+            or (
+                settings.resolved_role(company_name)
+                if settings
+                else default_role(company_name, profile)
+            ),
+            avoid=avoid or (settings.resolved_avoid() if settings else default_avoid(profile)),
             personality=personality or (settings.personality if settings else Personality.NEUTRAL),
             response_length=response_length
             or (settings.response_length if settings else ResponseLength.BALANCED),
@@ -186,6 +243,7 @@ class PromptLayers:
                 (settings is None or settings.allow_human_handoff) and teams_configured
             ),
             legacy_system_prompt=legacy_system_prompt,
+            profile=profile,
         )
 
 
@@ -213,16 +271,13 @@ def build_system_prompt(base: str, layers: PromptLayers) -> str:
     parts.append(
         _STYLE_HEADER
         + "- "
-        + personality_instruction(layers.personality)
+        + personality_instruction(layers.personality, layers.profile)
         + "\n- "
         + response_length_instruction(layers.response_length)
         + "\n"
     )
 
-    parts.append(
-        _HANDOFF_HEADER
-        + (_HANDOFF_AVAILABLE if layers.handoff_available else _HANDOFF_UNAVAILABLE)
-    )
+    parts.append(_HANDOFF_HEADER + _handoff_block(layers))
 
     legacy = _clean(layers.legacy_system_prompt or "")
     if legacy:
@@ -232,6 +287,15 @@ def build_system_prompt(base: str, layers: PromptLayers) -> str:
         )
 
     return "".join(parts)
+
+
+def _handoff_block(layers: PromptLayers) -> str:
+    profile = coerce_assistant_profile(layers.profile)
+    if layers.handoff_available:
+        return _HANDOFF_AVAILABLE.replace("§TRANSFER§", _TRANSFER_MATTERS[profile])
+    return _HANDOFF_UNAVAILABLE.replace("§REVIEW§", _REVIEW_MATTERS[profile]).replace(
+        "§ORG§", "nursery " if profile is AssistantProfile.NURSERY else ""
+    )
 
 
 def _company_block(layers: PromptLayers) -> str:

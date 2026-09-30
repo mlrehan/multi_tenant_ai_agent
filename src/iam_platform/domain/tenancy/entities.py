@@ -38,10 +38,19 @@ class Tenant(Entity):
     suspended_at: datetime | None = None
     suspended_reason: str | None = None
     deleted_at: datetime | None = None
+    #: The sector the tenant's assistant answers for (`nursery`, `education`,
+    #: `general`). Platform-chosen; see `domain.ai_resources.assistant_profiles`.
+    #: A plain string here so the tenancy domain does not depend on the
+    #: AI-resource one; validated where it is set.
+    assistant_profile: str = "nursery"
 
     @property
     def is_active(self) -> bool:
         return self.status == TenantStatus.ACTIVE and self.deleted_at is None
+
+    def set_assistant_profile(self, profile: str, *, now: datetime) -> None:
+        self.assistant_profile = profile
+        self.updated_at = now
 
     def activate(self, *, now: datetime) -> None:
         if self.status not in (TenantStatus.PENDING, TenantStatus.SUSPENDED):

@@ -84,7 +84,11 @@ from iam_platform.application.ai_resources.unanswered_questions import (
     ListUnansweredQuestionsQuery,
 )
 from iam_platform.application.identity.ports import AccessTokenClaims
-from iam_platform.domain.ai_resources.chatbot import DEFAULT_AVOID, default_role
+from iam_platform.domain.ai_resources.assistant_profiles import (
+    PROFILE_LABELS,
+    AssistantProfile,
+)
+from iam_platform.domain.ai_resources.chatbot import default_avoid, default_role
 from iam_platform.domain.ai_resources.entities import HandoffInitiator
 
 logger = logging.getLogger("iam_platform.api.v1.assistants.chatbot_router")
@@ -820,13 +824,19 @@ def _settings_response(
     # operators and audit records, and quietly borrowing it as the nursery's
     # public-facing name is a decision the tenant never made.
     company = settings.resolved_company_name("")  # type: ignore[attr-defined]
+    profile = settings.assistant_profile  # type: ignore[attr-defined]
     return schemas.ChatbotSettingsResponse(
         ai_chatbot_enabled=settings.ai_chatbot_enabled,  # type: ignore[attr-defined]
         company_name=company,
         company_description=settings.resolved_company_description(""),  # type: ignore[attr-defined]
-        default_role=default_role(company),
-        default_avoid=DEFAULT_AVOID,
-        industry=settings.industry,  # type: ignore[attr-defined]
+        # The defaults of the tenant's assistant profile: an education
+        # provider is offered a course-enquiries brief, not a nursery one.
+        default_role=default_role(company, profile),
+        default_avoid=default_avoid(profile),
+        industry=settings.resolved_industry(),  # type: ignore[attr-defined]
+        # Shown to the tenant, not editable by them: the platform chooses it.
+        assistant_profile=profile.value,
+        assistant_profile_label=PROFILE_LABELS[profile],
         allow_human_handoff=settings.allow_human_handoff,  # type: ignore[attr-defined]
         add_ai_summary_as_internal_comment=(
             settings.add_ai_summary_as_internal_comment  # type: ignore[attr-defined]
@@ -842,13 +852,29 @@ def _settings_response(
         # console can show an empty box beside the `default_role` placeholder
         # above -- a resolved value would look like the tenant had written the
         # platform's default themselves, and saving it would make that true.
-        role_instructions=settings.role_instructions or "",  # type: ignore[attr-defined]
-        avoid_instructions=settings.avoid_instructions or "",  # type: ignore[attr-defined]
+        #
+        # A stored brief that is only a shipped default (the form pre-fills
+        # it, and saving writes it back) is reported as unwritten once it
+        # stops being *this* profile's default -- otherwise a tenant moved to
+        # another profile would still see the old profile's brief in the form
+        # while the model follows the new one.
+        role_instructions=_written_or_blank(
+            settings.role_instructions, settings.resolved_role(company)  # type: ignore[attr-defined]
+        ),
+        avoid_instructions=_written_or_blank(
+            settings.avoid_instructions, settings.resolved_avoid()  # type: ignore[attr-defined]
+        ),
         personality=settings.personality.value,  # type: ignore[attr-defined]
         response_length=settings.response_length.value,  # type: ignore[attr-defined]
         quota_timezone=settings.quota_timezone,  # type: ignore[attr-defined]
         updated_at=settings.updated_at,  # type: ignore[attr-defined]
     )
+
+
+def _written_or_blank(stored: str | None, resolved: str) -> str:
+    """The stored brief if it is what the model follows, else "" (unwritten)."""
+    written = (stored or "").strip()
+    return written if written and written == resolved.strip() else ""
 
 
 async def _membership_id(
@@ -936,7 +962,9 @@ async def update_widget_presentation(
             show_quick_reply_suggestions=body.show_quick_reply_suggestions,
         )
     )
-    return _presentation_response(widget)
+    return _presentation_response(
+        widget, await _tenant_profile(container, claims, UUID(tenant_id))
+    )
 
 
 @router.get("/chat-widgets/{widget_id}/presentation")
@@ -953,24 +981,36 @@ async def get_widget_presentation(
     tenant_uuid = UUID(tenant_id)
     async with container.ai_resource_uow_factory(claims.user_id, tenant_uuid) as uow:
         widget = await uow.chat_widgets.get_for_tenant(tenant_uuid, widget_id)
+        profile = await uow.chatbot_settings.assistant_profile(tenant_uuid)
     if widget is None:
         raise ChatWidgetNotFoundError(str(widget_id))
-    return _presentation_response(widget)
+    return _presentation_response(widget, profile)
 
 
-def _presentation_response(widget: object) -> schemas.WidgetPresentationResponse:
+async def _tenant_profile(
+    container: AppContainer, claims: AccessTokenClaims, tenant_id: UUID
+) -> AssistantProfile:
+    async with container.ai_resource_uow_factory(claims.user_id, tenant_id) as uow:
+        return await uow.chatbot_settings.assistant_profile(tenant_id)
+
+
+def _presentation_response(
+    widget: object, profile: AssistantProfile
+) -> schemas.WidgetPresentationResponse:
     from iam_platform.domain.ai_resources.chatbot import (
         DEFAULT_AVATAR_KEY,
-        DEFAULT_CHATBOT_NAME,
-        DEFAULT_CHATBOT_TITLE,
+        resolved_chatbot_name,
+        resolved_chatbot_title,
     )
 
     # Defaults are resolved *here*, so the console shows the identity the
-    # widget actually renders rather than empty fields that look unconfigured.
+    # widget actually renders rather than empty fields that look unconfigured
+    # -- and they are the tenant's profile's defaults, exactly as the widget
+    # resolves them.
     return schemas.WidgetPresentationResponse(
         widget_id=widget.id,  # type: ignore[attr-defined]
-        chatbot_name=widget.chatbot_name or DEFAULT_CHATBOT_NAME,  # type: ignore[attr-defined]
-        chatbot_title=widget.chatbot_title or DEFAULT_CHATBOT_TITLE,  # type: ignore[attr-defined]
+        chatbot_name=resolved_chatbot_name(widget.chatbot_name, profile),  # type: ignore[attr-defined]
+        chatbot_title=resolved_chatbot_title(widget.chatbot_title, profile),  # type: ignore[attr-defined]
         avatar_key=widget.avatar_key or DEFAULT_AVATAR_KEY,  # type: ignore[attr-defined]
         greeting=widget.greeting,  # type: ignore[attr-defined]
         show_quick_reply_suggestions=widget.show_quick_reply_suggestions,  # type: ignore[attr-defined]

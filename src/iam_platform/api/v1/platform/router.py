@@ -18,6 +18,14 @@ from fastapi import APIRouter, Depends, Response, status
 from iam_platform.api.deps.authn import get_container, get_current_claims
 from iam_platform.api.deps.container import AppContainer
 from iam_platform.api.v1.platform import schemas
+from iam_platform.application.ai_resources.manage_assistant_profiles import (
+    ListTenantAssistantProfiles,
+    ListTenantAssistantProfilesQuery,
+    PreviewTenantPrompt,
+    PreviewTenantPromptQuery,
+    SetTenantAssistantProfile,
+    SetTenantAssistantProfileCommand,
+)
 from iam_platform.application.ai_resources.manage_entitlements import (
     ListTenantEntitlements,
     ListTenantEntitlementsQuery,
@@ -109,6 +117,11 @@ from iam_platform.application.platform_authz.manage_users import (
     UpdateUser,
     UpdateUserCommand,
     UserSummary,
+)
+from iam_platform.domain.ai_resources.assistant_profiles import (
+    PROFILE_LABELS,
+    PROFILE_SUMMARIES,
+    AssistantProfile,
 )
 from iam_platform.domain.ai_resources.pricing import ModelPrice
 from iam_platform.domain.ai_resources.providers import all_capabilities
@@ -976,6 +989,93 @@ async def set_tenant_entitlements(
         )
     )
     return _entitlements_response(entitlements)
+
+
+# --- assistant profiles -------------------------------------------------------
+#
+# Which sector's rules each tenant's assistant answers under. Platform-chosen
+# (the column is read-only to tenants), gated like entitlements.
+
+
+@router.get("/assistant-profiles", response_model=schemas.AssistantProfilesResponse)
+async def list_assistant_profiles(
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.AssistantProfilesResponse:
+    entries = await ListTenantAssistantProfiles(
+        container.platform_uow_factory, container.clock
+    ).execute(ListTenantAssistantProfilesQuery(actor_user_id=str(claims.user_id)))
+    return schemas.AssistantProfilesResponse(
+        profiles=[
+            schemas.AssistantProfileOption(
+                code=p.value, label=PROFILE_LABELS[p], summary=PROFILE_SUMMARIES[p]
+            )
+            for p in AssistantProfile
+        ],
+        tenants=[
+            schemas.TenantAssistantProfileResponse(
+                tenant_id=e.tenant_id,
+                display_name=e.display_name,
+                slug=e.slug,
+                status=e.status,
+                profile=e.profile.value,
+                profile_label=PROFILE_LABELS[e.profile],
+            )
+            for e in entries
+        ],
+    )
+
+
+@router.put(
+    "/tenants/{tenant_id}/assistant-profile",
+    response_model=schemas.SetAssistantProfileResponse,
+)
+async def set_tenant_assistant_profile(
+    tenant_id: UUID,
+    body: schemas.SetAssistantProfileRequest,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.SetAssistantProfileResponse:
+    """Takes effect on the tenant's next answer; audited with from/to."""
+    profile = await SetTenantAssistantProfile(
+        container.platform_uow_factory, container.clock
+    ).execute(
+        SetTenantAssistantProfileCommand(
+            actor_user_id=str(claims.user_id),
+            tenant_id=str(tenant_id),
+            profile=body.profile,
+        )
+    )
+    return schemas.SetAssistantProfileResponse(
+        tenant_id=tenant_id, profile=profile.value, profile_label=PROFILE_LABELS[profile]
+    )
+
+
+@router.get(
+    "/tenants/{tenant_id}/assistant-prompt",
+    response_model=schemas.TenantPromptPreviewResponse,
+)
+async def preview_tenant_assistant_prompt(
+    tenant_id: UUID,
+    claims: AccessTokenClaims = Depends(get_current_claims),
+    container: AppContainer = Depends(get_container),
+) -> schemas.TenantPromptPreviewResponse:
+    """The exact system prompt this tenant's assistant is sent. Audited."""
+    preview = await PreviewTenantPrompt(
+        container.platform_uow_factory, container.ai_resource_uow_factory, container.clock
+    ).execute(
+        PreviewTenantPromptQuery(actor_user_id=str(claims.user_id), tenant_id=str(tenant_id))
+    )
+    return schemas.TenantPromptPreviewResponse(
+        tenant_id=preview.tenant_id,
+        profile=preview.profile.value,
+        profile_label=PROFILE_LABELS[preview.profile],
+        prompt=preview.prompt,
+        characters=len(preview.prompt),
+        estimated_tokens=round(len(preview.prompt) / 4),
+        has_saved_settings=preview.has_saved_settings,
+        handoff_available=preview.handoff_available,
+    )
 
 
 @router.get("/ai-providers", response_model=schemas.ProviderCapabilityListResponse)

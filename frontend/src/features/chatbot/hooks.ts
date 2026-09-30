@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "@/features/chatbot/api";
 import type {
+  AssistantProfileCode,
   ChatbotSettings,
   Personality,
   ResponseLength,
@@ -33,6 +34,37 @@ export function useSetTenantEntitlements() {
 
 export function useAiProviders(enabled = true) {
   return useQuery({ queryKey: ["ai-providers"], queryFn: api.listAiProviders, enabled });
+}
+
+export function useAssistantProfiles(enabled = true) {
+  return useQuery({
+    queryKey: ["assistant-profiles"],
+    queryFn: api.listAssistantProfiles,
+    enabled,
+  });
+}
+
+export function useSetTenantAssistantProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { tenantId: string; profile: AssistantProfileCode }) =>
+      api.setTenantAssistantProfile(args.tenantId, args.profile),
+    onSuccess: (_data, args) => {
+      queryClient.invalidateQueries({ queryKey: ["assistant-profiles"] });
+      // The preview is a different prompt now.
+      queryClient.invalidateQueries({ queryKey: ["tenant-assistant-prompt", args.tenantId] });
+    },
+  });
+}
+
+/** Fetched only while the preview is open: each read is audited server-side. */
+export function useTenantAssistantPrompt(tenantId: string | null) {
+  return useQuery({
+    queryKey: ["tenant-assistant-prompt", tenantId],
+    queryFn: () => api.getTenantAssistantPrompt(tenantId!),
+    enabled: Boolean(tenantId),
+    staleTime: 30_000,
+  });
 }
 
 // ---- Tenant ----

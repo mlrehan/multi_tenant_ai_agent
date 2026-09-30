@@ -38,6 +38,19 @@ from enum import StrEnum
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from iam_platform.domain.ai_resources.assistant_profiles import (
+    DEFAULT_ASSISTANT_PROFILE,
+    EDUCATION_AVOID,
+    EDUCATION_COMPANY_DESCRIPTION_TEMPLATE,
+    EDUCATION_INDUSTRY,
+    EDUCATION_ROLE_TEMPLATE,
+    GENERAL_AVOID,
+    GENERAL_COMPANY_DESCRIPTION_TEMPLATE,
+    GENERAL_INDUSTRY,
+    GENERAL_ROLE_TEMPLATE,
+    AssistantProfile,
+    coerce_assistant_profile,
+)
 from iam_platform.domain.shared.entity import Entity
 
 #: Length caps, enforced here *and* by a database CHECK. The domain refuses
@@ -219,16 +232,137 @@ DEFAULT_AVOID = "\n\n".join(
     )
 )
 
-def default_role(company_name: str) -> str:
-    """The shipped role brief, named for this nursery."""
-    return _DEFAULT_ROLE_TEMPLATE.replace(COMPANY_PLACEHOLDER, company_name)
+
+@dataclass(frozen=True, slots=True)
+class ProfileDefaults:
+    """What a tenant on one assistant profile starts from.
+
+    Every field is a *default*: a tenant who writes their own role, avoid
+    rules, description or industry keeps it whatever profile they are on.
+    """
+
+    industry: str
+    company_description_template: str
+    role_template: str
+    avoid: str
+    chatbot_name: str
+    chatbot_title: str
+    quick_replies: tuple[str, ...]
 
 
-def default_company_description(company_name: str) -> str:
-    """The shipped company description, named for this nursery."""
-    return _DEFAULT_COMPANY_DESCRIPTION_TEMPLATE.replace(
+_PROFILE_DEFAULTS: dict[AssistantProfile, ProfileDefaults] = {
+    AssistantProfile.NURSERY: ProfileDefaults(
+        industry=DEFAULT_INDUSTRY,
+        company_description_template=_DEFAULT_COMPANY_DESCRIPTION_TEMPLATE,
+        role_template=_DEFAULT_ROLE_TEMPLATE,
+        avoid=DEFAULT_AVOID,
+        chatbot_name=DEFAULT_CHATBOT_NAME,
+        chatbot_title=DEFAULT_CHATBOT_TITLE,
+        quick_replies=DEFAULT_QUICK_REPLIES,
+    ),
+    AssistantProfile.EDUCATION: ProfileDefaults(
+        industry=EDUCATION_INDUSTRY,
+        company_description_template=EDUCATION_COMPANY_DESCRIPTION_TEMPLATE,
+        role_template=EDUCATION_ROLE_TEMPLATE,
+        avoid=EDUCATION_AVOID,
+        chatbot_name="Course Enquiries Assistant",
+        chatbot_title="Courses & Enrolment Support",
+        quick_replies=("Courses", "Fees & payment", "How to enrol"),
+    ),
+    AssistantProfile.GENERAL: ProfileDefaults(
+        industry=GENERAL_INDUSTRY,
+        company_description_template=GENERAL_COMPANY_DESCRIPTION_TEMPLATE,
+        role_template=GENERAL_ROLE_TEMPLATE,
+        avoid=GENERAL_AVOID,
+        chatbot_name="Customer Support Assistant",
+        chatbot_title="Help & Enquiries",
+        quick_replies=("Products & services", "Prices", "Contact us"),
+    ),
+}
+
+
+def profile_defaults(profile: AssistantProfile | str) -> ProfileDefaults:
+    return _PROFILE_DEFAULTS[coerce_assistant_profile(profile)]
+
+
+def default_role(
+    company_name: str, profile: AssistantProfile | str = DEFAULT_ASSISTANT_PROFILE
+) -> str:
+    """The shipped role brief for this profile, named for this company."""
+    return profile_defaults(profile).role_template.replace(
         COMPANY_PLACEHOLDER, company_name
     )
+
+
+def default_company_description(
+    company_name: str, profile: AssistantProfile | str = DEFAULT_ASSISTANT_PROFILE
+) -> str:
+    """The shipped company description for this profile, named for this company."""
+    return profile_defaults(profile).company_description_template.replace(
+        COMPANY_PLACEHOLDER, company_name
+    )
+
+
+def default_avoid(profile: AssistantProfile | str = DEFAULT_ASSISTANT_PROFILE) -> str:
+    return profile_defaults(profile).avoid
+
+
+def resolved_chatbot_name(
+    stored: str | None, profile: AssistantProfile | str = DEFAULT_ASSISTANT_PROFILE
+) -> str:
+    """A widget's name, or its profile's default when none was chosen.
+
+    A stored name equal to *any* profile's default counts as unchosen: the
+    console pre-fills the default and saving writes it back, and a tenant
+    moved from nursery to education should not keep greeting visitors as the
+    "Nursery Support Assistant".
+    """
+    written = (stored or "").strip()
+    if written and not _is_a_shipped_default(
+        written, [d.chatbot_name for d in _PROFILE_DEFAULTS.values()]
+    ):
+        return written
+    return profile_defaults(profile).chatbot_name
+
+
+def resolved_chatbot_title(
+    stored: str | None, profile: AssistantProfile | str = DEFAULT_ASSISTANT_PROFILE
+) -> str:
+    written = (stored or "").strip()
+    if written and not _is_a_shipped_default(
+        written, [d.chatbot_title for d in _PROFILE_DEFAULTS.values()]
+    ):
+        return written
+    return profile_defaults(profile).chatbot_title
+
+
+def _normalised(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _is_a_shipped_default(stored: str, candidates: list[str]) -> bool:
+    """Whether stored text is one of the platform's defaults, not the tenant's.
+
+    **The console pre-fills the brief with the shipped default and saving the
+    form writes it back**, so a stored value equal to a default is not a
+    choice the tenant made -- it is the default at the time they pressed
+    Save. Treating it as theirs would pin a tenant moved to another profile
+    to the old profile's text (a nursery brief on an IT academy), which is the
+    failure profiles exist to remove. Compared whitespace-insensitively, since
+    a text area round trip may normalise line endings.
+    """
+    target = _normalised(stored)
+    return any(target == _normalised(c) for c in candidates)
+
+
+def _default_names(*names: str | None) -> list[str]:
+    """Company names a pre-filled default may have been rendered with."""
+    seen: list[str] = []
+    for name in (*names, DEFAULT_COMPANY_NAME):
+        cleaned = (name or "").strip()
+        if cleaned and cleaned not in seen:
+            seen.append(cleaned)
+    return seen
 
 
 #: Rendered with the shipped name so the module-level constant stays a
@@ -294,8 +428,31 @@ _LENGTH_INSTRUCTIONS: dict[ResponseLength, str] = {
 }
 
 
-def personality_instruction(value: Personality | str | None) -> str:
-    return _PERSONALITY_INSTRUCTIONS[_coerce(value, Personality, Personality.NEUTRAL)]
+#: The two tone texts that name nursery readers. Other profiles get the same
+#: instruction without the assumption; the nursery keeps its exact wording.
+_NON_NURSERY_PERSONALITY: dict[Personality, str] = {
+    Personality.REASSURING: (
+        "Write calmly and supportively. Many readers may be anxious; "
+        "acknowledge concerns briefly before answering, and be gentle about "
+        "uncertainty."
+    ),
+    Personality.PROFESSIONAL: (
+        "Write formally and precisely, as an administrator would in written "
+        "correspondence. Avoid contractions and casual phrasing."
+    ),
+}
+
+
+def personality_instruction(
+    value: Personality | str | None,
+    profile: AssistantProfile | str = DEFAULT_ASSISTANT_PROFILE,
+) -> str:
+    personality = _coerce(value, Personality, Personality.NEUTRAL)
+    if coerce_assistant_profile(profile) is not AssistantProfile.NURSERY:
+        override = _NON_NURSERY_PERSONALITY.get(personality)
+        if override is not None:
+            return override
+    return _PERSONALITY_INSTRUCTIONS[personality]
 
 
 def response_length_instruction(value: ResponseLength | str | None) -> str:
@@ -402,6 +559,13 @@ class TenantChatbotSettings(Entity):
     created_at: datetime
     updated_at: datetime
 
+    #: **Context, not a setting of this row.** The profile is stored on
+    #: `tenants` and chosen by the platform; it is carried here only so the
+    #: `resolved_*` defaults below follow it. The repository fills it on read
+    #: and never writes it -- a tenant saving their chatbot settings cannot
+    #: change which profile they are on.
+    assistant_profile: AssistantProfile = DEFAULT_ASSISTANT_PROFILE
+
     def quota_day_zone(self) -> tzinfo:
         """The timezone object to compute "today" in, never raising.
 
@@ -425,10 +589,38 @@ class TenantChatbotSettings(Entity):
         every tenant that has not written their own brief.
         """
         written = (self.role_instructions or "").strip()
-        return written or default_role(company_name)
+        if written and not _is_a_shipped_default(
+            written,
+            [
+                default_role(name, profile)
+                for profile in AssistantProfile
+                for name in _default_names(company_name, self.company_name)
+            ],
+        ):
+            return written
+        return default_role(company_name, self.assistant_profile)
 
     def resolved_avoid(self) -> str:
-        return (self.avoid_instructions or "").strip() or DEFAULT_AVOID
+        written = (self.avoid_instructions or "").strip()
+        if written and not _is_a_shipped_default(
+            written, [default_avoid(profile) for profile in AssistantProfile]
+        ):
+            return written
+        return default_avoid(self.assistant_profile)
+
+    def resolved_industry(self) -> str:
+        """The sector line, following the profile until the tenant writes one.
+
+        The column defaults to the nursery sector, so every settings row holds
+        it whether or not anyone chose it; a stored value equal to any
+        profile's default is therefore read as unchosen.
+        """
+        stored = (self.industry or "").strip()
+        if stored and not _is_a_shipped_default(
+            stored, [profile_defaults(p).industry for p in AssistantProfile]
+        ):
+            return stored
+        return profile_defaults(self.assistant_profile).industry
 
     def resolved_company_name(self, tenant_display_name: str) -> str:
         """What the bot calls this company, in order of how deliberate it is.
@@ -451,10 +643,18 @@ class TenantChatbotSettings(Entity):
         still gets a coherent prompt, and the day they save their own text it
         replaces a default rather than an edit they never made.
         """
+        company = self.resolved_company_name(tenant_display_name)
         stored = (self.company_description or "").strip()
-        return stored or default_company_description(
-            self.resolved_company_name(tenant_display_name)
-        )
+        if stored and not _is_a_shipped_default(
+            stored,
+            [
+                default_company_description(name, profile)
+                for profile in AssistantProfile
+                for name in _default_names(company, tenant_display_name, self.company_name)
+            ],
+        ):
+            return stored
+        return default_company_description(company, self.assistant_profile)
 
 
 @dataclass(kw_only=True, frozen=True)

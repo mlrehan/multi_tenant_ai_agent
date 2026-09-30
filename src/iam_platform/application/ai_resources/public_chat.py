@@ -66,9 +66,15 @@ from iam_platform.application.ai_resources.visitor_conversation import (
     title_from,
 )
 from iam_platform.core.clock import Clock, SystemClock
+from iam_platform.domain.ai_resources.assistant_profiles import (
+    DEFAULT_ASSISTANT_PROFILE,
+    AssistantProfile,
+)
 from iam_platform.domain.ai_resources.chatbot import (
-    DEFAULT_QUICK_REPLIES,
     HANDOFF_QUICK_REPLY,
+    profile_defaults,
+    resolved_chatbot_name,
+    resolved_chatbot_title,
 )
 from iam_platform.domain.ai_resources.entities import (
     ChatWidget,
@@ -160,6 +166,7 @@ class StartWidgetSession:
             )
 
         await self._record(widget, command.origin, refused=False)
+        profile, quick_replies = await self._tenant_presentation(widget)
         return ResolvedWidget(
             widget_id=widget.id,
             tenant_id=widget.tenant_id,
@@ -167,12 +174,14 @@ class StartWidgetSession:
             # The *validated* origin, not the raw header, so what is recorded
             # in the session is what passed the check.
             origin=str(command.origin),
-            chatbot_name=widget.chatbot_name,
-            chatbot_title=widget.chatbot_title,
+            # The tenant's profile supplies the defaults: an education
+            # provider's widget introduces itself as a course assistant.
+            chatbot_name=resolved_chatbot_name(widget.chatbot_name, profile),
+            chatbot_title=resolved_chatbot_title(widget.chatbot_title, profile),
             avatar_key=widget.avatar_key,
             greeting=widget.greeting,
             show_quick_reply_suggestions=widget.show_quick_reply_suggestions,
-            quick_replies=await self._quick_replies(widget),
+            quick_replies=quick_replies,
         )
 
     async def _record(self, widget: ChatWidget, origin: str | None, *, refused: bool) -> None:
@@ -199,23 +208,41 @@ class StartWidgetSession:
         except Exception:
             logger.warning("could not record the install check for widget %s", widget.id)
 
-    async def _quick_replies(self, widget: ChatWidget) -> tuple[str, ...]:
-        """The pills this widget opens with, handoff pill included only if real.
+    async def _tenant_presentation(
+        self, widget: ChatWidget
+    ) -> tuple[AssistantProfile, tuple[str, ...]]:
+        """The tenant's profile, and the pills this widget opens with.
 
-        One extra read per session -- not per question -- and a session lasts
-        thirty minutes, so this is a negligible cost for the difference between
-        a button that transfers you and a button that quietly asks the model
-        "Speak to a person".
+        The handoff pill is included only if a transfer is real. One read per
+        session -- not per question -- and a session lasts thirty minutes, so
+        this is a negligible cost for the difference between a button that
+        transfers you and a button that quietly asks the model "Speak to a
+        person".
+
+        **Best effort:** the defaults are the nursery ones if the read fails,
+        exactly what every widget showed before profiles existed. A presentation
+        read must never cost a visitor their chatbot.
         """
+        try:
+            async with self._uow_factory(_ANONYMOUS, widget.tenant_id) as uow:
+                settings = await uow.chatbot_settings.get_for_tenant(widget.tenant_id)
+                profile = (
+                    settings.assistant_profile
+                    if settings is not None
+                    else await uow.chatbot_settings.assistant_profile(widget.tenant_id)
+                )
+        except Exception:
+            logger.warning("could not read the profile for widget %s", widget.id)
+            settings, profile = None, DEFAULT_ASSISTANT_PROFILE
         if not widget.show_quick_reply_suggestions:
-            return ()
-        async with self._uow_factory(_ANONYMOUS, widget.tenant_id) as uow:
-            settings = await uow.chatbot_settings.get_for_tenant(widget.tenant_id)
+            return profile, ()
         # A tenant that has never opened the settings screen has no row, and
         # `allow_human_handoff` defaults to True -- so the absent row is
         # treated as the default, not as "off".
         allows_handoff = settings is None or settings.allow_human_handoff
-        return DEFAULT_QUICK_REPLIES + ((HANDOFF_QUICK_REPLY,) if allows_handoff else ())
+        return profile, profile_defaults(profile).quick_replies + (
+            (HANDOFF_QUICK_REPLY,) if allows_handoff else ()
+        )
 
 
 @dataclass(frozen=True, slots=True)

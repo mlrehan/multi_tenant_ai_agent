@@ -21,6 +21,10 @@ htmlcov/
 .vscode/
 .idea/
 
+# Database dumps made by scripts/deploy.sh and DEPLOYMENT.md -- every user,
+# conversation and credential ciphertext. Never commit them.
+backups/
+
 # Local object storage (STORAGE__MODE=local) -- real tenant document uploads,
 # never committed. Production uses Cloudflare R2 instead (STORAGE__MODE=r2).
 var/
