@@ -39,12 +39,25 @@ class CohereReranker:
         if not chunks:
             return []
 
-        response = await self._client.rerank(
-            model=self._model,
-            query=query,
-            documents=[c.text for c in chunks],
-            top_n=min(top_n, len(chunks)),
-        )
+        try:
+            response = await self._client.rerank(
+                model=self._model,
+                query=query,
+                documents=[c.text for c in chunks],
+                top_n=min(top_n, len(chunks)),
+            )
+        except Exception:
+            # A rate limit, an outage or a timeout at Cohere must not take the
+            # answer down with it: the passages are real and relevant either
+            # way, only their order is worse. That is the reasoning behind
+            # `PassthroughReranker` below, and it applies just as much when
+            # Cohere is configured but failing. Found live: a 429 from a
+            # rate-limited key turned a parent's question into a 500.
+            logger.warning(
+                "reranking failed; answering from embedding-ranked passages",
+                exc_info=True,
+            )
+            return [RerankedChunk(chunk=c, relevance=c.score) for c in chunks[:top_n]]
 
         reranked: list[RerankedChunk] = []
         for result in response.results:

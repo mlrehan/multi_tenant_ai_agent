@@ -76,13 +76,25 @@ class QdrantVectorSearchClient:
         if await self._client.collection_exists(collection):
             return
 
-        await self._client.create_collection(
-            collection_name=collection,
-            vectors_config=VectorParams(size=dimensions, distance=Distance.COSINE),
-        )
+        try:
+            await self._client.create_collection(
+                collection_name=collection,
+                vectors_config=VectorParams(size=dimensions, distance=Distance.COSINE),
+            )
+        except Exception as exc:
+            # Check-then-create is a race: a new tenant's first uploads run as
+            # concurrent jobs (the console sends two files at once), all of
+            # them see no collection, and every one but the first is refused
+            # with 409. The collection they wanted now exists, so that is
+            # success -- treating it as failure marked a new tenant's first
+            # documents "failed" for no reason they could act on.
+            if getattr(exc, "status_code", None) != 409:
+                raise
         # Without an index on these, Qdrant falls back to a full scan for
         # every filtered query -- correct, but linear in the tenant's whole
-        # corpus rather than the one knowledge base being searched.
+        # corpus rather than the one knowledge base being searched. Run by
+        # the race's losers too: creating an index that exists is a no-op,
+        # and the winner may not have reached this line yet.
         for field in (_KNOWLEDGE_BASE_FIELD, _DOCUMENT_FIELD):
             await self._client.create_payload_index(
                 collection_name=collection,

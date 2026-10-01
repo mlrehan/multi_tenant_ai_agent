@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated from ../docs/tenant-admin-guide by scripts/sync-help.mjs
+/public/help/

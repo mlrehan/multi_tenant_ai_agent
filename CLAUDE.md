@@ -410,6 +410,42 @@ Tests: 795 unit tests pass. Not built (see the roadmap): installing from the cha
 - **Lint:** the 55 E501 errors moved from `answer_question.py` to `platform_policy.py`, which now has a per-file E501 ignore (the lines are prose sent to the model). `ruff check src tests scripts` is fully clean.
 - **Tests:** `test_assistant_profiles.py` (77). Mutation-caught: 17 of 17, including the answer path ignoring the profile, stored defaults pinning, personality/handoff/defaults staying nursery, an unknown value coerced, both permission checks, both audits, the no-op, education losing the emergency or lists rule or keeping the nursery frame, and a reworded core sentence. 1,045 unit tests pass.
 
+**Tenant Administrator User Guide (2026-09-30).** `docs/tenant-admin-guide/` (`index.html`, `assets/css`, `assets/js`, 38 real screenshots), zipped as `docs/Tenant_Admin_User_Guide.zip`.
+- **Build:** offline, with no external requests: search, collapsible troubleshooting (21 entries), a zoomable screenshot gallery, checklists remembered in the browser, and dark mode. Verified from `file://`, with no horizontal scroll at 375px.
+- **Screenshots:** taken with Playwright as `tenant_007`. The capture scripts are in the session scratchpad. They hide the Next dev badge, and dialogs are opened and cancelled, never saved.
+- **Written for tenants, from the real product:** there is no model selector, no cost in money, and no paste-text box; the guide says so and says who controls each.
+- **Found while capturing:**
+  - The running dev server on :3000 served a **404 for `/tenant/{id}/rbac`**: its compile of that route was incomplete, with no client manifest and no app-paths entry. `next build` compiles it fine, so restart the dev server.
+  - My leftover `evil.example` refused-origin record was cleared from `chat_widgets`.
+
+**The guide is served by the console at `/help` (2026-10-01).**
+- **Public on purpose:** anyone with the link can read it, so a tenant admin can email it to someone without an account.
+  - `next.config.ts` redirects `/help` (and `/help/tenant-admin-guide`) with a 307 to `/help/tenant-admin-guide/index.html`.
+  - Redirects run before `proxy.ts`, and a `.html` path is outside the proxy matcher, so the sign-in gate is untouched for every other page.
+  - It's a redirect, not a rewrite, because the guide's relative `assets/...` paths only resolve from the real folder. `/help#troubleshooting` keeps its fragment.
+  - `X-Robots-Tag: noindex, nofollow` on `/help/*`, because the screenshots show Falgoon's console.
+- **One source:** `docs/tenant-admin-guide/`. `frontend/scripts/sync-help.mjs` copies it to `frontend/public/help/` (git-ignored) on `predev`/`prebuild`, and fails the build if the source is missing. **So `docs/tenant-admin-guide/` must be committed, or the server's `npm run build` fails.**
+- **Sidebar:** a "Help" group with "User guide" (new tab, every signed-in user) and a copy-link button. The button copies `window.location.origin + /help`, because the console has no public-URL setting.
+- **Verified:** signed out, `/help` → 307 → 200, with 77/77 images loading. As `tenant_007`: the item, the copied link and the new-tab open all work. `tsc`, `eslint` and `npm run build` pass.
+
+**Guide version 1.1 and three backend fixes (2026-10-01).**
+- **Demo tenant for screenshots: "Bramble Lane Day Nursery"** (`1e3667e1-b896-4714-a7ed-e9f4cee24baa`, slug `bramble-lane`). It is fictional, with `*@bramblelane.example` staff and 5 uploaded documents.
+  - It was built through the real API by scratchpad scripts (`bramble/seed.py`, `visitors.py`, `bramble_capture*.py`). Generated passwords live only in that session's `bramble/state.json`.
+  - The setup probe account is deactivated, and its platform role revoked.
+  - The guide's screenshots no longer show Falgoon or any real data.
+- **Guide changes:**
+  - New chapters: Your first day; Safeguarding and data protection; About this guide (sharing, what's new, accessibility).
+  - New sections: knowledge-base visibility (Department/Team take raw IDs and nobody can be placed in one, so the guide says to use "Tenant — everyone"), the first-week go-live plan, and the Help menu.
+  - Chapters and figures renumbered: 18 chapters, 40 figures.
+  - No sideways scroll at 320px. Reduced motion is honoured. The phone Menu button is 44px. Back-to-top shows on phones only when scrolling up. Tapping an enlarged screenshot zooms it on phones.
+  - Screenshots are WebP (9.7 MB → 2.8 MB); the ZIP is 2.7 MB.
+- **Backend fixes, each found live and mutation-tested. They need an API/worker image rebuild:**
+  1. **A new tenant's first concurrent uploads failed.** `ensure_namespace` was check-then-create, so racing jobs got Qdrant 409 and their documents were marked failed (3 of 5 in the demo). A 409 is now success, and the payload indexes are still ensured (`test_qdrant_namespace_race.py`).
+  2. **A Cohere failure took the answer down.** A 429 from a rate-limited key returned 500 to a visitor. `CohereReranker` now falls back to embedding order, matching `PassthroughReranker`'s own reasoning (`test_chat_and_reranking.py::test_a_failing_reranker_degrades_to_retrieval_order`).
+  3. **The AI handoff summary showed literal `**`.** Internal notes are plain text by design, so the summary is now plain text and strips emphasis from the quoted reply (`test_handoff_summary_plain_text.py`).
+- **Also noted:** `next start` reads `public/` at startup, so new guide files 404 until the console restarts. `deploy.sh` rebuilds and restarts, so production is unaffected.
+- 1,050 unit tests pass.
+
 **Open, and not decided:**
 - `PostAgentMessage` accepts *any* conversation id in the tenant — including a member's private Ask thread. The leak through the AI is closed, but whether agents should be able to write there at all is still a product decision.
 - Per-answer cost is ~6k tokens even for "hi": ~4.1k is system prompt plus tenant layers, and up to ~3.5k is five passages. Skipping retrieval for greetings, and prompt caching, have both been proposed but not built.

@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
+  BookOpen,
   Bot,
   Building2,
   CircleDollarSign,
@@ -23,9 +24,10 @@ export interface NavItem {
   label: string;
   href: string;
   icon: LucideIcon;
-  /** Opens in a new tab. Set for destinations outside this console: leaving
-   *  the app in the same tab would drop whatever the person was doing, and an
-   *  external tool is somewhere they return *from*, not navigate *to*. */
+  /** Opens in a new tab. Set for destinations outside this console's app
+   *  screens (another tool, or the standalone help guide): leaving the app in
+   *  the same tab would drop whatever the person was doing, and such a page is
+   *  somewhere they return *from*, not navigate *to*. */
   external?: boolean;
   /** Platform-scope permission required to show this item; omitted = always visible to a platform user. */
   requiresPlatformPermission?: string;
@@ -107,6 +109,16 @@ export const dataAnalysisNavItems: NavItem[] = [
     icon: BarChart3,
     external: true,
   },
+];
+
+/** The tenant administrator guide, served by this console at a public
+ *  address (see `next.config.ts`) so the same link can be emailed to someone
+ *  without an account. New tab: it is a long document read beside the
+ *  console, not a screen that replaces it. */
+export const HELP_GUIDE_PATH = "/help";
+
+export const helpNavItems: NavItem[] = [
+  { label: "User guide", href: HELP_GUIDE_PATH, icon: BookOpen, external: true },
 ];
 
 export function tenantNavItems(tenantId: string): NavItem[] {

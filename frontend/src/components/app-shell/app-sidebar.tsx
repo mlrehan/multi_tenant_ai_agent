@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ExternalLink, ShieldHalf } from "lucide-react";
+import { Check, ExternalLink, Link2, ShieldHalf } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import {
   Sidebar,
   SidebarContent,
@@ -11,12 +13,15 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import {
   accountNavItems,
   dataAnalysisNavItems,
+  HELP_GUIDE_PATH,
+  helpNavItems,
   platformNavItems,
   tenantNavItems,
   type NavItem,
@@ -48,7 +53,16 @@ function filterByPermission(
   });
 }
 
-function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
+function NavLink({
+  item,
+  pathname,
+  action,
+}: {
+  item: NavItem;
+  pathname: string;
+  /** A secondary button beside the link, such as "copy link". */
+  action?: ReactNode;
+}) {
   // `/platform` is a real page *and* the prefix of every other platform route,
   // so a prefix match would light up Overview on every screen in the section.
   // Section indexes match exactly; everything else matches by prefix so a
@@ -73,8 +87,9 @@ function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
         >
           <item.icon />
           <span>{item.label}</span>
-          <ExternalLink className="ml-auto size-3 opacity-60" />
+          {!action && <ExternalLink className="ml-auto size-3 opacity-60" />}
         </SidebarMenuButton>
+        {action}
       </SidebarMenuItem>
     );
   }
@@ -92,6 +107,38 @@ function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
         <span>{item.label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
+  );
+}
+
+/**
+ * Copies the guide's full address, for pasting into an email or a chat.
+ *
+ * Built from the browser's own origin rather than a configured one: the
+ * console has no public-URL setting (the backend origin is server-only by
+ * design), and the origin the admin is using is, by definition, one that
+ * reaches this console.
+ */
+function CopyHelpLinkAction() {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    const url = `${window.location.origin}${HELP_GUIDE_PATH}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      toast.success("Guide link copied", {
+        description: `${url} -- anyone with the link can read it, no sign-in needed.`,
+      });
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Couldn't copy the link", { description: url });
+    }
+  }
+
+  return (
+    <SidebarMenuAction onClick={copy} title="Copy a shareable link to the guide" aria-label="Copy guide link">
+      {copied ? <Check /> : <Link2 />}
+    </SidebarMenuAction>
   );
 }
 
@@ -185,6 +232,22 @@ export function AppSidebar() {
             <SidebarMenu>
               {accountNavItems.map((item) => (
                 <NavLink key={item.href} item={item} pathname={pathname} />
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Help</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {helpNavItems.map((item) => (
+                <NavLink
+                  key={item.href}
+                  item={item}
+                  pathname={pathname}
+                  action={<CopyHelpLinkAction />}
+                />
               ))}
             </SidebarMenu>
           </SidebarGroupContent>

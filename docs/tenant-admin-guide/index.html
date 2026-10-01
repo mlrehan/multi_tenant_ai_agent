@@ -1,0 +1,1296 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tenant Administrator Guide</title>
+<meta name="description" content="Tenant Administrator User Guide for the Multi-Tenant AI Assistant Portal: set up, teach, test, monitor and manage your organisation's AI chatbot.">
+<link rel="stylesheet" href="assets/css/guide.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f766e'/%3E%3Cpath d='M9 11h14v9H14l-5 4z' fill='none' stroke='white' stroke-width='2.2' stroke-linejoin='round'/%3E%3C/svg%3E">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<!-- Icon sprite -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-tip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2z"/></symbol>
+  <symbol id="i-best" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4M9 14h.01M15 14h.01M2 13v3M22 13v3"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+</svg>
+
+<aside class="sidebar" aria-label="Guide navigation">
+  <a class="brand" href="#cover">
+    <span class="brand-mark"><svg width="20" height="20" style="color:#fff"><use href="#i-chat"/></svg></span>
+    <span class="brand-text"><strong>AI Assistant Portal</strong><span>Tenant Administrator Guide</span></span>
+  </a>
+  <div class="search-wrap" role="search">
+    <svg class="search-icon" width="16" height="16"><use href="#i-search"/></svg>
+    <input id="search" class="search" type="search" placeholder="Search the guide  ( / )" aria-label="Search the guide" autocomplete="off" aria-controls="searchResults">
+    <div id="searchResults" class="search-results" role="listbox" aria-label="Search results"></div>
+  </div>
+  <nav class="nav">
+    <div class="nav-group">Start here</div>
+    <ul>
+      <li class="chap"><a href="#cover"><span class="num">1</span>Cover</a></li>
+      <li class="chap"><a href="#welcome"><span class="num">2</span>Welcome</a>
+        <ul class="sub">
+          <li><a href="#what-is">What the portal is</a></li>
+          <li><a href="#how-it-works">How it works</a></li>
+          <li><a href="#responsibilities">Your responsibilities</a></li>
+        </ul></li>
+      <li class="chap"><a href="#first-day"><span class="num">3</span>Your first day</a>
+        <ul class="sub">
+          <li><a href="#first-day-later">What can wait</a></li>
+        </ul></li>
+      <li class="chap"><a href="#getting-started"><span class="num">4</span>Getting started</a>
+        <ul class="sub">
+          <li><a href="#sign-in">Signing in</a></li>
+          <li><a href="#first-time">Your first sign-in</a></li>
+          <li><a href="#find-your-way">Finding your way</a></li>
+          <li><a href="#security-basics">Security recommendations</a></li>
+        </ul></li>
+    </ul>
+    <div class="nav-group">Run your chatbot</div>
+    <ul>
+      <li class="chap"><a href="#dashboard"><span class="num">5</span>Dashboard</a>
+        <ul class="sub">
+          <li><a href="#setup-checklist">Setup checklist</a></li>
+          <li><a href="#needs-attention">Needs attention</a></li>
+          <li><a href="#kpis">Key figures</a></li>
+          <li><a href="#your-chatbot-card">Your chatbot card</a></li>
+          <li><a href="#unanswered">Questions it couldn't answer</a></li>
+          <li><a href="#what-it-knows">What your chatbot knows</a></li>
+        </ul></li>
+      <li class="chap"><a href="#chatbot"><span class="num">6</span>Your AI chatbot</a>
+        <ul class="sub">
+          <li><a href="#who-controls-what">Who controls what</a></li>
+          <li><a href="#on-off">Turning it on or off</a></li>
+          <li><a href="#website">Putting it on your website</a></li>
+          <li><a href="#identity">Identity</a></li>
+          <li><a href="#behaviour">Behaviour</a></li>
+          <li><a href="#tone">Tone &amp; style</a></li>
+          <li><a href="#company">Company</a></li>
+          <li><a href="#reply">Reply experience</a></li>
+          <li><a href="#handoff-limits">Handoff &amp; limits</a></li>
+        </ul></li>
+      <li class="chap"><a href="#knowledge"><span class="num">7</span>Knowledge bases</a>
+        <ul class="sub">
+          <li><a href="#kb-what">What a knowledge base is</a></li>
+          <li><a href="#kb-list">The knowledge base list</a></li>
+          <li><a href="#kb-create">Create a knowledge base</a></li>
+          <li><a href="#kb-visibility">Who can see it</a></li>
+          <li><a href="#kb-upload">Upload documents</a></li>
+          <li><a href="#kb-web">Add web pages</a></li>
+          <li><a href="#kb-text">Add written text</a></li>
+          <li><a href="#kb-status">Processing status</a></li>
+          <li><a href="#kb-inspect">See what was read</a></li>
+          <li><a href="#kb-update">Update content</a></li>
+          <li><a href="#kb-delete-doc">Delete a document</a></li>
+          <li><a href="#kb-search">Test search</a></li>
+          <li><a href="#kb-delete">Delete a knowledge base</a></li>
+        </ul></li>
+      <li class="chap"><a href="#testing"><span class="num">8</span>Testing your chatbot</a>
+        <ul class="sub">
+          <li><a href="#test-ask">Ask from the portal</a></li>
+          <li><a href="#test-website">Test it as a visitor</a></li>
+          <li><a href="#test-check">Checking an answer</a></li>
+          <li><a href="#test-improve">Improving answers</a></li>
+        </ul></li>
+    </ul>
+    <div class="nav-group">Monitor</div>
+    <ul>
+      <li class="chap"><a href="#conversations"><span class="num">9</span>Conversations</a>
+        <ul class="sub">
+          <li><a href="#conv-list">Conversation history</a></li>
+          <li><a href="#conv-search">Searching</a></li>
+          <li><a href="#conv-read">Reading a conversation</a></li>
+          <li><a href="#feedback">Answer feedback</a></li>
+          <li><a href="#inbox">Inbox &amp; human handoff</a></li>
+          <li><a href="#teams">Teams</a></li>
+        </ul></li>
+      <li class="chap"><a href="#analytics"><span class="num">10</span>Analytics &amp; usage</a>
+        <ul class="sub">
+          <li><a href="#metrics">Every figure explained</a></li>
+          <li><a href="#usage-allowance">Usage and allowances</a></li>
+          <li><a href="#cost">AI cost</a></li>
+          <li><a href="#trends">Reading the trends</a></li>
+        </ul></li>
+    </ul>
+    <div class="nav-group">Administer</div>
+    <ul>
+      <li class="chap"><a href="#people"><span class="num">11</span>Users &amp; permissions</a>
+        <ul class="sub">
+          <li><a href="#members">Members</a></li>
+          <li><a href="#member-actions">Managing a member</a></li>
+          <li><a href="#roles">Roles</a></li>
+          <li><a href="#permissions-tabs">Hierarchy, overrides &amp; catalogue</a></li>
+          <li><a href="#permission-reference">Permission reference</a></li>
+        </ul></li>
+      <li class="chap"><a href="#settings"><span class="num">12</span>Settings</a>
+        <ul class="sub">
+          <li><a href="#my-identity">My identity</a></li>
+          <li><a href="#all-settings">All tenant settings</a></li>
+          <li><a href="#plan-settings">Settings your provider manages</a></li>
+        </ul></li>
+      <li class="chap"><a href="#safeguarding"><span class="num">13</span>Safeguarding &amp; data</a>
+        <ul class="sub">
+          <li><a href="#sg-how">How the chatbot responds</a></li>
+          <li><a href="#sg-setup">What to put in place</a></li>
+          <li><a href="#data-protection">Data protection</a></li>
+        </ul></li>
+    </ul>
+    <div class="nav-group">Reference</div>
+    <ul>
+      <li class="chap"><a href="#best-practices"><span class="num">14</span>Best practices</a></li>
+      <li class="chap"><a href="#troubleshooting"><span class="num">15</span>Troubleshooting</a></li>
+      <li class="chap"><a href="#operations"><span class="num">16</span>Go-live &amp; operations</a>
+        <ul class="sub">
+          <li><a href="#go-live">Your first week</a></li>
+          <li><a href="#routine">Daily, weekly, monthly</a></li>
+        </ul></li>
+      <li class="chap"><a href="#glossary"><span class="num">17</span>Glossary</a></li>
+      <li class="chap"><a href="#about-guide"><span class="num">18</span>About this guide</a>
+        <ul class="sub">
+          <li><a href="#sharing">Sharing this guide</a></li>
+          <li><a href="#whats-new">What's new</a></li>
+          <li><a href="#accessibility">Accessibility</a></li>
+        </ul></li>
+      <li class="chap"><a href="#gallery"><span class="num">★</span>Screenshot gallery</a></li>
+    </ul>
+  </nav>
+  <div class="side-foot"><span>Version 1.1 · 1 Oct 2026</span><button id="themeBtn" class="theme-btn" type="button">☾ Dark</button></div>
+</aside>
+<div class="backdrop" aria-hidden="true"></div>
+<div class="progress" aria-hidden="true"><span></span></div>
+
+<div class="main">
+  <header class="topbar">
+    <button id="menuBtn" class="menu-btn" type="button" aria-expanded="false" aria-label="Open navigation">☰ Menu</button>
+    <span class="topbar-title">Tenant Administrator Guide</span>
+  </header>
+
+  <main id="main" class="content">
+
+<!-- ======================================================= 1. COVER -->
+<section class="chapter" id="cover" aria-label="Cover">
+  <div class="cover">
+    <div class="eyebrow">Official documentation</div>
+    <h1>Multi-Tenant AI Assistant Portal</h1>
+    <p class="subtitle">Tenant Administrator User Guide</p>
+    <div class="cover-meta">
+      <span class="chip">Version 1.1</span>
+      <span class="chip">Last updated 1 October 2026</span>
+      <span class="chip">Audience: tenant administrators</span>
+      <span class="chip">No technical knowledge needed</span>
+    </div>
+    <div class="cover-actions">
+      <a class="btn btn-primary" href="#first-day">Start here →</a>
+      <a class="btn btn-ghost" href="#knowledge">Teach your chatbot</a>
+      <a class="btn btn-ghost" href="#troubleshooting">Troubleshooting</a>
+    </div>
+    <div class="cover-shot"><img src="assets/screenshots/02-dashboard.webp" alt="The tenant dashboard of the AI Assistant Portal"></div>
+  </div>
+
+  <div class="grid three">
+    <a class="card link" href="#knowledge"><div class="icon-dot"><svg><use href="#i-book"/></svg></div><h4>Teach it</h4><p>Add documents and web pages your chatbot answers from.</p></a>
+    <a class="card link" href="#chatbot"><div class="icon-dot"><svg><use href="#i-bot"/></svg></div><h4>Shape it</h4><p>Name it, set its tone and decide what it must never do.</p></a>
+    <a class="card link" href="#conversations"><div class="icon-dot"><svg><use href="#i-chart"/></svg></div><h4>Watch it</h4><p>Review conversations, ratings and questions it couldn't answer.</p></a>
+  </div>
+
+  <div class="callout info"><svg><use href="#i-info"/></svg><div>
+    <p class="c-title">About the screenshots in this guide</p>
+    <p>Every screenshot is taken from the real portal, using a fictional example organisation, <strong>Bramble Lane Day Nursery</strong>, whose chatbot answers parents' questions about places, fees, sessions and policies. The people, documents and conversations shown are made up. Your organisation's name, content and numbers will differ, but every screen, button and setting works the same way.</p>
+  </div></div>
+</section>
+
+<!-- ======================================================= 2. WELCOME -->
+<section class="chapter" id="welcome">
+  <div class="chapter-head"><div class="chapter-num">2</div><div><h2>Welcome</h2><p class="lead">What the AI Assistant Portal is, how your organisation uses it, and what you are responsible for as its administrator.</p></div></div>
+
+  <h3 id="what-is">What is the AI Assistant Portal?</h3>
+  <p>The AI Assistant Portal is where your organisation runs its own <strong>AI chatbot</strong>: a helpful assistant that sits on your website and answers visitors' questions around the clock, in plain language.</p>
+  <p>Unlike a general-purpose AI, your chatbot answers <strong>only from information you give it</strong> — your documents and your web pages. Every factual answer shows which of your sources it came from, so you and your visitors can check it. If your content doesn't cover a question, the chatbot says so honestly instead of guessing, and the question appears on your dashboard so you can fill the gap.</p>
+  <p>Your organisation is one <strong>tenant</strong> of the portal. Your content, conversations and settings are completely separate from every other organisation's: no other tenant can see your data, and your chatbot never uses theirs.</p>
+
+  <h3 id="how-it-works">How it works, in four steps</h3>
+  <ol class="steps">
+    <li><strong>You teach it.</strong> Upload documents (PDF, Word, Excel and more) or point it at pages of your website. The portal reads them and makes them searchable.</li>
+    <li><strong>You shape it.</strong> Give it a name, a role, a tone of voice, and a list of topics it must avoid.</li>
+    <li><strong>You publish it.</strong> Paste one line of code into your website, and the chat bubble appears for your visitors.</li>
+    <li><strong>You look after it.</strong> Watch the dashboard, read conversations, act on ratings and unanswered questions, and keep your content up to date.</li>
+  </ol>
+
+  <h3>Benefits for your organisation</h3>
+  <div class="grid two">
+    <div class="card"><div class="k">Always available</div><p>Visitors get accurate answers at any hour, without waiting for your team.</p></div>
+    <div class="card"><div class="k">Trustworthy</div><p>Answers come from your own approved content, with sources shown — never invented.</p></div>
+    <div class="card"><div class="k">A person when needed</div><p>Visitors can ask for a colleague; the conversation passes to your team's Inbox.</p></div>
+    <div class="card"><div class="k">Always improving</div><p>The dashboard shows exactly which questions your content doesn't answer yet.</p></div>
+  </div>
+
+  <h3 id="responsibilities">Your responsibilities as Tenant Administrator</h3>
+  <p class="lead" style="font-size:16.5px">The Tenant Administrator controls what the AI assistant knows, monitors its conversations, manages who can use the portal, and makes sure visitors receive accurate answers.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Area</th><th>What you do</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>Knowledge</td><td>Add, update and remove the documents and web pages the chatbot answers from.</td><td><a href="#knowledge">Knowledge bases</a></td></tr>
+      <tr><td>Chatbot behaviour</td><td>Set its name, greeting, role, restrictions, tone and when it hands over to a person.</td><td><a href="#chatbot">AI Chatbot</a></td></tr>
+      <tr><td>Quality</td><td>Test answers, review ratings and fix unanswered questions.</td><td><a href="#testing">Testing</a>, <a href="#feedback">Answer feedback</a></td></tr>
+      <tr><td>Conversations</td><td>Review what visitors ask and make sure handed-over conversations get a reply.</td><td><a href="#conversations">Conversations</a>, <a href="#inbox">Inbox</a></td></tr>
+      <tr><td>People &amp; access</td><td>Decide who in your organisation can use the portal, and what they can do.</td><td><a href="#people">Members, Roles &amp; permissions</a></td></tr>
+      <tr><td>Usage</td><td>Keep an eye on daily questions and your monthly AI allowance.</td><td><a href="#analytics">Dashboard</a></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ======================================================= YOUR FIRST DAY -->
+<section class="chapter" id="first-day">
+  <div class="chapter-head"><div class="chapter-num">3</div><div><h2>Your first day</h2><p class="lead">Five steps, about an hour in total, from your first sign-in to a chatbot you're happy to show parents. Everything else in this guide can wait.</p></div></div>
+
+  <ol class="steps">
+    <li><strong>Sign in and secure your account</strong> <span class="muted">(10 minutes)</span>. Sign in, then turn on two-step sign-in in <a href="#my-identity">My identity</a>. <a href="#sign-in">How to sign in</a></li>
+    <li><strong>Check what your chatbot knows</strong> <span class="muted">(15 minutes)</span>. Open <a href="#kb-upload">Knowledge bases → Documents</a>. Make sure the documents your visitors need are there and marked <em>Ready</em>: fees and funding, opening hours and closures, admissions and visits, and your main policies. Upload anything missing.</li>
+    <li><strong>Tell it about your organisation</strong> <span class="muted">(10 minutes)</span>. On the AI Chatbot page, fill in the <a href="#company">Company</a> tab and read the <a href="#behaviour">Behaviour</a> tab. The defaults are sensible; add only what's specific to you.</li>
+    <li><strong>Ask it your ten most common questions</strong> <span class="muted">(15 minutes)</span>. Use <a href="#test-ask">Ask</a> in the portal, then try the same questions on your website in a private window. Fix anything it gets wrong in your documents, not in its settings. <a href="#test-improve">Improving answers</a></li>
+    <li><strong>Decide who helps visitors</strong> <span class="muted">(10 minutes)</span>. Create a team in the <a href="#teams">Inbox</a> and add the people who will answer when a parent asks to speak to someone.</li>
+  </ol>
+  <div class="callout best"><svg><use href="#i-best"/></svg><div><p class="c-title">Then go live</p><p>When those five steps are done, the dashboard's setup checklist disappears. Follow the <a href="#go-live">first-week plan</a> to launch with confidence.</p></div></div>
+
+  <h3 id="first-day-later">What can wait</h3>
+  <ul>
+    <li><strong>Roles, hierarchy and overrides.</strong> The built-in roles suit most organisations. See <a href="#roles">Roles</a> when you need something different.</li>
+    <li><strong>Tone, quick replies and the chatbot's name.</strong> The defaults work; adjust them once you've seen real conversations.</li>
+    <li><strong>Time zone and retention.</strong> Check them once (<a href="#handoff-limits">Handoff &amp; limits</a>); you rarely need to change them again.</li>
+  </ul>
+  <div class="callout tip"><svg><use href="#i-tip"/></svg><div><p class="c-title">Stuck?</p><p>Press <kbd>/</kbd> to search this guide, or look in <a href="#troubleshooting">Troubleshooting</a>. Problems are listed by what you see, not by error code.</p></div></div>
+</section>
+
+<!-- ======================================================= 3. GETTING STARTED -->
+<section class="chapter" id="getting-started">
+  <div class="chapter-head"><div class="chapter-num">4</div><div><h2>Getting started</h2><p class="lead">Sign in, find your way around, and secure your account.</p></div></div>
+
+  <h3 id="sign-in">Signing in</h3>
+  <dl class="page-card"><dt>Page</dt><dd>Sign in</dd><dt>Address</dt><dd>The portal address your platform provider gave you, for example <code>https://portal.yourcompany.com</code>. Bookmark it.</dd><dt>Purpose</dt><dd>Confirms who you are before showing your organisation's data.</dd></dl>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/01-login.webp" alt="The sign-in page with Email and Password fields, a Sign in button and Google and Facebook options" loading="lazy"></div><figcaption><b>Figure 4.1</b> The sign-in page.</figcaption></figure>
+  <ol class="steps">
+    <li><strong>Open the portal address</strong>in your web browser. Any modern browser works: Chrome, Edge, Firefox or Safari.</li>
+    <li><strong>Enter your email address</strong>in the <span class="ui">Email</span> box — the one your administrator registered for you.</li>
+    <li><strong>Enter your password</strong>in the <span class="ui">Password</span> box.</li>
+    <li><strong>Click <span class="ui">Sign in</span>.</strong> If you have turned on an authenticator app (see <a href="#my-identity">My identity</a>), you'll be asked for the six-digit code it shows.</li>
+  </ol>
+  <div class="callout tip"><svg><use href="#i-tip"/></svg><div><p class="c-title">Signing in with Google or Facebook</p><p>The <span class="ui">Google</span> and <span class="ui">Facebook</span> buttons work only if your provider has enabled them and your social account uses the same email address as your portal account. If you're not sure, use your email and password.</p></div></div>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">Forgot your password?</p><p>Click <span class="ui">Forgot password?</span> on the sign-in page and follow the steps. If the reset email doesn't arrive within a few minutes (check your spam folder), contact your platform administrator — they can help you get back in.</p></div></div>
+
+  <h3 id="first-time">Your first sign-in</h3>
+  <p>After signing in, you land on your organisation's <a href="#dashboard">Dashboard</a>. If you belong to more than one organisation, use the organisation switcher at the top right to move between them. Everything you see — content, conversations, members — always belongs to the organisation shown there.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/02-tenant-switcher.webp" alt="The organisation switcher opened at the top right of the portal" loading="lazy"></div><figcaption><b>Figure 4.2</b> The organisation switcher (top right) shows which organisation you are working in.</figcaption></figure>
+  <p>We recommend doing these five things in your first session:</p>
+  <ol class="steps">
+    <li><strong>Secure your account.</strong> Turn on an authenticator app in <a href="#my-identity">My identity</a>.</li>
+    <li><strong>Follow the setup checklist</strong> at the top of the <a href="#setup-checklist">Dashboard</a>. It shows exactly what is left to do. <a href="#first-day">Your first day</a> walks you through it.</li>
+    <li><strong>Check what your chatbot knows</strong> in <a href="#knowledge">Knowledge bases</a>, and add anything missing.</li>
+    <li><strong>Describe your organisation</strong> on the <a href="#company">Company</a> and <a href="#behaviour">Behaviour</a> tabs of the AI Chatbot page.</li>
+    <li><strong>Test it</strong> with the questions your customers ask most (see <a href="#testing">Testing your chatbot</a>).</li>
+  </ol>
+
+  <h3 id="find-your-way">Finding your way around</h3>
+  <p>The dark menu on the left takes you to every part of the portal. Click the panel icon at the very top of the page to hide or show it.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Menu item</th><th>What it's for</th></tr></thead>
+    <tbody>
+      <tr><td>Dashboard</td><td>How your chatbot is doing today, and anything that needs you. <a href="#dashboard">Chapter 5</a></td></tr>
+      <tr><td>Members</td><td>The people in your organisation who can use the portal. <a href="#members">Chapter 11</a></td></tr>
+      <tr><td>Roles &amp; permissions</td><td>What each person is allowed to do. <a href="#roles">Chapter 11</a></td></tr>
+      <tr><td>AI Chatbot</td><td>Your chatbot's name, behaviour, tone, website installation and limits. <a href="#chatbot">Chapter 6</a></td></tr>
+      <tr><td>Inbox</td><td>Conversations where a visitor asked to speak to a person, and your teams. <a href="#inbox">Chapter 9</a></td></tr>
+      <tr><td>Knowledge bases</td><td>The documents and web pages your chatbot answers from. <a href="#knowledge">Chapter 7</a></td></tr>
+      <tr><td>Conversations</td><td>The full history of chats with your chatbot. <a href="#conversations">Chapter 9</a></td></tr>
+      <tr><td>Answer feedback</td><td>Every 👍 and 👎 visitors and staff gave to answers. <a href="#feedback">Chapter 9</a></td></tr>
+      <tr><td>My identity</td><td>Your own account: password, two-step sign-in and sessions. <a href="#my-identity">Chapter 12</a></td></tr>
+      <tr><td>Help → User guide</td><td>This guide. It opens in a new tab; the link icon beside it copies a link you can email to anyone. <a href="#sharing">Sharing this guide</a></td></tr>
+      <tr><td>Data analysis</td><td>If your provider has set one up, a link to an external analytics tool. It opens in a new tab.</td></tr>
+    </tbody>
+  </table></div>
+  <figure class="shot narrow"><div class="frame"><img src="assets/screenshots/12-help-menu.webp" alt="The left-hand menu with the Tenant, Account, Help and Data analysis groups; Help contains User guide with a link icon beside it" loading="lazy"></div><figcaption><b>Figure 4.3</b> The menu. <span class="ui">Help → User guide</span> opens this guide; the link icon copies a shareable link.</figcaption></figure>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">Some menu items may be missing</p><p>You only see the pages your role allows. If a colleague can see a page you can't, ask your organisation's owner to review your role (see <a href="#roles">Roles</a>).</p></div></div>
+
+  <h3 id="security-basics">Security recommendations</h3>
+  <ul class="static-check">
+    <li><strong>Use a long, unique password</strong> — at least 12 characters, and never one you use elsewhere.</li>
+    <li><strong>Turn on two-step sign-in</strong> with an authenticator app (<a href="#my-identity">My identity</a>).</li>
+    <li><strong>Never share your account.</strong> Give each colleague their own membership instead (<a href="#members">Members</a>).</li>
+    <li><strong>Sign out on shared computers,</strong> and use <span class="ui">Sign out everywhere</span> if you think your password may have been seen.</li>
+    <li><strong>Remove access promptly</strong> when someone leaves your organisation (<a href="#member-actions">Revoke access</a>).</li>
+  </ul>
+</section>
+
+<!-- ======================================================= 4. DASHBOARD -->
+<section class="chapter" id="dashboard">
+  <div class="chapter-head"><div class="chapter-num">5</div><div><h2>Tenant Admin Dashboard</h2><p class="lead">Your home page: how the chatbot is doing, and anything that needs your attention.</p></div></div>
+  <dl class="page-card"><dt>Menu</dt><dd>Dashboard</dd><dt>Purpose</dt><dd>A single overview of setup progress, warnings, activity, usage and gaps in your content.</dd><dt>Refreshes</dt><dd>Automatically. The time of the last update is shown at the top right.</dd></dl>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/02-dashboard-full.webp" alt="The full dashboard: setup checklist, needs attention panel, four key figures, activity chart, chatbot card, unanswered questions and knowledge summary" loading="lazy"></div><figcaption><b>Figure 5.1</b> The complete dashboard, top to bottom.</figcaption></figure>
+
+  <h3 id="setup-checklist">Get your chatbot ready (setup checklist)</h3>
+  <p>Until setup is complete, a checklist sits at the top of the dashboard. Each finished step is ticked and crossed through; click any unfinished step to go straight to the page that completes it.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Step</th><th>What "done" means</th></tr></thead>
+    <tbody>
+      <tr><td>1. Teach your chatbot</td><td>At least one document or web page is ready to use. See <a href="#knowledge">Knowledge bases</a>.</td></tr>
+      <tr><td>2. Tell it about your organisation</td><td>You've described your organisation on the chatbot's <a href="#company">Company</a> tab.</td></tr>
+      <tr><td>3. Put it on your website</td><td>A real page on your website has loaded the chatbot. See <a href="#website">Putting it on your website</a>.</td></tr>
+      <tr><td>4. Choose who helps visitors</td><td>A team exists with at least one person in it, so visitors can be handed to a colleague. See <a href="#teams">Teams</a>.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="needs-attention">Needs attention</h3>
+  <p>This amber panel lists problems that affect your visitors, most important first. When there's nothing to fix it tells you everything is fine. Typical items:</p>
+  <ul>
+    <li><strong>"Your chatbot is hidden on &lt;website&gt;"</strong> — a page tried to show your chatbot, but that website address isn't in your allowed list. If it's your site, allow it (see <a href="#website">Putting it on your website</a>).</li>
+    <li><strong>"1 team with no one in it"</strong> — visitors aren't offered that team until you add someone to it (see <a href="#teams">Teams</a>).</li>
+    <li><strong>Usage warnings</strong> — you're approaching today's question limit or this month's AI allowance (see <a href="#usage-allowance">Usage and allowances</a>).</li>
+    <li><strong>Documents that couldn't be read</strong> — see <a href="#kb-status">Processing status</a>.</li>
+  </ul>
+
+  <h3 id="kpis">Key figures</h3>
+  <p>Four cards summarise recent activity. Under each number, a small line compares it with the previous period, and a mini chart shows the trend.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/02-dashboard.webp" alt="The top of the dashboard with the four key figure cards" loading="lazy"></div><figcaption><b>Figure 5.2</b> Setup checklist, Needs attention and the four key figures.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Figure</th><th>What it means</th><th>What to look for</th></tr></thead>
+    <tbody>
+      <tr><td>Questions asked · 7 days</td><td>How many questions visitors asked your chatbot in the last 7 days.</td><td>Growth means your chatbot is being used. A sudden drop may mean it was removed from your website.</td></tr>
+      <tr><td>Conversations · 7 days</td><td>How many separate chats started in the last 7 days. One conversation can contain several questions.</td><td>Compare with questions: many questions per conversation usually means visitors are engaged.</td></tr>
+      <tr><td>Passed to your team · 7 days</td><td>How many conversations were handed to a person, plus how many are with your team right now.</td><td>A rising number can mean your content is missing something visitors need.</td></tr>
+      <tr><td>Helpful answers · 30 days</td><td>Of all the 👍 and 👎 ratings in the last 30 days, the percentage that were 👍.</td><td>Read the 👎 ratings in <a href="#feedback">Answer feedback</a> to see what went wrong.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">Looking for token usage, AI cost or user activity?</p><p>Token usage appears as <strong>AI usage this month</strong> on the chatbot card below, as a percentage of your allowance. AI cost isn't shown in money, because your AI usage is included in your plan (see <a href="#cost">AI cost</a>). Visitor activity is shown by the questions and conversations figures.</p></div></div>
+
+  <h4>Activity chart</h4>
+  <p>Shows questions and new conversations for each of the last 14 days. Hover over (or tap) a day to see its exact numbers.</p>
+
+  <h3 id="your-chatbot-card">Your chatbot card</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Item</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td>On / Off</td><td>Whether the AI is currently answering visitors (see <a href="#on-off">Turning it on or off</a>).</td></tr>
+      <tr><td>Last opened on…</td><td>The website where your chatbot was last loaded, and when. Confirms it's live on your site.</td></tr>
+      <tr><td>Questions answered today</td><td>Today's AI answers against your daily limit, for example <em>14 of 50</em>. When the limit is reached, visitors are told to try again later or to speak to a person.</td></tr>
+      <tr><td>AI usage this month</td><td>How much of this month's AI allowance you've used, as a percentage. Longer answers use more.</td></tr>
+      <tr><td>Change how it behaves</td><td>A shortcut to the <a href="#chatbot">AI Chatbot</a> page.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="unanswered">Questions your chatbot couldn't answer</h3>
+  <p>This is the most useful list on the dashboard. It shows questions from the last 30 days that your content didn't answer, most frequently asked first, with how often each was asked.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/02-dashboard-unanswered.webp" alt="The list of questions the chatbot couldn't answer, each with a count and when it was last asked" loading="lazy"></div><figcaption><b>Figure 5.3</b> Questions your chatbot couldn't answer, with how often each was asked.</figcaption></figure>
+  <ol class="steps">
+    <li><strong>Read the top few questions.</strong> Ask yourself: should our chatbot be able to answer this?</li>
+    <li><strong>If yes, add the answer</strong> to a document or web page, and add it to your knowledge base (<span class="ui">Add to what your chatbot knows</span>).</li>
+    <li><strong>Test the question again</strong> in a new chat (see <a href="#testing">Testing</a>). Once it's answered from your sources, it stops appearing here.</li>
+    <li><strong>If no</strong> (for example, "What is the capital of Australia?"), you don't need to do anything: the chatbot correctly declined to answer from general knowledge.</li>
+  </ol>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">What isn't listed here</p><p>Greetings, small talk and questions about the chatbot itself ("who are you?") are left out, and so are questions it declined because of your own <a href="#behaviour">Avoid</a> rules, since those were refused on purpose.</p></div></div>
+
+  <h3 id="what-it-knows">What your chatbot knows</h3>
+  <p>A summary of your content: how many documents are <strong>ready to use</strong>, how many are <strong>web pages</strong> and <strong>files</strong>, and how many <strong>couldn't be read</strong>. It also shows how many tokens reading your documents used this month, which <strong>doesn't count against your AI allowance</strong>. Click <span class="ui">Manage knowledge</span> to open <a href="#knowledge">Knowledge bases</a>.</p>
+</section>
+
+<!-- ======================================================= 5. AI CHATBOT -->
+<section class="chapter" id="chatbot">
+  <div class="chapter-head"><div class="chapter-num">6</div><div><h2>Your AI chatbot (assistant management)</h2><p class="lead">Decide who your chatbot is, how it behaves, where it appears, and when it fetches a colleague.</p></div></div>
+  <dl class="page-card"><dt>Menu</dt><dd>AI Chatbot</dd><dt>Purpose</dt><dd>One place for everything about your chatbot, arranged in tabs: Identity, Behaviour, Tone &amp; style, Company, Reply experience, and Handoff &amp; limits.</dd><dt>Saving</dt><dd>Each tab has its own <span class="ui">Save</span> button. Changes apply to the next question visitors ask.</dd></dl>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/05-chatbot.webp" alt="The AI Chatbot page with the on/off switch, the On your website card and a live preview panel" loading="lazy"></div><figcaption><b>Figure 6.1</b> The AI Chatbot page. The preview on the right shows how your chatbot will look.</figcaption></figure>
+
+  <h3 id="who-controls-what">Who controls what</h3>
+  <p>Your chatbot is shaped by two parties. Knowing who controls what saves time when something needs changing.</p>
+  <div class="grid two">
+    <div class="card"><div class="k">You control</div><p>Name, title, avatar and greeting · role and topics to avoid · personality and answer length · company description · quick replies and location · handoff to your team · your own daily limit · time zone · how long conversations are kept · what it knows.</p></div>
+    <div class="card"><div class="k">Your platform provider controls</div><p>The AI model and how it's powered · the core safety rules (answering only from your sources, citations, privacy) · your <strong>assistant type</strong> (the kind of organisation it speaks for) · your plan limits (knowledge bases, chatbots, daily and monthly usage).</p></div>
+  </div>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">Why there's no "AI model" setting</p><p>The AI model, its version and its safety rules are chosen and maintained by your platform provider, so every organisation benefits from improvements without having to reconfigure anything. Your settings sit on top of those rules: they can make your chatbot <em>more</em> careful, but can't switch off grounding, citations or privacy protections.</p></div></div>
+
+  <h3 id="on-off">Turning your chatbot on or off</h3>
+  <p>The <span class="ui">AI Chatbot</span> switch at the top of the page turns the AI on or off for all your visitors, immediately.</p>
+  <ul>
+    <li><strong>On</strong> — the AI answers visitors' questions.</li>
+    <li><strong>Off</strong> — visitors go straight to a person. The chat bubble still works and conversations still arrive in your <a href="#inbox">Inbox</a>, but no AI answers are given and no allowance is used.</li>
+  </ul>
+  <div class="callout warning"><svg><use href="#i-warn"/></svg><div><p class="c-title">Before turning the AI off</p><p>Make sure a team with people in it is ready to answer (see <a href="#teams">Teams</a>), otherwise visitors will be waiting for a reply.</p></div></div>
+
+  <h3 id="website">Putting your chatbot on your website</h3>
+  <p>The <strong>On your website</strong> card shows whether your chatbot is really on your site and gives you the code to add it.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Item</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td>Status badge</td><td><strong>Installed</strong> (a page loaded it recently) · <strong>Not seen recently</strong> · <strong>Not installed</strong> · <strong>Turned off</strong>. Click <span class="ui">Check again</span> to refresh.</td></tr>
+      <tr><td>Where it can appear</td><td>The website addresses allowed to show your chatbot, and its daily question limit. For security, it stays hidden on any other website. Click <span class="ui">Change</span> to edit the list.</td></tr>
+      <tr><td>Add this to your website</td><td>One line of code to paste into your website. It isn't secret.</td></tr>
+      <tr><td>Copy code</td><td>Copies the line so you can paste it.</td></tr>
+      <tr><td>Copy instructions for your web developer</td><td>Copies ready-written instructions you can email to whoever looks after your website.</td></tr>
+      <tr><td>Hide from website</td><td>Stops the chatbot appearing on your website, without deleting anything.</td></tr>
+    </tbody>
+  </table></div>
+  <ol class="steps">
+    <li><strong>Check the allowed address.</strong> Under <span class="ui">Where it can appear</span>, make sure your website's address is listed (for example <code>https://www.yourcompany.com</code>). If not, click <span class="ui">Change</span> and add it.</li>
+    <li><strong>Copy the code.</strong> Click <span class="ui">Copy code</span>, or <span class="ui">Copy instructions for your web developer</span> if someone else manages your site.</li>
+    <li><strong>Paste it into every page</strong> just before the closing <code>&lt;/body&gt;</code> tag. Most website builders have a "custom code" or "footer scripts" setting for this.</li>
+    <li><strong>Open your website</strong> and look for the round chat button in the bottom-right corner.</li>
+    <li><strong>Back in the portal, click <span class="ui">Check again</span>.</strong> The status changes to <strong>Installed</strong>, and the dashboard's setup step 3 is ticked.</li>
+  </ol>
+  <div class="callout tip"><svg><use href="#i-tip"/></svg><div><p class="c-title">"A page on … tried to show your chatbot"</p><p>If this appears, a website not in your list tried to load your chatbot and it stayed hidden there. If that address is yours (for example a new domain or a staging site), click <span class="ui">Allow &lt;address&gt;</span>. If you don't recognise it, leave it: your chatbot stays hidden there.</p></div></div>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">Changes reach your website within an hour</p><p>Visitors' browsers keep a copy of the chatbot for up to an hour. Also, the chat window remembers a visitor's ongoing conversation. To see a change straight away, open your website in a private (incognito) window.</p></div></div>
+
+  <h3 id="identity">Identity tab</h3>
+  <p>How your chatbot introduces itself on your website.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/05-chatbot-tab1-identity.webp" alt="The Identity tab with Chatbot name, Chatbot title, Avatar and Greeting fields" loading="lazy"></div><figcaption><b>Figure 6.2</b> The Identity tab.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Field</th><th>Purpose</th><th>Recommended setting</th></tr></thead>
+    <tbody>
+      <tr><td>Chatbot name</td><td>The name shown at the top of the chat window, for example "Bramble" or "Nursery Helper".</td><td>Short and friendly. Say it's an assistant, so visitors know they're talking to an AI.</td></tr>
+      <tr><td>Chatbot title</td><td>A short line under the name describing what it helps with.</td><td>Three to five words, such as "Places, fees &amp; sessions".</td></tr>
+      <tr><td>Avatar</td><td>The small picture next to the name: Assistant, Bear, Star or Leaf.</td><td>Pick the one that best suits your brand. Images are built in, for your visitors' privacy.</td></tr>
+      <tr><td>Greeting</td><td>The first message visitors see when they open the chat.</td><td>One welcoming sentence and a hint of what to ask, e.g. "Hello! Ask me about places, fees, sessions or a typical day at the nursery."</td></tr>
+    </tbody>
+  </table></div>
+  <p>Click <span class="ui">Save identity</span>. The <strong>Preview</strong> panel on the right shows the result straight away.</p>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">About the preview</p><p>The preview is illustrative: its sample conversation isn't generated by the AI (that would use your allowance every time you changed a setting). To see real answers, <a href="#testing">test your chatbot</a>.</p></div></div>
+
+  <h3 id="behaviour">Behaviour tab</h3>
+  <p>Your chatbot's job description: what it's for, and what it must never do.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/05-chatbot-tab2-behaviour.webp" alt="The Behaviour tab with Role and Avoid text boxes" loading="lazy"></div><figcaption><b>Figure 6.3</b> The Behaviour tab.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Field</th><th>Purpose</th><th>Recommended setting</th></tr></thead>
+    <tbody>
+      <tr><td>Role</td><td>What your chatbot helps with, and who it helps. It starts pre-filled with a sensible default for your type of organisation.</td><td>Keep the default, then add the specific topics your visitors ask about (for example "places, fees, funded hours, sessions and how to book a visit").</td></tr>
+      <tr><td>Avoid</td><td>Topics and actions it must refuse or pass to a person.</td><td>List anything your staff must decide, e.g. "Never promise a place or confirm a start date — direct parents to the office."</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout best"><svg><use href="#i-best"/></svg><div><p class="c-title">Writing good instructions</p><ul><li>Write in plain sentences, as you would brief a new receptionist.</li><li>Be specific: "Don't discuss staff salaries" works better than "Be careful with sensitive topics".</li><li>Don't put facts here (prices, dates, phone numbers). Put facts in your <a href="#knowledge">knowledge base</a>, where they can be cited and kept up to date.</li></ul></div></div>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">These rules can only add caution</p><p>Your Role and Avoid instructions are added to the platform's own rules; they never replace them. So your chatbot always answers only from your sources and always shows where each answer came from, whatever you write here.</p></div></div>
+
+  <h3 id="tone">Tone &amp; style tab</h3>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/05-chatbot-tab3-tone-style.webp" alt="The Tone and style tab with Personality and Response length options" loading="lazy"></div><figcaption><b>Figure 6.4</b> The Tone &amp; style tab.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>Options</th><th>Recommended setting</th></tr></thead>
+    <tbody>
+      <tr><td>Personality</td><td><strong>Neutral</strong> — plain and even · <strong>Friendly</strong> — warm and conversational · <strong>Reassuring</strong> — calm and supportive · <strong>Professional</strong> — formal, like written correspondence.</td><td><strong>Friendly</strong> for most public websites; <strong>Professional</strong> for business customers; <strong>Reassuring</strong> if visitors are often anxious.</td></tr>
+      <tr><td>Response length</td><td><strong>Concise</strong> — two or three sentences · <strong>Balanced</strong> — a short paragraph with key detail · <strong>Detailed</strong> — thorough, with bullet points where useful.</td><td><strong>Balanced</strong>. Choose <strong>Detailed</strong> if visitors often ask for lists or comparisons, such as every room's fees side by side.</td></tr>
+    </tbody>
+  </table></div>
+  <p>These are fixed options rather than free text on purpose, so a tone setting can never change your chatbot's rules. Click <span class="ui">Save tone &amp; style</span>.</p>
+
+  <h3 id="company">Company tab</h3>
+  <p>Background your chatbot draws on to understand who it speaks for.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/05-chatbot-tab4-company.webp" alt="The Company tab showing the assistant type, Company name, Industry and Company description" loading="lazy"></div><figcaption><b>Figure 6.5</b> The Company tab, including the assistant type chosen by your provider.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Field</th><th>Purpose</th><th>Recommended setting</th></tr></thead>
+    <tbody>
+      <tr><td>Assistant type <span class="muted">(read-only)</span></td><td>The kind of organisation your chatbot answers for, for example <em>UK nursery / early years</em> or <em>Education &amp; training provider</em>. It sets which industry-specific rules apply and the defaults you start from.</td><td>Set by your platform provider. If it doesn't match your organisation, ask them to change it — see <a href="#t-wrong-type">troubleshooting</a>.</td></tr>
+      <tr><td>Company name</td><td>What the chatbot calls your organisation. It doesn't rename your account.</td><td>Your public trading name.</td></tr>
+      <tr><td>Industry</td><td>Your sector, in a few words.</td><td>Keep the default unless it's clearly wrong.</td></tr>
+      <tr><td>Company description</td><td>A short description of your organisation (up to 2,000 characters), used as background.</td><td>Two to four short paragraphs: who you are, who you serve, what you offer. Leave facts like prices to your knowledge base.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Click <span class="ui">Save company context</span>. Saving this completes setup step 2 on the dashboard.</p>
+
+  <h3 id="reply">Reply experience tab</h3>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/05-chatbot-tab5-reply-experience.webp" alt="The Reply experience tab with Quick reply suggestions and Use visitor location switches" loading="lazy"></div><figcaption><b>Figure 6.6</b> The Reply experience tab.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>Purpose</th><th>Recommended setting</th></tr></thead>
+    <tbody>
+      <tr><td>Quick reply suggestions</td><td>Shows buttons with common questions (for example "Admissions", "Fees &amp; funding", "Opening hours") so visitors can start with one click. "Speak to a person" is added only when a transfer is really possible.</td><td><strong>On.</strong> Visitors ask more questions when they have a starting point.</td></tr>
+      <tr><td>Use visitor location</td><td>Lets the chatbot use a visitor's approximate country or city when relevant. Precise location is never collected.</td><td>On only if location matters to your answers (for example regional prices). Otherwise off.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="handoff-limits">Handoff &amp; limits tab</h3>
+  <p>When your chatbot should fetch a colleague, how many AI answers it may give each day, and how long conversations are kept.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/05-chatbot-tab6-handoff-limits.webp" alt="The Handoff and limits tab with transfer switches, teams, daily limit, time zone and conversation retention" loading="lazy"></div><figcaption><b>Figure 6.7</b> The Handoff &amp; limits tab.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>Purpose</th><th>Recommended setting</th></tr></thead>
+    <tbody>
+      <tr><td>Allow transfer to a colleague</td><td>Lets the chatbot offer a transfer to a person when a visitor asks, or when a question needs staff judgement.</td><td><strong>On</strong>, as long as someone checks the <a href="#inbox">Inbox</a>.</td></tr>
+      <tr><td>AI summary as an internal comment</td><td>On transfer, writes a staff-only summary of the conversation so your colleague doesn't have to read it all. Visitors never see it.</td><td><strong>On</strong> if your team handles many transfers.</td></tr>
+      <tr><td>AI answers unassigned conversations</td><td>Lets the chatbot keep answering while a transferred conversation waits for a colleague. Once someone takes over, the AI stays quiet until handed back.</td><td><strong>On</strong>, so visitors aren't left waiting in silence.</td></tr>
+      <tr><td>Teams available for transfer</td><td>The teams visitors can choose between. Manage them in <a href="#teams">Inbox → Teams</a>.</td><td>At least one team with at least one person in it.</td></tr>
+      <tr><td>Daily AI message limit</td><td>Your own cap on AI answers per day. Leave blank to use your plan's maximum; a value above it is refused. Below the box you'll see the limit being enforced and how many were used today.</td><td>Blank, unless you want to hold usage below your plan's maximum.</td></tr>
+      <tr><td>Your day starts at midnight in</td><td>The time zone your daily limit resets in. <span class="ui">Use my time zone</span> fills in your computer's time zone.</td><td>Your organisation's local time zone, for example <em>London (Europe)</em>.</td></tr>
+      <tr><td>Keep conversation history for</td><td>How long conversations (including what visitors wrote) are kept before they're deleted automatically.</td><td>As short as your records policy allows; 30 days suits most organisations.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Click <span class="ui">Save handoff &amp; limits</span>.</p>
+  <div class="callout warning"><svg><use href="#i-warn"/></svg><div><p class="c-title">Deleted conversations can't be recovered</p><p>Shortening the retention period deletes older conversations at the next automatic clean-up. Ratings and the audit trail are kept.</p></div></div>
+</section>
+
+<!-- ======================================================= 6. KNOWLEDGE BASES -->
+<section class="chapter" id="knowledge">
+  <div class="chapter-head"><div class="chapter-num">7</div><div><h2>Knowledge base management</h2><p class="lead">The most important part of running a good chatbot: giving it accurate, up-to-date content.</p></div></div>
+
+  <h3 id="kb-what">What is a knowledge base?</h3>
+  <p class="lead" style="font-size:16.5px">The knowledge base contains the information your AI assistant uses to answer customer questions.</p>
+  <p>Think of it as a library you build for your chatbot. When a visitor asks a question, the chatbot searches your library, finds the most relevant passages, and writes an answer from them, showing numbered references to the pages it used. If the library doesn't contain the answer, the chatbot says so instead of guessing.</p>
+  <div class="grid three">
+    <div class="card"><div class="k">You add</div><p>Files (PDF, Word, Excel, PowerPoint…) and web pages.</p></div>
+    <div class="card"><div class="k">The portal</div><p>Reads each one, splits it into short passages, and makes them searchable.</p></div>
+    <div class="card"><div class="k">The chatbot</div><p>Finds the best passages for each question and answers from them, with sources.</p></div>
+  </div>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">Your content stays yours</p><p>Each knowledge base is searched on its own and is never mixed with another organisation's content.</p></div></div>
+
+  <h3 id="kb-list">The knowledge base list</h3>
+  <dl class="page-card"><dt>Menu</dt><dd>Knowledge bases</dd><dt>Purpose</dt><dd>Lists your knowledge bases and gives you every action for each one.</dd></dl>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/07-kb-list.webp" alt="The Knowledge bases page listing one knowledge base with Documents, Ask, Embed, Test search and delete actions" loading="lazy"></div><figcaption><b>Figure 7.1</b> The knowledge base list.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Action</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>Documents</td><td>Add, check and remove files and web pages. <a href="#kb-upload">Upload documents</a></td></tr>
+      <tr><td>Ask</td><td>Ask this knowledge base a question from the portal. <a href="#test-ask">Ask from the portal</a></td></tr>
+      <tr><td>Embed</td><td>See the website chatbot that answers from this knowledge base, and its embed code. <a href="#website">Putting it on your website</a></td></tr>
+      <tr><td>Test search</td><td>See which pages the chatbot would use for a question, without generating an answer. <a href="#kb-search">Test search</a></td></tr>
+      <tr><td>Bin icon</td><td>Delete the knowledge base. <a href="#kb-delete">Delete a knowledge base</a></td></tr>
+    </tbody>
+  </table></div>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/07-kb-embed.webp" alt="The Embed window showing the website chatbot, its allowed address and daily limit, its status Live, and the embed code" loading="lazy"></div><figcaption><b>Figure 7.2</b> <span class="ui">Embed</span> shows the website chatbot that answers from this knowledge base, with <span class="ui">Turn off</span>, <span class="ui">Edit</span> and its embed code. Your plan sets how many website chatbots you can have.</figcaption></figure>
+
+  <h3 id="kb-create">Create a knowledge base</h3>
+  <p>Most organisations need only one knowledge base. Create another if you want to keep a separate set of content, for example for a different website.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/07-kb-new.webp" alt="The New knowledge base dialog with Name, Description and Visibility fields and a Create and add documents button" loading="lazy"></div><figcaption><b>Figure 7.3</b> Creating a knowledge base.</figcaption></figure>
+  <ol class="steps">
+    <li><strong>Click <span class="ui">New knowledge base</span></strong> at the top right of the Knowledge bases page.</li>
+    <li><strong>Enter a name</strong> you'll recognise, such as "Parent information" or "Policies".</li>
+    <li><strong>Add a short description</strong> (optional) saying what it contains.</li>
+    <li><strong>Leave Visibility as <em>Tenant — everyone</em></strong> so everyone in your organisation can use it (see <a href="#kb-visibility">Who can see a knowledge base</a>).</li>
+    <li><strong>Click <span class="ui">Create and add documents</span>.</strong> The documents window opens straight away so you can add content.</li>
+  </ol>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">Plan limits</p><p>Your plan sets how many knowledge bases you can have. At the limit, the <span class="ui">New knowledge base</span> button is disabled with an explanation. Ask your platform provider to raise the limit, or delete one you no longer need.</p></div></div>
+
+  <h3 id="kb-visibility">Who can see a knowledge base</h3>
+  <p><strong>Visibility</strong> decides which people in your organisation can see and use a knowledge base <em>in the portal</em>. It does not affect your website: a website chatbot always answers from the knowledge base it's connected to, whatever its visibility.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Visibility</th><th>Who can see and use it in the portal</th><th>When to use it</th></tr></thead>
+    <tbody>
+      <tr><td>Tenant — everyone</td><td>Every member of your organisation.</td><td><strong>Almost always.</strong> This is the right choice for content your chatbot answers from.</td></tr>
+      <tr><td>Restricted</td><td>Only the person who created it, and administrators who can manage every knowledge base.</td><td>Content you're still preparing, or a test knowledge base.</td></tr>
+      <tr><td>Department / Team</td><td>Members your platform provider has placed in that department or team, plus the creator and administrators.</td><td>Only if your provider has set departments up for you. These options ask for an ID that only your provider can give you.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout warning"><svg><use href="#i-warn"/></svg><div><p class="c-title">If in doubt, choose "Tenant — everyone"</p><p>You can't yet place members into departments or teams from the portal, so a Department or Team knowledge base is usually visible only to you and your administrators. Colleagues will find it missing from their list.</p></div></div>
+
+  <h3 id="kb-upload">Upload documents</h3>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/07-kb-documents.webp" alt="The documents window: a drop area for files and a list of documents, each marked Ready with a number of searchable passages" loading="lazy"></div><figcaption><b>Figure 7.4</b> The documents window: drop files at the top, follow each one's progress below.</figcaption></figure>
+  <ol class="steps">
+    <li><strong>Open the documents window.</strong> On the Knowledge bases page, click <span class="ui">Documents</span> next to your knowledge base.</li>
+    <li><strong>Add your files.</strong> Drag them onto the area marked <span class="ui">Drop files here</span>, or click <span class="ui">browse</span> to choose them. You can add several at once.</li>
+    <li><strong>Watch them process.</strong> Each file appears in the list immediately with its own progress bar, and an overall bar tracks the whole batch. You can close the window: processing carries on.</li>
+    <li><strong>Check they're ready.</strong> Each file should end with a green tick, <strong>Ready</strong>, and a number of <strong>passages searchable</strong>.</li>
+  </ol>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Supported</th><th>Details</th></tr></thead>
+    <tbody>
+      <tr><td>File types</td><td>PDF, Word, Excel, PowerPoint, HTML, email, CSV, JSON, XML, plain text and images (scanned pages and photos are read with text recognition).</td></tr>
+      <tr><td>Size</td><td>Up to 50 MB per file.</td></tr>
+      <tr><td>Uploading</td><td>Files upload two at a time. You can cancel a file while it's still sending.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout best"><svg><use href="#i-best"/></svg><div><p class="c-title">What makes a good document</p><ul><li>Clear headings and one topic per section.</li><li>Real text rather than pictures of text (text files are faster and more accurate than scans).</li><li>Up-to-date facts only. Remove old price lists instead of adding new ones beside them.</li><li>Not password-protected.</li></ul></div></div>
+
+  <h3 id="kb-web">Add web pages</h3>
+  <p>Instead of uploading files, you can point the portal at pages on your website. It fetches each page, keeps the text and makes it searchable, just like a file.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/07-kb-add-from-web.webp" alt="The Add from the web section with a mode selector, a box for URLs, a Start button and a web source showing Last crawled and 25 of 25 pages" loading="lazy"></div><figcaption><b>Figure 7.5</b> Adding web pages: choose a mode, paste the addresses and click <span class="ui">Start</span>.</figcaption></figure>
+  <ol class="steps">
+    <li><strong>Open the documents window</strong> and scroll down to <span class="ui">Add from the web</span>.</li>
+    <li><strong>Choose a mode:</strong>
+      <ul><li><strong>Specific URLs — fetch exactly these pages.</strong> Paste one or more page addresses, separated by spaces or commas. No links are followed. Best for full control.</li>
+      <li><strong>Entire website — follow links from one page.</strong> Paste one starting address; the portal follows links within the same site, up to your platform's page and depth limits.</li></ul></li>
+    <li><strong>Click <span class="ui">Start</span>.</strong> The source appears below with its progress, for example "25 of 25 pages", and the date it was last fetched.</li>
+    <li><strong>Check the result.</strong> Each fetched page appears in the document list and should become <strong>Ready</strong>.</li>
+  </ol>
+  <div class="callout tip"><svg><use href="#i-tip"/></svg><div><p class="c-title">Choose pages that answer questions</p><p>Fees and sessions pages, admissions information, FAQs, opening hours and contact pages are ideal. Leave out blogs, news archives and legal boilerplate unless visitors ask about them: extra pages can make answers less precise.</p></div></div>
+
+  <h3 id="kb-text">Add written text</h3>
+  <p>There's no box to type text straight into the knowledge base. To add information that isn't on your website or in an existing document (for example a new FAQ), write it in a document and upload it:</p>
+  <ol class="steps">
+    <li><strong>Write the content</strong> in Word, Google Docs or a plain text file. Use a heading for each question or topic.</li>
+    <li><strong>Save it</strong> as <code>.docx</code>, <code>.pdf</code> or <code>.txt</code>, with a clear name such as "Frequently asked questions 2026".</li>
+    <li><strong>Upload it</strong> as described in <a href="#kb-upload">Upload documents</a>.</li>
+  </ol>
+  <div class="callout best"><svg><use href="#i-best"/></svg><div><p class="c-title">A question-and-answer document works best</p><p>Write each entry as the question visitors actually ask, followed by a short, complete answer. This is the fastest way to fix items on the dashboard's <a href="#unanswered">couldn't answer</a> list.</p></div></div>
+
+  <h3 id="kb-status">Check processing status</h3>
+  <p>Every file and web page goes through the same stages. The documents window shows the current stage and a percentage for each one.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Stage</th><th>What's happening</th></tr></thead>
+    <tbody>
+      <tr><td>Uploading</td><td>The file is being sent from your computer (you can still cancel it).</td></tr>
+      <tr><td>Queued</td><td>Received, and waiting its turn to be read.</td></tr>
+      <tr><td>Extracting</td><td>Reading the text out of the file.</td></tr>
+      <tr><td>Chunking</td><td>Splitting the text into short passages.</td></tr>
+      <tr><td>Embedding</td><td>Making each passage searchable by meaning, shown as "64 of 114 passages".</td></tr>
+      <tr><td>Indexing</td><td>Adding the passages to your knowledge base's search.</td></tr>
+      <tr><td><span style="color:var(--best)">Ready</span></td><td>Done. The chatbot can now answer from it. The number of <strong>passages searchable</strong> is shown.</td></tr>
+      <tr><td><span style="color:var(--danger)">Failed</span></td><td>It couldn't be processed. The stage where it failed and the reason are shown, with a <span class="ui">Retry</span> button.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Most documents are ready in under a minute. Very large or scanned documents can take a few minutes.</p>
+
+  <h3 id="kb-inspect">See exactly what was read</h3>
+  <p>Click a document's name in the list to see the passages the portal extracted from it. This is the quickest way to find out why a document isn't helping, for example if a web page captured a cookie banner instead of the article.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/07-kb-document-detail.webp" alt="A document's detail window listing its numbered passages with their text and size" loading="lazy"></div><figcaption><b>Figure 7.6</b> The passages extracted from one document.</figcaption></figure>
+
+  <h3 id="kb-update">Update content</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>To update…</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td>A file whose content changed</td><td>Upload the new version, check it's <strong>Ready</strong>, then delete the old one (see below). Keeping both lets the chatbot find conflicting facts.</td></tr>
+      <tr><td>Web pages that changed</td><td>In <span class="ui">Add from the web</span>, click the refresh icon next to the web source to fetch it again. Pages are refreshed in place, not duplicated. If a page has disappeared from your site, its old copy is kept until you delete it.</td></tr>
+      <tr><td>A document that failed or reads badly</td><td>Click the refresh icon on the document's row to process it again. For a failure, fix the cause first (see <a href="#t-doc-failed">troubleshooting</a>).</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="kb-delete-doc">Delete a document</h3>
+  <ol class="steps">
+    <li><strong>Open the documents window</strong> for the knowledge base.</li>
+    <li><strong>Click the bin icon</strong> on the document's row.</li>
+    <li><strong>Confirm.</strong> The document is removed from search immediately, and the chatbot stops using it for new answers.</li>
+  </ol>
+
+  <h3 id="kb-search">Test search</h3>
+  <p>Test search shows which of your pages the chatbot would draw on for a question, without generating an answer. It's the quickest way to check whether your content covers a topic.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/07-kb-test-search.webp" alt="The Test search window for the question full day fees for toddlers, listing the fees document first, then admissions, the handbook and term dates, each with a score" loading="lazy"></div><figcaption><b>Figure 7.7</b> Test search: the most relevant pages come first.</figcaption></figure>
+  <ol class="steps">
+    <li><strong>Click <span class="ui">Test search</span></strong> next to the knowledge base.</li>
+    <li><strong>Type a question</strong> the way a visitor would, and click <span class="ui">Search</span>.</li>
+    <li><strong>Read the results.</strong> The best-matching pages come first. The number beside each is a relevance score; only compare scores within one search.</li>
+  </ol>
+  <div class="callout tip"><svg><use href="#i-tip"/></svg><div><p class="c-title">Reading the results</p><p>If the right page is at or near the top, the chatbot has what it needs. If it's missing, add a page or document that covers the topic. Test searches don't use your AI allowance.</p></div></div>
+
+  <h3 id="kb-delete">Delete a knowledge base</h3>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/07-kb-delete-confirm.webp" alt="The delete confirmation stating how many documents and passages will be removed, asking you to type the name to confirm" loading="lazy"></div><figcaption><b>Figure 7.8</b> Deleting a knowledge base asks you to type its name.</figcaption></figure>
+  <ol class="steps">
+    <li><strong>Click the bin icon</strong> on the knowledge base's row.</li>
+    <li><strong>Read what will be removed:</strong> the window says exactly how many documents and passages go, and what is kept (answer ratings and the audit trail).</li>
+    <li><strong>Type the knowledge base's name</strong> to confirm, then click <span class="ui">Delete knowledge base</span>.</li>
+  </ol>
+  <div class="callout danger"><svg><use href="#i-danger"/></svg><div><p class="c-title">This can't be undone</p><p>Deleting a knowledge base removes all its documents and web pages permanently. The portal refuses to delete one that your website chatbot still answers from, or while anything in it is still processing, and tells you why.</p></div></div>
+</section>
+
+<!-- ======================================================= 7. TESTING -->
+<section class="chapter" id="testing">
+  <div class="chapter-head"><div class="chapter-num">8</div><div><h2>Testing your AI assistant</h2><p class="lead">Check your chatbot's answers before your visitors do, and after every change to its content.</p></div></div>
+
+  <h3 id="test-ask">Ask from the portal</h3>
+  <p>The quickest test: ask a knowledge base a question without leaving the portal.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/07-kb-ask.webp" alt="The Ask window with an empty question box" loading="lazy"></div><figcaption><b>Figure 8.1</b> The Ask window. Answers come only from this knowledge base, with sources.</figcaption></figure>
+  <ol class="steps">
+    <li><strong>Go to Knowledge bases</strong> and click <span class="ui">Ask</span> next to your knowledge base.</li>
+    <li><strong>Type a question</strong> and press <kbd>Enter</kbd> (<kbd>Shift</kbd> + <kbd>Enter</kbd> adds a new line).</li>
+    <li><strong>Read the answer and its sources.</strong> You can copy it, generate it again, or rate it.</li>
+  </ol>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">Good to know</p><p>In the Ask window, each question is answered on its own; it doesn't remember earlier questions. Questions asked here count towards your daily limit and AI allowance, just like your visitors' questions.</p></div></div>
+
+  <h3 id="test-website">Test it exactly as a visitor sees it</h3>
+  <p>The most realistic test is the chatbot on your own website (or a test page your provider gives you).</p>
+  <div class="shot-pair">
+    <figure class="shot"><div class="frame"><img src="assets/screenshots/11-widget-closed.webp" alt="A website with the round chat button in the bottom-right corner" loading="lazy"></div><figcaption><b>Figure 8.2</b> The chat button on a website.</figcaption></figure>
+    <figure class="shot"><div class="frame"><img src="assets/screenshots/11-widget-open.webp" alt="The open chat window with a greeting and quick reply buttons" loading="lazy"></div><figcaption><b>Figure 8.3</b> The chat window, with greeting and quick replies.</figcaption></figure>
+  </div>
+  <ol class="steps">
+    <li><strong>Open your website in a private (incognito) window.</strong> This makes sure you see your latest settings and start a fresh conversation.</li>
+    <li><strong>Click the round chat button</strong> in the bottom-right corner.</li>
+    <li><strong>Ask a real question,</strong> for example: <em>"How much is a full day for a 2 year old?"</em></li>
+    <li><strong>Check the answer</strong> using the steps below.</li>
+  </ol>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/11-widget-sources.webp" alt="The chatbot answering that a full day for a 2-year-old is £74, with a citation number and the fees document listed below as its source" loading="lazy"></div><figcaption><b>Figure 8.4</b> A good answer: facts from your content, numbered citations, and the pages they came from.</figcaption></figure>
+  <div class="card" style="margin:16px 0 24px">
+    <div class="k">Worked example</div>
+    <p><strong>Question:</strong> "How much is a full day for a 2 year old?"</p>
+    <p style="margin-top:6px"><strong>Expected behaviour:</strong> the assistant answers using your knowledge only: "A full day for a 2-year-old in the Saplings toddler room is £74, for 7:30 to 18:00", with a citation number (<code>1</code>) after the fact and <strong>1 document</strong> underneath. Click that to see which part of your fees document it used.</p>
+    <p style="margin-top:6px"><strong>Good to know:</strong> visitors see the <em>titles</em> of web pages, but an uploaded file is shown only as "Document" and the part used (for example "Daily fees (table)"). That's deliberate: a file name can reveal internal information.</p>
+  </div>
+
+  <h3 id="test-check">Checking an answer</h3>
+  <ol class="steps">
+    <li><strong>Is it correct?</strong> Compare it with your own information.</li>
+    <li><strong>Does it cite sources?</strong> Factual answers carry small numbers such as <code>1</code>. Click <span class="ui">N web pages</span> or <span class="ui">N documents</span> to see them.</li>
+    <li><strong>Are the sources right?</strong> Open them: are they the pages you'd expect?</li>
+    <li><strong>Is it the right length and tone?</strong> If not, adjust <a href="#tone">Tone &amp; style</a>.</li>
+    <li><strong>Rate it</strong> with 👍 or 👎. Ratings appear in <a href="#feedback">Answer feedback</a>.</li>
+  </ol>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">When the chatbot says it can't confirm something</p><p>This is correct behaviour when your content doesn't contain the answer: the chatbot never fills gaps with general knowledge. The question is added to the dashboard's <a href="#unanswered">couldn't answer</a> list so you can add the missing information.</p></div></div>
+
+  <h3 id="test-improve">Improving answers</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>If the answer…</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td>says it can't confirm, but the answer is in your content</td><td>Run a <a href="#kb-search">test search</a>. If the right page isn't near the top, make it clearer (headings, question-style wording) or add a focused FAQ document. If the chatbot says your sources belong to a different organisation, see <a href="#t-wrong-type">this troubleshooting entry</a>.</td></tr>
+      <tr><td>is wrong or out of date</td><td>Find the source it cited, correct or replace it (<a href="#kb-update">Update content</a>), then ask again in a new chat.</td></tr>
+      <tr><td>cites unhelpful pages</td><td>Remove pages that add noise (for example blogs or legal pages), or add a page dedicated to the topic.</td></tr>
+      <tr><td>is too long or too short</td><td>Change <strong>Response length</strong> on the <a href="#tone">Tone &amp; style</a> tab.</td></tr>
+      <tr><td>strays into a topic it shouldn't</td><td>Add a rule to <strong>Avoid</strong> on the <a href="#behaviour">Behaviour</a> tab.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout best"><svg><use href="#i-best"/></svg><div><p class="c-title">Keep a test list</p><p>Write down the 10–20 questions your customers ask most. Ask them all after every significant content change. It takes five minutes and catches most problems before your visitors do.</p></div></div>
+</section>
+
+<!-- ======================================================= 8. CONVERSATIONS -->
+<section class="chapter" id="conversations">
+  <div class="chapter-head"><div class="chapter-num">9</div><div><h2>Conversation management</h2><p class="lead">Review what visitors ask, how your chatbot answered, how it was rated, and handle requests for a person.</p></div></div>
+
+  <h3 id="conv-list">Conversation history</h3>
+  <dl class="page-card"><dt>Menu</dt><dd>Conversations</dd><dt>Purpose</dt><dd>Every chat with your website chatbot, including any your team took over.</dd></dl>
+  <p>The page opens on <strong>Only mine</strong> (your own conversations). To review visitors' chats, click <span class="ui">Show all conversations</span>, or the <span class="ui">All conversations</span> button.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/08-conversations-all.webp" alt="The conversation list showing title, who, handled by, status and last message date for each conversation" loading="lazy"></div><figcaption><b>Figure 9.1</b> All conversations in your organisation.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Column</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td>Title</td><td>The conversation's first question.</td></tr>
+      <tr><td>Who</td><td><strong>Website visitor</strong> (anonymous visitors to your site) or the member who asked.</td></tr>
+      <tr><td>Handled by</td><td><strong>AI chatbot</strong>, or the team or colleague it was handed to.</td></tr>
+      <tr><td>Status</td><td>Whether the conversation is active or finished.</td></tr>
+      <tr><td>Last message</td><td>When the most recent message was sent.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout warning"><svg><use href="#i-warn"/></svg><div><p class="c-title">Viewing conversations is recorded</p><p>Conversations contain what visitors wrote. Opening one records an entry in your organisation's audit trail, naming you and the conversation. Only open conversations you have a reason to review.</p></div></div>
+
+  <h3 id="conv-search">Searching conversations</h3>
+  <p>Type a word or phrase into <span class="ui">Search what was said…</span> to find conversations containing it, for example "allergy" or "funding".</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/08-conversations-search.webp" alt="The conversation list filtered by the word allergy, showing the matching conversation" loading="lazy"></div><figcaption><b>Figure 9.2</b> Searching conversations for a word.</figcaption></figure>
+
+  <h3 id="conv-read">Reading a conversation</h3>
+  <p>Click <span class="ui">Open</span> on a row to read the full conversation, oldest message first. You'll see the visitor's questions, the AI's answers with their citation numbers, and any messages from your team after a handoff.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/08-conversation-thread.webp" alt="An opened conversation: the parent's question, the AI's cited answer, the request for a person, and a staff-only AI handoff summary" loading="lazy"></div><figcaption><b>Figure 9.3</b> An open conversation that was handed to the Office team. The yellow <em>Internal note</em> is the AI's summary for staff; the parent never sees it.</figcaption></figure>
+  <p>The pencil and bin icons on each row rename and delete a conversation. Only the person who owns a conversation can rename or delete it; visitors' conversations are deleted automatically after your <a href="#handoff-limits">retention period</a>.</p>
+
+  <h3 id="feedback">Answer feedback</h3>
+  <dl class="page-card"><dt>Menu</dt><dd>Answer feedback</dd><dt>Purpose</dt><dd>Every 👍 and 👎 given to your chatbot's answers, on your website and in the portal.</dd></dl>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/09-feedback.webp" alt="The Answer feedback page with totals for ratings, helpful, not helpful and satisfaction, filters, and a list of rated answers" loading="lazy"></div><figcaption><b>Figure 9.4</b> Answer feedback: totals at the top, each rating below.</figcaption></figure>
+  <ul>
+    <li><strong>Ratings, Helpful, Not helpful and Satisfaction</strong> at the top summarise all ratings. Satisfaction is helpful ratings divided by all ratings.</li>
+    <li><strong>Filters</strong> show only helpful or not-helpful ratings, and only those from your website or the portal.</li>
+    <li><strong>Click a rating</strong> to see the exact question and the exact answer that was rated, plus any comment the visitor left.</li>
+  </ul>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/09-feedback-detail.webp" alt="A rating's detail window showing the question and the answer that was rated" loading="lazy"></div><figcaption><b>Figure 9.5</b> The detail of one rating: the question and the answer that was rated.</figcaption></figure>
+  <div class="callout best"><svg><use href="#i-best"/></svg><div><p class="c-title">Why 👍 and 👎 matter</p><p>Ratings are the voice of your visitors. A 👎 is the clearest signal that an answer was wrong, unclear or unhelpful. Review every 👎 weekly: read the answer, find the source it used, and fix the content. A rising satisfaction score shows your improvements are working.</p></div></div>
+
+  <h3 id="inbox">Inbox and human handoff</h3>
+  <dl class="page-card"><dt>Menu</dt><dd>Inbox</dd><dt>Purpose</dt><dd>Conversations where a visitor asked to speak to a person, and the teams they can be passed to. Updates arrive live; no need to refresh.</dd></dl>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/06-inbox.webp" alt="The Inbox with one parent waiting for the Admissions team and a Claim button, and the Teams section listing Admissions and Office team" loading="lazy"></div><figcaption><b>Figure 9.6</b> The Inbox: a parent is waiting for Admissions. Click <span class="ui">Claim</span> to take the conversation.</figcaption></figure>
+  <p><strong>How a handoff works:</strong></p>
+  <ol class="steps">
+    <li><strong>A visitor asks for a person,</strong> or asks something that needs staff judgement. The chatbot offers the teams that have people in them.</li>
+    <li><strong>The visitor picks a team.</strong> The conversation appears in the Inbox of that team's members, live, with a sound if <span class="ui">Sound on</span> is enabled.</li>
+    <li><strong>A colleague claims it</strong> and replies. Only one person can claim a conversation, so two colleagues never answer the same visitor. Colleagues can also add internal notes that the visitor never sees.</li>
+    <li><strong>When finished,</strong> the colleague can hand the conversation back to the AI.</li>
+  </ol>
+  <div class="callout tip"><svg><use href="#i-tip"/></svg><div><p class="c-title">Don't miss a waiting visitor</p><p>Keep <span class="ui">Sound on</span>, and allow notifications if your browser asks. If the page says notifications are blocked, enable them in your browser's site settings.</p></div></div>
+
+  <h3 id="teams">Teams</h3>
+  <p>Teams are the options visitors are offered when they ask for a person, for example "Admissions" or "Support". A team is only offered once it has at least one person in it.</p>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/06-inbox-new-team.webp" alt="The New team window with Name, Description, an Offered to visitors switch and a list of people to add" loading="lazy"></div><figcaption><b>Figure 9.7</b> Creating a team.</figcaption></figure>
+  <ol class="steps">
+    <li><strong>Go to Inbox</strong> and click <span class="ui">New team</span> (or click an existing team to edit it).</li>
+    <li><strong>Enter a name</strong> visitors will understand, such as "Admissions", and a short description.</li>
+    <li><strong>Leave <span class="ui">Offered to visitors</span> on.</strong> Turning it off stops the team being offered but keeps its conversations.</li>
+    <li><strong>Tick the people</strong> who will answer this team's conversations.</li>
+    <li><strong>Click <span class="ui">Save team</span>.</strong> Setup step 4 on the dashboard is now ticked.</li>
+  </ol>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">Who sees which conversations</p><p>Team members see their own teams' conversations. Owners and administrators see every team's conversations.</p></div></div>
+</section>
+
+<!-- ======================================================= 9. ANALYTICS -->
+<section class="chapter" id="analytics">
+  <div class="chapter-head"><div class="chapter-num">10</div><div><h2>Analytics and usage monitoring</h2><p class="lead">Understand how much your chatbot is used, how well it answers, and how close you are to your limits.</p></div></div>
+  <p>All analytics live on the <a href="#dashboard">Dashboard</a>, with detail in <a href="#feedback">Answer feedback</a> and <a href="#conversations">Conversations</a>.</p>
+
+  <h3 id="metrics">Every figure explained</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Figure</th><th>Where</th><th>What it tells you</th><th>Act when…</th></tr></thead>
+    <tbody>
+      <tr><td>Questions asked (7 days)</td><td>Dashboard card</td><td>How much visitors use your chatbot.</td><td>It drops suddenly: check the chatbot is still on your website.</td></tr>
+      <tr><td>Conversations (7 days)</td><td>Dashboard card</td><td>How many visitors started a chat.</td><td>It's high but questions are low: visitors may not be getting useful first answers.</td></tr>
+      <tr><td>Passed to your team (7 days)</td><td>Dashboard card</td><td>How often visitors needed a person.</td><td>It rises: look for a pattern and add that content.</td></tr>
+      <tr><td>Helpful answers (30 days)</td><td>Dashboard card</td><td>Share of ratings that were 👍.</td><td>It falls: review 👎 ratings in Answer feedback.</td></tr>
+      <tr><td>Activity (14 days)</td><td>Dashboard chart</td><td>Daily questions and new conversations.</td><td>You see unusual peaks: for example after a marketing campaign.</td></tr>
+      <tr><td>Questions answered today</td><td>Chatbot card</td><td>AI answers today against your daily limit.</td><td>It regularly reaches the limit: raise your limit or ask for a larger plan.</td></tr>
+      <tr><td>AI usage this month</td><td>Chatbot card</td><td>Share of this month's AI allowance used.</td><td>It passes 80% early in the month.</td></tr>
+      <tr><td>Couldn't answer</td><td>Dashboard list</td><td>Questions your content doesn't cover.</td><td>A question is asked several times.</td></tr>
+      <tr><td>Ready / Web pages / Files / Couldn't be read</td><td>What your chatbot knows</td><td>The state of your content.</td><td>"Couldn't be read" is above zero.</td></tr>
+      <tr><td>Satisfaction</td><td>Answer feedback</td><td>Helpful ratings ÷ all ratings.</td><td>It trends down.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="usage-allowance">Usage and allowances</h3>
+  <p>Your plan includes two allowances:</p>
+  <div class="grid two">
+    <div class="card"><div class="k">Daily</div><h4>AI questions per day</h4><p>How many questions the AI answers per day. It resets at midnight in the <a href="#handoff-limits">time zone you choose</a>. You can set a lower limit yourself.</p></div>
+    <div class="card"><div class="k">Monthly</div><h4>AI usage per month</h4><p>How much AI processing your answers can use each month, measured in <a href="#glossary">tokens</a>. It resets on the first of each month.</p></div>
+  </div>
+  <p>The dashboard warns you as you approach each limit, at <strong>80%, 90%, 95% and 100%</strong>. When a limit is reached, visitors are told politely that the chatbot can't answer right now and can still ask for a person. Your content and settings are unaffected.</p>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">What doesn't count against your AI allowance</p><p>Reading your documents and web pages, and test searches. The dashboard shows how many tokens reading your documents used, for information only.</p></div></div>
+
+  <h3 id="cost">AI cost</h3>
+  <p>The portal shows your AI use as a <strong>percentage of your allowance</strong>, not in money, because AI usage is included in your plan. You won't be charged extra for normal use within your allowance. For billing questions, or to change your plan, contact your platform provider.</p>
+  <div class="callout tip"><svg><use href="#i-tip"/></svg><div><p class="c-title">Keeping usage efficient</p><ul><li>Choose <strong>Balanced</strong> rather than <strong>Detailed</strong> answers unless visitors need detail: shorter answers use less.</li><li>Remove content visitors never ask about, so answers draw on fewer, more relevant pages.</li><li>Use your own daily limit if you want predictable usage.</li></ul></div></div>
+
+  <h3 id="trends">Reading the trends</h3>
+  <ul>
+    <li><strong>Week on week:</strong> each key figure compares the last 7 days with the 7 days before ("None in the previous 7 days" means there was no activity then).</li>
+    <li><strong>Day by day:</strong> the activity chart shows the last 14 days, so you can spot quiet days, busy days and the effect of changes.</li>
+    <li><strong>Quality over time:</strong> the satisfaction score compares the last 30 days of ratings.</li>
+  </ul>
+</section>
+
+<!-- ======================================================= 10. USERS & PERMISSIONS -->
+<section class="chapter" id="people">
+  <div class="chapter-head"><div class="chapter-num">11</div><div><h2>User and permission management</h2><p class="lead">Decide who in your organisation can use the portal, and what each person can do.</p></div></div>
+
+  <h3 id="members">Members</h3>
+  <dl class="page-card"><dt>Menu</dt><dd>Members</dd><dt>Purpose</dt><dd>Everyone with access to your organisation in the portal, their status and their roles.</dd></dl>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/03-members.webp" alt="The Members page listing each person with status, roles and the date they joined" loading="lazy"></div><figcaption><b>Figure 11.1</b> The Members page.</figcaption></figure>
+  <h4>Adding people</h4>
+  <p>There are two ways to add a colleague:</p>
+  <ul>
+    <li><strong><span class="ui">Add member</span></strong> adds someone who already has a portal account, straight away, with the role you choose.</li>
+    <li><strong><span class="ui">Invite member</span></strong> creates an invitation for a new person, with a role pre-selected.</li>
+  </ul>
+  <div class="callout info"><svg><use href="#i-info"/></svg><div><p class="c-title">"Your plan doesn't include adding members"</p><p>If you see this message, the buttons are disabled because your plan doesn't include extra members. Ask your platform provider to enable it.</p></div></div>
+
+  <h3 id="member-actions">Managing a member</h3>
+  <p>Click the pencil next to a member's job title to edit it. Open the <span class="ui">…</span> menu on a member's row for these actions:</p>
+  <figure class="shot narrow"><div class="frame"><img src="assets/screenshots/03-members-edit.webp" alt="The Edit job title window" loading="lazy"></div><figcaption><b>Figure 11.2</b> Editing a member's job title.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Action</th><th>What it does</th><th>When to use it</th></tr></thead>
+    <tbody>
+      <tr><td>Suspend</td><td>Temporarily blocks the person's access to your organisation.</td><td>Extended leave, or while you check a concern.</td></tr>
+      <tr><td>Reactivate</td><td>Restores a suspended member's access.</td><td>When they return.</td></tr>
+      <tr><td>Revoke access</td><td>Removes the person from your organisation.</td><td>When someone leaves. Do it on their last day.</td></tr>
+      <tr><td>Restore access</td><td>Brings back a revoked member.</td><td>If access was removed by mistake.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="roles">Roles</h3>
+  <dl class="page-card"><dt>Menu</dt><dd>Roles &amp; permissions</dd><dt>Purpose</dt><dd>Define what each role can do, and see your own permissions.</dd></dl>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/04-roles-tab1-roles.webp" alt="The Roles tab listing the Tenant Owner, Tenant Administrator and Member system roles and a custom Front office role" loading="lazy"></div><figcaption><b>Figure 11.3</b> The Roles tab.</figcaption></figure>
+  <p>Every organisation has three built-in roles:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Role</th><th>Who it's for</th></tr></thead>
+    <tbody>
+      <tr><td>Tenant Owner</td><td>The person ultimately responsible for your organisation's account. Can do everything.</td></tr>
+      <tr><td>Tenant Administrator</td><td>People who run the chatbot and manage colleagues day to day.</td></tr>
+      <tr><td>Member</td><td>Colleagues who use the portal with basic access, for example to ask the knowledge base questions.</td></tr>
+    </tbody>
+  </table></div>
+  <p>If your plan includes it, <span class="ui">New custom role</span> lets you create a role with exactly the permissions you choose. You can only give a role permissions you hold yourself.</p>
+
+  <h3 id="permissions-tabs">Hierarchy, overrides, your permissions and the catalogue</h3>
+  <div class="shot-pair">
+    <figure class="shot"><div class="frame"><img src="assets/screenshots/04-roles-tab2-hierarchy.webp" alt="The Hierarchy tab for making one role inherit another" loading="lazy"></div><figcaption><b>Figure 11.4</b> Hierarchy.</figcaption></figure>
+    <figure class="shot"><div class="frame"><img src="assets/screenshots/04-roles-tab3-overrides.webp" alt="The Overrides tab for granting or denying one permission to one member" loading="lazy"></div><figcaption><b>Figure 11.5</b> Overrides.</figcaption></figure>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Tab</th><th>What it's for</th></tr></thead>
+    <tbody>
+      <tr><td>Hierarchy</td><td>Makes one role inherit everything another role can do (for example, "Senior advisor" inherits "Advisor").</td></tr>
+      <tr><td>Overrides</td><td>Grants or denies one permission to one member, regardless of their roles. A deny always wins. A reason is required, for your records.</td></tr>
+      <tr><td>My permissions</td><td>Everything you can do, combining your roles, inherited roles and overrides.</td></tr>
+      <tr><td>Catalog</td><td>Every permission that exists, with a description and a risk level.</td></tr>
+    </tbody>
+  </table></div>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/04-roles-tab4-my-permissions.webp" alt="The My permissions tab listing permissions grouped by area with their risk level" loading="lazy"></div><figcaption><b>Figure 11.6</b> My permissions: what you can do, grouped by area, with risk levels.</figcaption></figure>
+
+  <h3 id="permission-reference">Permission reference</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Permission</th><th>What it allows</th><th>Risk</th></tr></thead>
+    <tbody>
+      <tr><td>Ask the chatbot (conversations.create)</td><td>Ask questions from the portal.</td><td>Low</td></tr>
+      <tr><td>Read conversations (conversations.view)</td><td>Read every conversation in full, including website visitors' messages and ratings.</td><td>High</td></tr>
+      <tr><td>See every queue (conversations.view_all)</td><td>See every team's handoff queue, not only the teams you're in.</td><td>High</td></tr>
+      <tr><td>Add documents (documents.upload)</td><td>Add documents and web pages; also allows changing chatbot settings.</td><td>Low</td></tr>
+      <tr><td>Create knowledge bases</td><td>Create new knowledge bases.</td><td>Low</td></tr>
+      <tr><td>Manage knowledge bases</td><td>Change or delete any knowledge base.</td><td>Medium</td></tr>
+      <tr><td>Search knowledge bases</td><td>Run test searches.</td><td>Low</td></tr>
+      <tr><td>Manage roles</td><td>Create roles and assign them to members.</td><td>High</td></tr>
+      <tr><td>Invite members</td><td>Invite new people to your organisation.</td><td>Medium</td></tr>
+      <tr><td>Manage members</td><td>Suspend, reactivate and revoke memberships.</td><td>Medium</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout best"><svg><use href="#i-best"/></svg><div><p class="c-title">Security best practice</p><ul><li>Give each person the <strong>smallest</strong> role that lets them do their job.</li><li>Limit <strong>high-risk</strong> permissions, especially reading all conversations, to people who need them.</li><li>Review your member list every month, and revoke access on the day someone leaves.</li><li>Keep at least two people who can manage roles, so you're never locked out.</li></ul></div></div>
+</section>
+
+<!-- ======================================================= 11. SETTINGS -->
+<section class="chapter" id="settings">
+  <div class="chapter-head"><div class="chapter-num">12</div><div><h2>Settings management</h2><p class="lead">Your personal account settings, and every setting for your organisation in one place.</p></div></div>
+
+  <h3 id="my-identity">My identity (your account)</h3>
+  <dl class="page-card"><dt>Menu</dt><dd>My identity</dd><dt>Purpose</dt><dd>Your profile, password, two-step sign-in, linked sign-in providers and sessions.</dd></dl>
+  <figure class="shot"><div class="frame"><img src="assets/screenshots/10-account-full.webp" alt="The My identity page with Profile, Password, Multi-factor authentication, Linked sign-in providers and Sessions sections" loading="lazy"></div><figcaption><b>Figure 12.1</b> The My identity page.</figcaption></figure>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Section</th><th>Purpose</th><th>Recommended</th></tr></thead>
+    <tbody>
+      <tr><td>Profile</td><td>Your email, account status and last sign-in (read-only).</td><td>Check <strong>Last sign-in</strong> occasionally. If it wasn't you, change your password.</td></tr>
+      <tr><td>Password</td><td>Change your password. This signs you out everywhere, including this browser.</td><td>Change it if you think it may have been seen, and at least once a year.</td></tr>
+      <tr><td>Multi-factor authentication</td><td>Adds a second step at sign-in: a six-digit code from an authenticator app on your phone.</td><td><strong>Turn this on.</strong> Click <span class="ui">Enroll authenticator app</span>, scan the code with an app such as Microsoft Authenticator or Google Authenticator, and enter the code shown.</td></tr>
+      <tr><td>Linked sign-in providers</td><td>Google or Facebook accounts that can sign in as you.</td><td>Only link accounts you control and protect.</td></tr>
+      <tr><td>Sessions</td><td><span class="ui">Sign out everywhere</span> immediately signs you out of every other browser and device.</td><td>Use it after signing in on a shared computer, or if your phone is lost.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="all-settings">All tenant settings at a glance</h3>
+  <p>Every setting you control for your organisation, where to find it, and what we recommend.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>Where</th><th>Purpose</th><th>Recommended</th></tr></thead>
+    <tbody>
+      <tr><td>AI Chatbot on/off</td><td>AI Chatbot (top)</td><td>Whether the AI answers visitors.</td><td>On</td></tr>
+      <tr><td>Allowed websites</td><td>AI Chatbot → On your website</td><td>Where your chatbot may appear.</td><td>Only your own sites</td></tr>
+      <tr><td>Chatbot name, title, avatar, greeting</td><td>AI Chatbot → Identity</td><td>How it introduces itself.</td><td>Friendly and clear</td></tr>
+      <tr><td>Role, Avoid</td><td>AI Chatbot → Behaviour</td><td>What it's for, and what it must never do.</td><td>Specific, plain sentences</td></tr>
+      <tr><td>Personality, Response length</td><td>AI Chatbot → Tone &amp; style</td><td>How it sounds, and how much it says.</td><td>Friendly, Balanced</td></tr>
+      <tr><td>Company name, Industry, Description</td><td>AI Chatbot → Company</td><td>Who it speaks for.</td><td>Complete and current</td></tr>
+      <tr><td>Quick reply suggestions</td><td>AI Chatbot → Reply experience</td><td>Starter buttons for visitors.</td><td>On</td></tr>
+      <tr><td>Use visitor location</td><td>AI Chatbot → Reply experience</td><td>Approximate location in answers.</td><td>Off unless needed</td></tr>
+      <tr><td>Allow transfer to a colleague</td><td>AI Chatbot → Handoff &amp; limits</td><td>Lets visitors reach a person.</td><td>On, with a staffed team</td></tr>
+      <tr><td>AI summary as an internal comment</td><td>AI Chatbot → Handoff &amp; limits</td><td>Staff-only summary on transfer.</td><td>On</td></tr>
+      <tr><td>AI answers unassigned conversations</td><td>AI Chatbot → Handoff &amp; limits</td><td>AI keeps helping until someone takes over.</td><td>On</td></tr>
+      <tr><td>Daily AI message limit</td><td>AI Chatbot → Handoff &amp; limits</td><td>Your own daily cap.</td><td>Blank (plan maximum)</td></tr>
+      <tr><td>Time zone</td><td>AI Chatbot → Handoff &amp; limits</td><td>When the daily limit resets.</td><td>Your local time zone</td></tr>
+      <tr><td>Conversation retention</td><td>AI Chatbot → Handoff &amp; limits</td><td>How long conversations are kept.</td><td>As short as your policy allows</td></tr>
+      <tr><td>Teams</td><td>Inbox → Teams</td><td>Who visitors can be handed to.</td><td>At least one staffed team</td></tr>
+      <tr><td>Members and roles</td><td>Members, Roles &amp; permissions</td><td>Who can use the portal, and what they can do.</td><td>Smallest role needed</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="plan-settings">Settings your platform provider manages</h3>
+  <p>These are part of your plan or service. You can see their effects, but only your platform provider can change them:</p>
+  <ul>
+    <li><strong>Assistant type</strong> — the kind of organisation your chatbot speaks for (shown on the <a href="#company">Company</a> tab).</li>
+    <li><strong>The AI model</strong> and the platform's safety rules.</li>
+    <li><strong>How many knowledge bases and website chatbots</strong> you can have.</li>
+    <li><strong>Your plan's maximum daily questions</strong> and <strong>monthly AI allowance</strong>.</li>
+    <li><strong>Whether you can add members</strong> and <strong>create custom roles</strong>.</li>
+  </ul>
+  <div class="callout tip"><svg><use href="#i-tip"/></svg><div><p class="c-title">Controls your plan doesn't include</p><p>Buttons for features your plan doesn't include are shown disabled, with a message explaining why, so you always know what to ask your provider for.</p></div></div>
+</section>
+
+<!-- ======================================================= SAFEGUARDING & DATA PROTECTION -->
+<section class="chapter" id="safeguarding">
+  <div class="chapter-head"><div class="chapter-num">13</div><div><h2>Safeguarding and data protection</h2><p class="lead">How your chatbot responds when a child's safety is mentioned, what you must put in place, and what happens to the information visitors type.</p></div></div>
+
+  <h3 id="sg-how">How your chatbot handles safeguarding</h3>
+  <p>For nurseries and other organisations that work with children, the platform gives your chatbot strict safeguarding rules that you can't switch off. When a message suggests a child may be at risk, your chatbot:</p>
+  <ul>
+    <li><strong>points the person to your Designated Safeguarding Lead (DSL)</strong> using the contact details in your knowledge base, and to <strong>999</strong> if a child is in immediate danger;</li>
+    <li><strong>never investigates, assesses or decides</strong> anything about a concern, and never asks a child, parent or member of staff probing questions;</li>
+    <li><strong>never confirms anything about a named child</strong>, such as whether they attend, are in today or have been collected, whoever claims to be asking;</li>
+    <li><strong>doesn't give medical advice</strong> about a specific child, such as whether to give medicine or what a symptom means.</li>
+  </ul>
+  <figure class="shot narrow"><div class="frame"><img src="assets/screenshots/11-widget-safeguarding.webp" alt="On the nursery website, a parent says they are worried about a child, and the chatbot directs them to the Designated Safeguarding Lead, gives the office phone number, and says to call 999 if a child is in immediate danger" loading="lazy"></div><figcaption><b>Figure 13.1</b> A safeguarding question answered from the nursery's own safeguarding statement: the DSL, how to reach them, and 999 for emergencies.</figcaption></figure>
+
+  <h3 id="sg-setup">What you need to put in place</h3>
+  <ul class="static-check">
+    <li><strong>Upload your safeguarding policy</strong> or a short statement that says who your DSL and deputy DSL are (by role is fine) and how to contact them. Without it, the chatbot can only say "contact the nursery".</li>
+    <li><strong>Include emergency and out-of-hours contacts,</strong> such as your local children's services and the NSPCC helpline.</li>
+    <li><strong>Test it.</strong> Ask "I'm worried about a child, who should I talk to?" on your website and check the answer names the right person.</li>
+    <li><strong>Brief the staff who read conversations</strong> on what to do if they find a concern in a chat (see below).</li>
+  </ul>
+  <div class="callout danger"><svg><use href="#i-danger"/></svg><div><p class="c-title">The chatbot is not a way to report a concern</p><p>Nobody watches conversations as they happen. A parent may still type a worry into the chat, so check <a href="#conversations">Conversations</a> and the <a href="#inbox">Inbox</a> every day. If you find a disclosure or a concern, <strong>follow your safeguarding procedure straight away</strong>, exactly as you would for a concern raised any other way. Don't reply in the chat with questions about it.</p></div></div>
+
+  <h3 id="data-protection">Data protection</h3>
+  <p>Your chatbot keeps a record of conversations so you can review and improve it. Here is what that means in practice.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+    <tbody>
+      <tr><td>What is stored?</td><td>What visitors type, the chatbot's replies, any replies from your team, and the date and time. Visitors don't sign in, so they aren't identified unless they type their own details.</td></tr>
+      <tr><td>Is location stored?</td><td>No. If <a href="#reply">Use visitor location</a> is on, an approximate area may be used to answer, but it isn't saved with the conversation.</td></tr>
+      <tr><td>Who can read conversations?</td><td>Only members whose role includes reading conversations. Every time someone opens a visitor's conversation, the <a href="#conv-list">audit trail</a> records who and when.</td></tr>
+      <tr><td>How long is it kept?</td><td>For your <a href="#handoff-limits">retention period</a> (30 days unless you change it). After that it is deleted automatically and can't be recovered.</td></tr>
+      <tr><td>Can I delete one visitor's conversation?</td><td>Not from the portal. If someone asks you to delete their conversation, contact your platform provider, who can remove it. Shortening the retention period also removes older conversations.</td></tr>
+      <tr><td>Can I give someone a copy of their conversation?</td><td>There's no export button. Open the conversation and copy its text, or ask your platform provider for help.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout best"><svg><use href="#i-best"/></svg><div><p class="c-title">Good practice</p><ul><li><strong>Mention the chatbot in your website's privacy notice:</strong> that conversations are kept, for how long, and why.</li><li><strong>Ask visitors not to share personal details</strong> about their child in the chat. A line in the <a href="#identity">greeting</a> works well, for example "Please don't share personal details here."</li><li><strong>Keep the retention period as short</strong> as your records policy allows.</li><li><strong>Give "read conversations" only to people who need it</strong> (see the <a href="#permission-reference">permission reference</a>).</li></ul></div></div>
+  <p class="muted">This section explains how the portal works; it isn't legal advice. Your organisation is usually the "data controller" for what visitors tell your chatbot, so check your arrangements with whoever handles data protection for you.</p>
+</section>
+
+<!-- ======================================================= 12. BEST PRACTICES -->
+<section class="chapter" id="best-practices">
+  <div class="chapter-head"><div class="chapter-num">14</div><div><h2>Best practices</h2><p class="lead">The habits of organisations whose chatbots answer well.</p></div></div>
+  <div class="grid two">
+    <div class="card"><div class="k">Knowledge base</div>
+      <ul class="static-check">
+        <li>Keep documents up to date.</li>
+        <li>Remove outdated information instead of adding new versions beside it.</li>
+        <li>Use clear documents with headings and one topic per section.</li>
+        <li>Prefer real text to scans or images of text.</li>
+        <li>Add a question-and-answer document for common questions.</li>
+        <li>Check that every document is <strong>Ready</strong> and none <strong>couldn't be read</strong>.</li>
+      </ul></div>
+    <div class="card"><div class="k">AI quality</div>
+      <ul class="static-check">
+        <li>Test your most common questions after every change.</li>
+        <li>Review the <strong>couldn't answer</strong> list and fill the gaps.</li>
+        <li>Read every 👎 rating and fix its cause.</li>
+        <li>Improve your Role and Avoid instructions as you learn.</li>
+        <li>Test in a private window, so you see what visitors see.</li>
+        <li>Keep facts in the knowledge base, not in instructions.</li>
+      </ul></div>
+    <div class="card"><div class="k">Visitor experience</div>
+      <ul class="static-check">
+        <li>Keep at least one staffed team for handoffs.</li>
+        <li>Answer handed-over conversations promptly.</li>
+        <li>Use a warm greeting and quick replies.</li>
+        <li>Make sure the chatbot shows as <strong>Installed</strong> on your site.</li>
+      </ul></div>
+    <div class="card"><div class="k">Security</div>
+      <ul class="static-check">
+        <li>Manage user access and use the smallest role needed.</li>
+        <li>Protect credentials, and turn on two-step sign-in.</li>
+        <li>Revoke access on the day someone leaves.</li>
+        <li>Only allow your own websites to show the chatbot.</li>
+        <li>Keep conversations only as long as you need them.</li>
+      </ul></div>
+  </div>
+</section>
+
+<!-- ======================================================= 13. TROUBLESHOOTING -->
+<section class="chapter" id="troubleshooting">
+  <div class="chapter-head"><div class="chapter-num">15</div><div><h2>Troubleshooting guide</h2><p class="lead">Common problems, what usually causes them, and how to fix them step by step.</p></div></div>
+  <div class="fold-tools"><button class="link-btn" type="button" data-fold-all="troubleshooting" data-open="true">Expand all</button><button class="link-btn" type="button" data-fold-all="troubleshooting" data-open="false">Collapse all</button></div>
+
+  <details class="fold trouble" id="t-cant-answer"><summary><span class="tag">Answers</span>The AI can't answer questions it should know</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>The information isn't in your knowledge base, or is worded very differently.</li><li>The document or page is still processing, or failed.</li><li>The website chatbot answers from a different knowledge base.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Run a <a href="#kb-search">test search</a></strong> with the visitor's exact words.</li><li><strong>If the right page isn't listed,</strong> add a page or document containing the answer (<a href="#kb-text">Add written text</a>).</li><li><strong>Check every document is <em>Ready</em></strong> in the documents window.</li><li><strong>Ask again in a new, private chat.</strong></li></ol></div></details>
+
+  <details class="fold trouble" id="t-wrong-type"><summary><span class="tag">Answers</span>The chatbot says your sources belong to another organisation</summary><div class="fold-body">
+    <p>For example: <em>"The supplied sources describe &lt;another name&gt;, not &lt;your organisation&gt;, so I should not use them."</em></p>
+    <h5>Possible causes</h5><ul><li>Your <strong>assistant type</strong> doesn't match your organisation (for example, it's set to <em>UK nursery</em> but you run a training academy).</li><li>Your <strong>Company name</strong> is different from the name used in your documents.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Check the assistant type</strong> on the AI Chatbot → <a href="#company">Company</a> tab.</li><li><strong>If it's wrong,</strong> ask your platform provider to change it. It takes effect on the next answer.</li><li><strong>Make sure your Company description</strong> mentions the name your documents use (for example, "trading as Bramble Lane Nursery").</li><li><strong>Test in a new, private chat;</strong> an old conversation remembers earlier answers.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-old-answers"><summary><span class="tag">Answers</span>My changes don't show on the website</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>The chat window resumed an earlier conversation.</li><li>Your browser is still using its saved copy of the chatbot (for up to an hour).</li><li>You didn't click the tab's <span class="ui">Save</span> button.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Check you saved</strong> the tab you changed.</li><li><strong>Open your website in a private window</strong> and start a new chat.</li><li><strong>Still old after an hour?</strong> Contact your platform provider.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-not-on-site"><summary><span class="tag">Website</span>The chatbot doesn't appear on my website</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>The embed code isn't on the page, or was pasted in the wrong place.</li><li>The website's address isn't in <span class="ui">Where it can appear</span>.</li><li>The chatbot was hidden from the website, or the AI Chatbot switch is off.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Look at the <a href="#website">On your website</a> card.</strong> Is the status <em>Installed</em>, <em>Not installed</em> or <em>Turned off</em>?</li><li><strong>Check the address</strong> exactly matches your site, including <code>https://</code> and <code>www.</code>.</li><li><strong>Ask your web developer</strong> to confirm the code is just before <code>&lt;/body&gt;</code> on every page.</li><li><strong>Click <span class="ui">Check again</span></strong> after reloading your website.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-hidden-on"><summary><span class="tag">Website</span>"Your chatbot is hidden on &lt;address&gt;"</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>Your site moved to a new address, or you use more than one domain.</li><li>Someone copied your embed code to a site that isn't yours.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>If the address is yours,</strong> click <span class="ui">Allow &lt;address&gt;</span> on the AI Chatbot page.</li><li><strong>If you don't recognise it,</strong> do nothing: your chatbot stays hidden there.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-doc-stuck"><summary><span class="tag">Content</span>A document is stuck processing</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>It's large or scanned, and still being read.</li><li>Many documents are queued at once.</li><li>A background service needs attention.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Wait a few minutes.</strong> The percentage shows it's still moving.</li><li><strong>If there's no progress after 30 minutes,</strong> contact your platform provider with the document's name.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-doc-failed"><summary><span class="tag">Content</span>A document failed or "couldn't be read"</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>The file is password-protected, damaged, or not really the type its name says.</li><li>It's a scan of very poor quality.</li><li>It contains no readable text (for example only images of charts).</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Read the reason</strong> shown under the document, and the stage where it failed.</li><li><strong>Fix the file:</strong> remove the password, re-save it from its original program, or export it as PDF or Word.</li><li><strong>Upload it again,</strong> or click <span class="ui">Retry</span>, then delete the failed copy.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-upload-refused"><summary><span class="tag">Content</span>An upload is refused</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>The file type isn't supported.</li><li>The file is larger than 50 MB.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Check the file type</strong> against the <a href="#kb-upload">supported list</a>.</li><li><strong>Split large files</strong> into smaller documents, or compress images inside them.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-web-pages"><summary><span class="tag">Content</span>Web pages weren't all added</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>An <em>Entire website</em> fetch reached the platform's page or depth limit.</li><li>Some pages need a login, or block automated access.</li><li>A page address was mistyped.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Check the source's page count</strong> (for example "25 of 25 pages").</li><li><strong>Add missing pages</strong> using <em>Specific URLs</em>, listing exactly the pages you need.</li><li><strong>For login-only pages,</strong> save the content as a document and upload it instead.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-outdated"><summary><span class="tag">Answers</span>Answers are out of date</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>Your website changed but its pages weren't fetched again.</li><li>An old document is still in the knowledge base alongside a new one.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Fetch web pages again</strong> with the refresh icon on the web source (<a href="#kb-update">Update content</a>).</li><li><strong>Delete old versions</strong> of documents.</li><li><strong>Test again</strong> in a new chat.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-wrong-sources"><summary><span class="tag">Answers</span>Answers cite the wrong pages</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>Several pages talk about the same topic, some only in passing.</li><li>Pages contain a lot of repeated menus, cookie banners or footer text.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Run a <a href="#kb-search">test search</a></strong> and note which pages rank highest.</li><li><strong>Open the unhelpful ones</strong> (<a href="#kb-inspect">See what was read</a>) and delete pages that add nothing.</li><li><strong>Add one clear page</strong> dedicated to the topic.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-no-person"><summary><span class="tag">Handoff</span>Visitors aren't offered "Speak to a person"</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>No team has anyone in it.</li><li><span class="ui">Allow transfer to a colleague</span> is off.</li><li>Every team is set not to be offered to visitors.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Add at least one person</strong> to a team in <a href="#teams">Inbox → Teams</a>.</li><li><strong>Turn on <span class="ui">Allow transfer to a colleague</span></strong> on the <a href="#handoff-limits">Handoff &amp; limits</a> tab.</li><li><strong>Check the team's <span class="ui">Offered to visitors</span></strong> switch is on.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-waiting"><summary><span class="tag">Handoff</span>Handed-over conversations are waiting too long</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>Team members aren't watching the Inbox, or notifications are blocked.</li><li>The team is too small for the volume.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Turn on <span class="ui">Sound on</span></strong> and allow browser notifications.</li><li><strong>Add more people</strong> to the team, or create teams by topic.</li><li><strong>Keep <span class="ui">AI answers unassigned conversations</span> on,</strong> so visitors get help while they wait.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-daily-limit"><summary><span class="tag">Usage</span>The chatbot stops answering part-way through the day</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>Today's AI question limit was reached.</li><li>The limit resets at midnight in a different time zone from yours.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Check <em>Questions answered today</em></strong> on the dashboard.</li><li><strong>Raise your own daily limit</strong> (up to your plan's maximum) on the <a href="#handoff-limits">Handoff &amp; limits</a> tab.</li><li><strong>Set the time zone</strong> to your local time.</li><li><strong>If you regularly need more,</strong> ask your platform provider about a larger plan.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-monthly"><summary><span class="tag">Usage</span>The monthly AI allowance is used up</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>Higher-than-usual traffic, or long answers.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Contact your platform provider</strong> to raise your allowance; it resets on the first of the month.</li><li><strong>Choose shorter answers</strong> (<a href="#tone">Response length</a>) to use less in future.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-plan-disabled"><summary><span class="tag">Access</span>A button is disabled ("Your plan doesn't include…")</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>You've reached a plan limit (for example knowledge bases or chatbots), or the feature isn't in your plan (adding members, custom roles).</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Read the message</strong> next to the button; it names the limit.</li><li><strong>Free up space</strong> (for example delete an unused knowledge base), or ask your platform provider to change your plan.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-cant-delete-kb"><summary><span class="tag">Content</span>A knowledge base can't be deleted</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>Your website chatbot still answers from it.</li><li>A document in it is still processing, or a web source is still being fetched.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Read the message</strong> in the delete window; it names the chatbot or the cause.</li><li><strong>Wait for processing to finish,</strong> or point your chatbot at a different knowledge base first.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-no-conversations"><summary><span class="tag">Access</span>I can't see visitors' conversations</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>The page is showing <strong>Only mine</strong>.</li><li>Your role doesn't include reading all conversations.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Click <span class="ui">Show all conversations</span>.</strong></li><li><strong>If you don't have permission,</strong> ask your organisation's owner to review your role.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-signed-out"><summary><span class="tag">Access</span>I was signed out unexpectedly</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>Your password was changed, or <span class="ui">Sign out everywhere</span> was used.</li><li>Your membership was suspended, or you were away for a long time.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Sign in again.</strong></li><li><strong>If you didn't change anything,</strong> change your password straight away and turn on two-step sign-in.</li><li><strong>If you can't sign in,</strong> contact your organisation's owner.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-password"><summary><span class="tag">Access</span>The password-reset email doesn't arrive</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>It went to your spam or junk folder.</li><li>Email sending isn't set up for your portal yet.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Check your spam folder,</strong> and wait a few minutes.</li><li><strong>Contact your platform administrator,</strong> who can help you back in.</li></ol></div></details>
+
+  <details class="fold trouble" id="t-page-missing"><summary><span class="tag">General</span>A page shows "This page could not be found" or won't load</summary><div class="fold-body">
+    <h5>Possible causes</h5><ul><li>The portal was being updated.</li><li>An old bookmark points to a page that has moved.</li></ul>
+    <h5>Solution</h5><ol class="steps"><li><strong>Refresh the page</strong> after a minute.</li><li><strong>Use the menu</strong> rather than a bookmark.</li><li><strong>If it persists,</strong> contact your platform provider with the page name and the time.</li></ol></div></details>
+</section>
+
+<!-- ======================================================= 14. OPERATIONS -->
+<section class="chapter" id="operations">
+  <div class="chapter-head"><div class="chapter-num">16</div><div><h2>Go-live and daily operations</h2><p class="lead">A plan for your first week, then a routine that keeps your chatbot accurate and your visitors happy. Tick items as you go; your ticks are remembered in this browser.</p></div></div>
+
+  <h3 id="go-live">Your first week</h3>
+  <p>Launch quietly, watch closely, and fix gaps while traffic is low.</p>
+  <div class="check-card" data-list="golive"><h4>First week <span class="check-count">0 / 6</span></h4>
+    <ul class="checklist">
+      <li><label><input type="checkbox"><span>Day 1: finish <a href="#first-day">Your first day</a><span class="sub">All five steps, and the setup checklist has gone from the dashboard.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Day 1: put the chatbot on your website<span class="sub">The <a href="#website">On your website</a> card shows Installed.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Day 2: tell your team<span class="sub">Who answers the Inbox, and what to do if a chat raises a safeguarding concern.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Days 2 to 5: read every conversation<span class="sub">While numbers are small, read them all. Fix each wrong or missing answer in your documents.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Day 5: clear the "couldn't answer" list<span class="sub">Add a short FAQ document covering the questions that came up.</span></span></label></li>
+      <li><label><input type="checkbox"><span>End of week: switch to the daily routine below</span></label></li>
+    </ul>
+    <div class="fold-tools"><button class="link-btn" type="button" data-reset>Reset</button></div>
+  </div>
+
+  <h3 id="routine">Daily, weekly and monthly routine</h3>
+
+  <div class="check-card" data-list="daily"><h4>Daily <span class="check-count">0 / 5</span></h4>
+    <ul class="checklist">
+      <li><label><input type="checkbox"><span>Check <strong>Needs attention</strong> on the dashboard<span class="sub">Fix anything listed there first.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Review unanswered questions<span class="sub">Dashboard → Questions your chatbot couldn't answer.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Check new feedback<span class="sub">Answer feedback → filter by Not helpful.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Make sure no visitor is waiting in the Inbox</span></label></li>
+      <li><label><input type="checkbox"><span>Monitor usage<span class="sub">Questions answered today, and AI usage this month.</span></span></label></li>
+    </ul>
+    <div class="fold-tools"><button class="link-btn" type="button" data-reset>Reset</button></div>
+  </div>
+
+  <div class="check-card" data-list="weekly"><h4>Weekly <span class="check-count">0 / 6</span></h4>
+    <ul class="checklist">
+      <li><label><input type="checkbox"><span>Update the knowledge base<span class="sub">Add answers for recurring unanswered questions; refresh changed web pages.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Review a sample of conversations<span class="sub">Conversations → All conversations. Look for poor or incomplete answers.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Fix every 👎 rating from the week</span></label></li>
+      <li><label><input type="checkbox"><span>Run your test questions in a private window</span></label></li>
+      <li><label><input type="checkbox"><span>Check no documents are failed or stuck</span></label></li>
+      <li><label><input type="checkbox"><span>Confirm the chatbot shows as Installed</span></label></li>
+    </ul>
+    <div class="fold-tools"><button class="link-btn" type="button" data-reset>Reset</button></div>
+  </div>
+
+  <div class="check-card" data-list="monthly"><h4>Monthly <span class="check-count">0 / 6</span></h4>
+    <ul class="checklist">
+      <li><label><input type="checkbox"><span>Analyse performance<span class="sub">Compare questions, handoffs and satisfaction with last month.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Review AI usage against your allowance<span class="sub">Ask your provider about your plan if you're regularly near the limit.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Remove outdated content</span></label></li>
+      <li><label><input type="checkbox"><span>Review members and roles<span class="sub">Revoke access for leavers; check high-risk permissions.</span></span></label></li>
+      <li><label><input type="checkbox"><span>Review Role, Avoid and tone settings</span></label></li>
+      <li><label><input type="checkbox"><span>Check your teams are staffed for the month ahead</span></label></li>
+    </ul>
+    <div class="fold-tools"><button class="link-btn" type="button" data-reset>Reset</button></div>
+  </div>
+</section>
+
+<!-- ======================================================= 15. GLOSSARY -->
+<section class="chapter" id="glossary">
+  <div class="chapter-head"><div class="chapter-num">17</div><div><h2>Glossary</h2><p class="lead">Plain-English meanings of the terms used in the portal and this guide.</p></div></div>
+  <dl class="glossary">
+    <dt>Tenant</dt><dd>Your organisation's own private space in the portal. Your content, conversations, settings and members are completely separate from every other organisation's.</dd>
+    <dt>Assistant / AI chatbot</dt><dd>The AI that answers your visitors' questions on your website, using only your content.</dd>
+    <dt>Assistant type</dt><dd>The kind of organisation your chatbot speaks for (for example UK nursery, or education and training provider). It decides which industry rules apply. Set by your platform provider.</dd>
+    <dt>Knowledge base</dt><dd>The collection of documents and web pages your chatbot answers from.</dd>
+    <dt>Source</dt><dd>A single document or web page in your knowledge base. Answers show which sources they used.</dd>
+    <dt>Passage</dt><dd>A short piece of a source. The portal splits each source into passages so the chatbot can find exactly the relevant part.</dd>
+    <dt>Retrieval</dt><dd>The search step: finding the passages that best match a question before the answer is written. <a href="#kb-search">Test search</a> shows you this step.</dd>
+    <dt>Citation</dt><dd>The small number after a fact in an answer (such as <code>1</code>), linking it to the source it came from.</dd>
+    <dt>Token</dt><dd>The unit AI usage is measured in, roughly three-quarters of a word. Longer questions, sources and answers use more tokens. Your monthly allowance is measured in tokens.</dd>
+    <dt>AI model</dt><dd>The AI engine that writes answers. It's chosen and maintained by your platform provider.</dd>
+    <dt>Conversation</dt><dd>One chat between a visitor (or member) and your chatbot, possibly including a colleague after a handoff.</dd>
+    <dt>Handoff</dt><dd>Passing a conversation from the AI to a person on one of your teams.</dd>
+    <dt>Team</dt><dd>A group of your colleagues who take handed-over conversations, such as "Admissions".</dd>
+    <dt>Allowance</dt><dd>How much your plan lets your chatbot answer: a daily number of questions, and a monthly amount of AI usage.</dd>
+    <dt>Embed code</dt><dd>The single line you paste into your website to show the chatbot. It isn't secret.</dd>
+    <dt>Allowed website</dt><dd>A website address where your chatbot may appear. It stays hidden everywhere else.</dd>
+    <dt>Role</dt><dd>A named set of permissions given to members, such as Tenant Administrator.</dd>
+    <dt>Permission</dt><dd>One specific thing a person may do, such as "read conversations".</dd>
+    <dt>Two-step sign-in (MFA)</dt><dd>Signing in with your password plus a code from an app on your phone, so a stolen password alone isn't enough.</dd>
+    <dt>Designated Safeguarding Lead (DSL)</dt><dd>The person in your organisation responsible for child protection. Your chatbot directs safeguarding concerns to them, so your knowledge base should say who they are and how to reach them.</dd>
+    <dt>Visibility</dt><dd>Which people in your organisation can see a knowledge base in the portal. It doesn't affect what your website chatbot answers from.</dd>
+    <dt>Retention period</dt><dd>How long conversations are kept before they are deleted automatically. Set on the AI Chatbot page's Handoff &amp; limits tab.</dd>
+    <dt>Audit trail</dt><dd>A permanent record of important actions, such as opening a visitor's conversation or deleting a knowledge base.</dd>
+  </dl>
+</section>
+
+<!-- ======================================================= ABOUT THIS GUIDE -->
+<section class="chapter" id="about-guide">
+  <div class="chapter-head"><div class="chapter-num">18</div><div><h2>About this guide</h2><p class="lead">How to share it, what has changed, and how it supports different needs.</p></div></div>
+
+  <h3 id="sharing">Sharing this guide</h3>
+  <p>This guide lives inside the portal at <code>/help</code>, for example <code>https://portal.yourcompany.com/help</code>. Anyone with the link can read it, with no account needed, so you can send it to a new colleague before their account exists.</p>
+  <ol class="steps">
+    <li><strong>In the portal's left-hand menu, find <span class="ui">Help → User guide</span>.</strong></li>
+    <li><strong>Click the link icon</strong> beside it. The guide's address is copied.</li>
+    <li><strong>Paste it</strong> into an email or a message.</li>
+  </ol>
+  <div class="callout tip"><svg><use href="#i-tip"/></svg><div><p class="c-title">Link straight to a section</p><p>Add a section name to the end of the link, for example <code>/help#troubleshooting</code> or <code>/help#first-day</code>.</p></div></div>
+
+  <h3 id="whats-new">What's new</h3>
+  <dl class="page-card">
+    <dt>Version 1.1</dt><dd>1 October 2026. New chapters: <a href="#first-day">Your first day</a>, <a href="#safeguarding">Safeguarding and data protection</a>, and this one. New sections: <a href="#kb-visibility">who can see a knowledge base</a>, the <a href="#go-live">first-week plan</a>, and the Help menu. Screenshots retaken with a fictional nursery. Easier to read on small phones: tap a screenshot, then tap again to see it at reading size.</dd>
+    <dt>Version 1.0</dt><dd>30 September 2026. First edition.</dd>
+  </dl>
+
+  <h3 id="accessibility">Accessibility</h3>
+  <ul>
+    <li><strong>Every screenshot has a text description</strong> for screen readers, and the steps never rely on the picture alone.</li>
+    <li><strong>Keyboard:</strong> <kbd>/</kbd> opens search, <kbd>Tab</kbd> moves between links, and <kbd>Esc</kbd> closes an enlarged screenshot.</li>
+    <li><strong>Reduced motion:</strong> if your device is set to reduce motion, the guide jumps instead of scrolling smoothly.</li>
+    <li><strong>Dark mode</strong> follows your device, or use the button at the bottom of the menu.</li>
+    <li><strong>Printing:</strong> print from your browser for a paper copy; the menu and buttons are left out and each chapter starts on a new page.</li>
+  </ul>
+  <p>If something in this guide is hard to use, tell your platform provider so it can be fixed.</p>
+</section>
+
+<!-- ======================================================= GALLERY -->
+<section class="chapter" id="gallery">
+  <div class="chapter-head"><div class="chapter-num">★</div><div><h2>Screenshot gallery</h2><p class="lead">All <span id="galleryCount">the</span> screenshots in this guide. Click one to enlarge it; use the arrow keys to move between them.</p></div></div>
+  <div id="galleryGrid" class="gallery"></div>
+</section>
+
+<footer class="doc-foot">
+  <span>Multi-Tenant AI Assistant Portal · Tenant Administrator User Guide · Version 1.1</span>
+  <span>Last updated 1 October 2026</span>
+</footer>
+
+  </main>
+</div>
+
+<button class="to-top" type="button" aria-label="Back to top">↑</button>
+
+<div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="Enlarged screenshot">
+  <button class="lb-btn lb-close" type="button" aria-label="Close">×</button>
+  <button class="lb-btn lb-prev" type="button" aria-label="Previous screenshot">‹</button>
+  <div class="lb-stage"><img id="lbImg" alt=""></div>
+  <div id="lbCap" class="lb-cap"></div>
+  <div class="lb-tip">Tap the picture to see it at reading size; tap again to fit.</div>
+  <button class="lb-btn lb-next" type="button" aria-label="Next screenshot">›</button>
+</div>
+
+<script src="assets/js/guide.js"></script>
+</body>
+</html>

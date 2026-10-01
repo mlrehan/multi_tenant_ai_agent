@@ -535,13 +535,18 @@ def _extractive_summary(transcript: list[tuple[str, str]], team_name: str) -> st
     """
     asked = [c for r, c in transcript if r == "user"]
     answered = [c for r, c in transcript if r == "assistant"]
-    lines = [f"**AI handoff summary** — routed to {team_name}.", ""]
+    # Plain text throughout: the console shows internal notes exactly as
+    # written (people write them too, and must not have their text turned
+    # into markup), so markdown here appeared as literal `**` to the colleague
+    # reading it. The quoted AI reply is markdown, so its emphasis is removed.
+    lines = [f"AI handoff summary — routed to {team_name}.", ""]
     if asked:
         lines.append(f"- Visitor asked: {asked[0].strip()[:300]}")
         if len(asked) > 1:
             lines.append(f"- Most recent question: {asked[-1].strip()[:300]}")
     if answered:
-        lines.append(f"- The assistant last replied: {answered[-1].strip()[:300]}")
+        reply = answered[-1].replace("**", "").replace("__", "").strip()
+        lines.append(f"- The assistant last replied: {reply[:300]}")
     lines.append(f"- Turns before transfer: {len(transcript)}")
     lines.append("- Unresolved: the visitor asked for a person after this exchange.")
     return "\n".join(lines)

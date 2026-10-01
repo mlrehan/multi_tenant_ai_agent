@@ -324,6 +324,22 @@ class TestRerankerMapsThroughIndex:
 
         assert await reranker.rerank(query="q", chunks=[], top_n=5) == []
 
+    async def test_a_failing_reranker_degrades_to_retrieval_order(self) -> None:
+        """Found live: a rate-limited Cohere key (429) turned a visitor's
+        question into a 500. The passages are still real and relevant, only
+        their order is worse, so the answer must go ahead without reranking."""
+
+        class _RateLimited:
+            async def rerank(self, **_: Any) -> Any:
+                raise RuntimeError("status_code: 429, Too Many Requests")
+
+        reranker = CohereReranker(CohereSettings(), client=_RateLimited())
+
+        reranked = await reranker.rerank(query="q", chunks=_chunks(), top_n=2)
+
+        assert [r.chunk.text for r in reranked] == ["first", "second"]
+        assert [r.relevance for r in reranked] == pytest.approx([0.9, 0.8])
+
 
 class TestPassthroughReranker:
     async def test_it_preserves_retrieval_order_and_scores(self) -> None:
